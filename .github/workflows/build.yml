@@ -1,0 +1,168 @@
+name: Build Desktop (Win/macOS/Linux)
+
+# Run name: tag push -> shows the tag (e.g. v2.0.0); plain push -> first commit line.
+run-name: Build ${{ github.ref_type == 'tag' && github.ref_name || github.event.head_commit.message }}
+
+on:
+  # Only build & publish on a pushed v* tag. Release flow: bump VERSION -> git tag vX.Y.Z
+  # -> git push origin vX.Y.Z. The three platform builds run in parallel, then a single
+  # release is published with all artifacts attached.
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+            ext: ".exe"
+          - os: macos
+            runner: macos-latest
+            ext: ""
+          - os: linux
+            runner: ubuntu-latest
+            ext: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # v2.0.0: Nuitka compiles to native machine code - in Defender's eyes it is a
+      # normal C++ program (very low false-positive rate), and the source is compiled
+      # away. Python 3.12 comes from setup-python; the compiler is provided by the
+      # runner (MSVC / clang / gcc) - no extra install.
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Install Nuitka
+        run: python -m pip install --upgrade nuitka
+
+      # Linux needs the Tk runtime for the tkinter GUI to bundle correctly.
+      - name: Install Tk runtime (Linux only)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tk tcl zip
+
+      # macOS wants .icns for the app icon (PNG -> ICNS via Pillow).
+      - name: Generate icon.icns (macOS only)
+        if: matrix.os == 'macos'
+        run: |
+          python -m pip install --quiet pillow
+          python -c "from PIL import Image; Image.open('assets/icon.png').save('assets/icon.icns', format='ICNS', sizes=[(16,16),(32,32),(64,64),(128,128),(256,256),(512,512),(1024,1024)])"
+          ls -la assets/icon.icns
+
+      # Nuitka compiles to a standalone folder (no runtime self-extract -> no dropper fingerprint).
+      - name: Build (${{ matrix.os }})
+        shell: bash
+        run: python build.py
+
+      # Windows: wrap the standalone folder into a single installer exe (double-click install).
+      # Must use pwsh, not bash: Git Bash would mangle /DVERSION=... into a path.
+      - name: Install NSIS (Windows)
+        if: matrix.os == 'windows'
+        run: choco install nsis --no-progress
+
+      - name: Build installer (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $VER = (Get-Content VERSION).Trim()
+          $VERNUM = $VER -replace '^v',''
+          $MAKENSIS = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $MAKENSIS)) { $MAKENSIS = "makensis" }
+          & $MAKENSIS /DVERSION=$VER /DVERNUM=$VERNUM installer.nsi
+          ls thesis-format-doctor-global-setup.exe
+
+      # Windows: dual distribution - the zip (portable, green) is the primary download;
+      # the setup.exe is the alternative for users who want an installer.
+      - name: Package (Windows zip)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path "dist\thesis-format-doctor-global" -DestinationPath "release\thesis-format-doctor-global-windows.zip" -Force
+          ls release
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          mkdir -p release
+          ditto -c -k -v "dist/thesis-format-doctor-global.app" "release/thesis-format-doctor-global-macos.zip"
+
+      - name: Package (Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          mkdir -p release
+          cd dist && zip -r "../release/thesis-format-doctor-global-linux.zip" "thesis-format-doctor-global"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: thesis-format-doctor-global-${{ matrix.os }}
+          path: |
+            thesis-format-doctor-global-setup.exe
+            release/thesis-format-doctor-global-windows.zip
+            release/thesis-format-doctor-global-macos.zip
+            release/thesis-format-doctor-global-linux.zip
+          if-no-files-found: ignore
+          retention-days: 1
+
+  release:
+    name: Publish Release
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage assets
+        run: |
+          mkdir -p release
+          for plat in windows macos linux; do
+            find "artifacts/thesis-format-doctor-global-$plat" -type f | while read f; do
+              cp "$f" "release/$(basename "$f")"
+            done
+          done
+          ls -la release
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            version="${{ github.ref_name }}"
+          else
+            version="$(cat VERSION | tr -d '[:space:]')"
+            [ -z "$version" ] && version="latest"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
+          files: release/*
+          generate_release_notes: true

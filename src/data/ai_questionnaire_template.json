@@ -1,0 +1,38 @@
+{
+  "_purpose": "把本文件交给任意 AI（GPT / Gemini / Claude 等），连同你的学校模板或格式要求文档，让 AI 按下方 fields 把格式要求填成具体数值，输出一份同样结构的 JSON，再用 Thesis Format Doctor Global 的「导入 AI 填表」吃进去即可。",
+  "_how_to_fill": "AI 请把格式要求填成具体数值，两种结构软件都支持：① 直接输出顶层扁平键值（与 fields[].key 一致）；② 或包在 'filled' 对象里（如{\"filled\":{...}}）。未知项留空或省略，不要编造。单位：页边距/缩进用英寸，字号/段后间距用磅，行距用倍数（2.0=双倍，1.5=一倍半，1.0=单倍）。body_alignment 只能填 left / justify / center / right（left=左对齐，justify=两端对齐）。",
+  "fields": [
+    {"key": "margin_top_in", "label": "上页边距", "unit": "英寸", "example": 1.0},
+    {"key": "margin_bottom_in", "label": "下页边距", "unit": "英寸", "example": 1.0},
+    {"key": "margin_left_in", "label": "左页边距", "unit": "英寸", "example": 1.0},
+    {"key": "margin_right_in", "label": "右页边距", "unit": "英寸", "example": 1.0},
+    {"key": "font_family", "label": "正文字体", "unit": "", "example": "Times New Roman"},
+    {"key": "font_size_pt", "label": "正文字号", "unit": "磅", "example": 12.0},
+    {"key": "line_spacing", "label": "行距", "unit": "倍", "example": 2.0},
+    {"key": "body_alignment", "label": "正文对齐", "unit": "", "example": "left",
+     "allowed": ["left", "justify", "center", "right"]},
+    {"key": "first_line_indent_in", "label": "正文首行缩进", "unit": "英寸", "example": 0.5},
+    {"key": "space_after_pt", "label": "段后间距", "unit": "磅", "example": 0.0},
+    {"key": "heading_levels", "label": "标题层级数", "unit": "级", "example": 0},
+    {"key": "reference_style", "label": "参考文献格式", "unit": "", "example": "APA",
+     "allowed": ["APA", "MLA", "Chicago", "IEEE", "Harvard"]},
+    {"key": "reference_hanging_indent_in", "label": "参考文献悬挂缩进", "unit": "英寸", "example": 0.5},
+    {"key": "reference_numbered", "label": "是否顺序编码", "unit": "", "example": false}
+  ],
+  "example_filled": {
+    "margin_top_in": 1.0,
+    "margin_bottom_in": 1.0,
+    "margin_left_in": 1.5,
+    "margin_right_in": 1.0,
+    "font_family": "Times New Roman",
+    "font_size_pt": 12.0,
+    "line_spacing": 2.0,
+    "body_alignment": "left",
+    "first_line_indent_in": 0.5,
+    "space_after_pt": 0.0,
+    "heading_levels": 5,
+    "reference_style": "APA",
+    "reference_hanging_indent_in": 0.5,
+    "reference_numbered": false
+  }
+}

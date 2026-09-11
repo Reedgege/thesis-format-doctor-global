@@ -1,0 +1,27 @@
+# 构建产物
+build/
+dist/
+_bak/
+*.spec
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.DS_Store
+
+# 本地环境
+.venv/
+venv/
+env/
+
+# 临时测试
+testdata/
+test_*.py
+make_test_docx.py
+
+# 编辑器
+.vscode/
+.idea/
+
+# CI 发布缓存（由 GitHub Actions 生成，不进仓库）
+release/

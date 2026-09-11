@@ -1,0 +1,36 @@
+你是一名资深 Python 代码审查专家。请对当前工作目录 D:\AgentSpace\thesis-format-doctor-global 下的「海外版论文格式医生（Thesis Format Doctor Global）v2」代码做一次性、只读的代码审查（绝对不要修改任何文件、不要执行任何写操作），并输出一份结构化审查报告。
+
+【第一步】先完整阅读规格文档：docs/需求规格与功能说明.md
+它是本次审查的**唯一评判基准**。请以上面的功能需求（FR1–FR8）、非功能需求（NFR1–NFR6）、数据模型、以及第 8 节「已知边界」为准来评判代码，不要用你自己的偏好替代需求。
+
+【第二步】阅读以下全部代码（这是 v2 的完整实现）：
+- 引擎层：src/engine/specs.py、src/engine/questionnaire.py、src/engine/docx_reader.py、src/engine/checker.py、src/engine/fixer.py、src/engine/latex_template.py、src/engine/report.py
+- 授权层：src/license/license.py
+- 入口层：src/main.py、src/ui/app.py
+- 数据：src/data/ai_questionnaire_template.json
+- 测试：tests/test_engine.py、tests/test_fixer.py、tests/test_license.py、tests/test_latex_template.py、tests/test_polish.py、tests/smoke_test.py
+- 辅助上下文（了解历史决策，可选）：docs/实施计划_下一轮三块.md、docs/打磨轮_完成记录_2026-09-11.md
+
+【第三步】严格对照规格文档第 9 节「代码审查重点」，逐条给出结论（共 16 条，分 A 组 8 条基线 + B 组 8 条新增）。
+
+特别注意以下几点（这些是本产品最致命的地方，请重点深挖、不要浮于表面）：
+
+1) 「内容零改动」（NFR6）——一键修正绝不能改文字内容。请**穷举** src/engine/fixer.py 中所有会写入文档的代码路径，核实是否存在任何可能改动文字内容的可能（run.text / 段落 text 赋值 / add_* / insert_* / delete_* / 参考文献条目重构 / 表格 / 页眉页脚 / 脚注 / 文本框）。若有风险，给出最小复现思路。
+
+2) 标题保护——修正时是否在所有维度（字体/字号/行距/对齐/缩进/段后间距）都跳过标题段？标题识别是否可能漏判？
+
+3) 授权门禁一致性与可绕过性——CLI（src/main.py 的 cmd_fix）与 GUI（src/ui/app.py）是否共用同一门禁实现？预览是否可能消耗试用次数？失败路径是否误计次数？
+
+4) 试用防重置——机器指纹稳定性、本地状态删除后能否绕过、中台登记"最佳努力+离线宽限"是否有被离线绕过的窗口。
+
+5) JSON 输出编码一致性——check / fix / preview / 拒绝分支 的 JSON 输出是否**全部**统一走 UTF-8 字节流？是否存在某分支仍用普通 print，会在 Windows 中文 GBK 终端下把中文降级成 '?'？（请逐个分支核对。）
+
+6) 离线边界——格式引擎与修正引擎必须零网络（但 src/license/license.py 允许联网，不算违规）。请逐个 grep urllib / requests / socket / LLM SDK，确认边界。
+
+【报告格式要求】
+- 每条问题包含：【严重程度: 高/中/低】【文件:行号】【问题描述】【修复建议】。
+- 对 B 组第 9 条（内容零改动），请单独给出你核实的完整写盘路径清单与结论。
+- 明确指出哪些是「真 bug / 真风险」，哪些只是「nit / 风格建议」，不要混为一谈。
+- 如果某条你核实后认为没有问题，也要明确写出"已核实无问题"，不要沉默略过。
+- 最后给出：总体评价（1 段）+ 按优先级排序的修改清单（P0 必修 / P1 建议 / P2 可选）。
+- 全部用中文输出。再次强调：不要修改任何文件。
