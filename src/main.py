@@ -32,10 +32,38 @@ from .engine.fixer import (
 )
 from .engine.questionnaire import build_target
 from .engine.specs import SPEC_ORDER
+from .versioninfo import app_version
 
 _TEMPLATE = os.path.join(os.path.dirname(__file__), "data", "ai_questionnaire_template.json")
 
 _CONSOLE_READY = False
+
+
+def _fatal_dialog(msg: str):
+    """把启动期的致命错误弹给用户看（打包成窗口程序后没有控制台可看）。
+
+    优先用 Windows 原生 MessageBox：此时 Tk 可能还没起来（或者就是 Tk 起不来），
+    不能指望用 Tk 弹窗。非 Windows 退化为 stderr。
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, msg, "Thesis Format Doctor Global", 0x10)
+        return
+    except Exception:
+        pass
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:
+        pass
+
+
+def _has_console() -> bool:
+    """打包成 GUI 程序（--windows-console-mode=disable）时 stdout/stderr 为 None。"""
+    try:
+        return sys.stdout is not None and sys.stderr is not None
+    except Exception:
+        return False
 
 
 def _init_console():
@@ -171,14 +199,23 @@ def cmd_check(args):
 
 
 def cmd_gui(args):
+    """启动桌面 GUI。
+
+    任何失败都要**弹出来告诉用户**：本程序在 Windows 上以窗口子系统编译
+    （无控制台），一旦这里静默 return，用户看到的就是"双击没反应"。
+    """
     try:
         from .ui.app import main as gui_main
+    except Exception as e:
+        _fatal_dialog("无法启动图形界面：当前环境缺少 Tk（_tkinter）。\n\n"
+                      "细节：%s\n\n"
+                      "可改用命令行 `check` 子命令做体检。" % e)
+        return 1
+    try:
         gui_main()
         return 0
-    except ImportError as e:
-        print("无法启动 GUI：当前环境缺少 Tk（_tkinter）。请在本机带 Tk 的 Python 下运行，"
-              "或改用 `check` 子命令做命令行体检。", file=sys.stderr)
-        print(f"细节：{e}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001  界面异常退出也要让用户看得见
+        _fatal_dialog("图形界面异常退出：\n\n%s: %s" % (type(e).__name__, e))
         return 1
 
 
@@ -382,6 +419,10 @@ def cmd_status(args):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Thesis Format Doctor Global · 海外版论文格式医生（离线）")
+    # --version 用 argparse 内置 action：解析到就打印并 SystemExit(0)，
+    # 不进入任何子命令 —— 版本号读 VERSION 文件（打包时随产物一起带出）。
+    p.add_argument("-V", "--version", action="version",
+                   version="Thesis Format Doctor Global %s" % app_version())
     sub = p.add_subparsers(dest="cmd")
 
     g = sub.add_parser("gui", help="启动桌面 GUI")
@@ -430,8 +471,17 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
-        parser.print_help()
-        return 0
+        # 无子命令：
+        #  - 有控制台（源码运行 / 终端里跑）-> 打印帮助，保持 CLI 习惯；
+        #  - 没有控制台（打包成窗口程序，stdout 为 None）-> 必须进 GUI，
+        #    否则用户双击 exe 时"什么都没发生"（帮助文本没有任何地方能显示）。
+        if _has_console():
+            try:
+                parser.print_help()
+                return 0
+            except Exception:
+                pass
+        return cmd_gui(args)
     return args.func(args)
 
 

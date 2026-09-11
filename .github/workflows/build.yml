@@ -13,8 +13,37 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 回归测试。跑在 Windows runner 上（带 tkinter、且与主要分发平台一致），
+  # 必须在构建之前通过：测试挂了就别浪费十几分钟做三平台构建 + 发版。
+  # 2026-09-11 补：此前 .gitignore 的 test_*.py 把所有测试挡在仓库外，CI 也没有
+  # 任何跑测试的步骤 —— 回归网等于 0（换台机器就全丢）。
+  test:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run regression tests
+        run: python -m pytest tests -q -p no:cacheprovider
+
+      # 真机入口验证：「无参数启动必须进 GUI」—— 这就是"双击打不开"的回归防线。
+      # 打包版用 --windows-console-mode=disable，没有控制台可看，静默退出=用户以为没反应。
+      - name: Verify entry point (no-arg must open the GUI)
+        run: python tools/verify_entry.py
+
   build:
     name: ${{ matrix.os }}
+    needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -124,6 +153,7 @@ jobs:
 
   reedcode:
     name: Offline Code Generator (Windows)
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -159,8 +189,12 @@ jobs:
 
   release:
     name: Publish Release
-    needs: build
-    if: needs.build.result == 'success'
+    # ⚠️ 必须同时等 build 和 reedcode 两个 job：只 needs: build 的话，release 可能在
+    # 发码器产物上传之前就开跑，download-artifact 收不到 reedcode-global-windows.zip，
+    # Release 会静默少一个产物（v2.0.1 只是恰好顺序对上了，属于竞态）。
+    # 两个都成功才发版：缺一不发 —— 宁可暴露问题，也不要静默少产物。
+    needs: [build, reedcode]
+    if: needs.build.result == 'success' && needs.reedcode.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -186,6 +220,22 @@ jobs:
             cp "$f" "release/$(basename "$f")"
           done
           ls -la release
+          # 产物清单校验：缺任何一个都直接失败，避免发出「少东西」的 Release。
+          # 期望 5 个：windows.zip / setup.exe / macos.zip / linux.zip / reedcode-global-windows.zip
+          EXPECTED="thesis-format-doctor-global-windows.zip
+          thesis-format-doctor-global-setup.exe
+          thesis-format-doctor-global-macos.zip
+          thesis-format-doctor-global-linux.zip
+          reedcode-global-windows.zip"
+          missing=""
+          for f in $EXPECTED; do
+            if [ ! -f "release/$f" ]; then missing="$missing $f"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release assets missing:$missing"
+            exit 1
+          fi
+          echo "Asset check passed: 5/5"
 
       - name: Determine version
         id: ver

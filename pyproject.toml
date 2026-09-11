@@ -1,6 +1,6 @@
 [project]
 name = "thesis-format-doctor-global"
-version = "2.0.0"
+version = "2.0.2"
 description = "Thesis Format Doctor Global - offline, safe overseas thesis format checker & fixer (docs never leave your machine)"
 readme = "README.md"
 requires-python = ">=3.10"

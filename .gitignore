@@ -14,9 +14,9 @@ __pycache__/
 venv/
 env/
 
-# 临时测试
+# 临时测试脚本（仅仓库根目录的；tests/ 下的正式回归套件必须入库，否则换环境即丢）
 testdata/
-test_*.py
+/test_*.py
 make_test_docx.py
 
 # 编辑器
@@ -25,3 +25,8 @@ make_test_docx.py
 
 # CI 发布缓存（由 GitHub Actions 生成，不进仓库）
 release/
+
+# Codex 审查产出（不构成代码；留本地复盘用）
+tools/codex_review/round*_diff.txt
+tools/codex_review/prompt_*.txt
+docs/codex_review_*.md

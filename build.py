@@ -41,6 +41,7 @@ APP_NAME = "thesis-format-doctor-global"
 # file/dir names blow up in Compress-Archive / NSIS / log prints. English product
 # name is also the natural choice for an overseas audience.
 ENTRY = os.path.join(HERE, "main.py")  # root launcher -> imports src.main internally
+ASSETS_DIR = os.path.join(HERE, "assets")
 ICON_ICO = os.path.join(HERE, "assets", "icon.ico")
 ICON_ICNS = os.path.join(HERE, "assets", "icon.icns")
 ICON_PNG = os.path.join(HERE, "assets", "icon.png")
@@ -70,8 +71,20 @@ def _nuitka_options():
         "--show-progress",
     ]
     # The whole src package (engine/license/ui + data/*.json) is compiled into the build.
+    # src/data/ also carries icon.png, so the GUI can set its window icon at runtime.
     opt += ["--include-package=src",
             "--include-package-data=src"]
+    # Belt and braces: drop assets/ next to the executable as well. The GUI looks for
+    # <exe dir>/assets/icon.png, which keeps the window icon working even if the
+    # package-data layout differs between Nuitka versions.
+    if os.path.isdir(ASSETS_DIR):
+        opt += ["--include-data-dir=" + ASSETS_DIR + "=assets"]
+    # VERSION travels with the build: the About dialog and the status bar read it at
+    # runtime (in the source tree app.py walks up to the repo root; once compiled that
+    # path no longer exists, so the file itself must ship next to the executable).
+    version_file = os.path.join(HERE, "VERSION")
+    if os.path.isfile(version_file):
+        opt += ["--include-data-file=" + version_file + "=VERSION"]
     if WIN and os.path.isfile(ICON_ICO):
         opt += ["--windows-icon-from-ico=" + ICON_ICO]
     # Windows GUI app: disable the console subsystem so no black box flashes on launch.

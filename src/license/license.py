@@ -44,6 +44,7 @@ import hmac
 import json
 import os
 import platform
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -79,15 +80,89 @@ def _license_file() -> Path:
 # 机器指纹 / 本地状态
 # ---------------------------------------------------------------------------
 
-def _machine_fingerprint() -> str:
-    """机器指纹（不依赖 MAC/序列号，避免权限与跨平台问题）。
+def _raw_machine_signals() -> list:
+    """采集「机器标识」信号（尽力而为：任一信号取不到都不影响其它信号）。
 
-    以 hostname（platform.node）为主：容器 / 改机名会变，属已知限制；
-    变化后在线可凭激活码自动重新绑定（见 require_fix_entitlement）。
+    为什么不再只用主机名：``platform.node()`` **完全由用户控制**——
+    改个主机名就换指纹，既可能误伤合法用户（自己的码突然失效），
+    也可能被用来蹭别人流传出去的码。所以优先使用「装系统时生成、改主机名不变」
+    的硬件/系统标识，主机名只作为最后的兜底信号。
+
+    三平台各自的稳定标识：
+    - Windows: 注册表 ``HKLM\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid``（重装系统才变）
+    - macOS:   ``IOPlatformUUID``（ioreg 读取）
+    - Linux:   ``/etc/machine-id``（systemd 首次启动生成）
+
+    全部失败也不抛异常：诚实降级到主机名，行为与旧版一致。
     """
-    node = platform.node() or ""
-    raw = f"{platform.system()}|{node}|{platform.machine()}".encode()
+    system = platform.system()
+    sig = [system, platform.machine() or ""]
+
+    if system == "Windows":
+        try:
+            import winreg  # noqa: PLC0415  Windows 专有标准库
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Cryptography") as key:
+                sig.append(str(winreg.QueryValueEx(key, "MachineGuid")[0]))
+        except Exception:
+            pass
+    elif system == "Darwin":
+        try:
+            import re
+            import subprocess
+
+            out = subprocess.run(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+            m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out or "")
+            if m:
+                sig.append(m.group(1))
+        except Exception:
+            pass
+    else:
+        for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+            try:
+                value = Path(p).read_text(encoding="utf-8").strip()
+            except Exception:
+                continue
+            if value:
+                sig.append(value)
+                break
+
+    # 兜底信号：主机名（旧版唯一信号，保留以保证「取不到系统标识」时仍可用）
+    sig.append(platform.node() or "")
+    return sig
+
+
+def _machine_fingerprint() -> str:
+    """机器指纹 = SHA256(系统|架构|系统标识|主机名)[:16]。
+
+    绑定粒度取舍：本产品是**离线**激活（不联网核对），指纹必须能由客户口头/截图
+    报给卖家，所以取 16 位 hex（64 bit，碰撞概率可忽略），牺牲码长换易用性。
+
+    注意：指纹变化（换机 / 重装系统）后离线码失效，需卖家重新发码——
+    这是离线绑定的固有代价，已在文档与客服话术中说明。
+    """
+    raw = "|".join(_raw_machine_signals()).encode("utf-8", "replace")
     return hashlib.sha256(raw).hexdigest()[:16]
+
+
+_STATE_KEY = b"tfdglobal|state|seal|2026|v1"
+
+
+def _state_sign(payload: dict) -> str:
+    """状态文件完整性封印（HMAC-SHA256，24 位 hex）。
+
+    目的**不是**「防死逆向」——密钥在客户端里，能逆向就能伪造；目的是挡住
+    「打开 license.json 把 activated 改成 true」这种**零成本白嫖**：
+    手改后封印必然对不上，状态按被篡改处理（fail-closed）。
+    这是「把作弊成本抬到比买码更贵」原则下的性价比方案。
+    """
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+    return hmac.new(_STATE_KEY, blob, hashlib.sha256).hexdigest()[:24]
 
 
 def _default_state() -> dict:
@@ -108,8 +183,10 @@ def load_state() -> dict:
     """读本地状态。
 
     返回 dict 额外带两个**内部标记**（不会写回文件）：
-    - ``_state_ok``: 状态文件是否可用（存在且 JSON 合法）；
-    - ``_state_reason``: "ok" / "missing" / "corrupt"。
+    - ``_state_ok``: 状态文件是否可用（存在、JSON 合法、封印有效）；
+    - ``_state_reason``: "ok" / "missing" / "corrupt" / "tampered" / "unsealed"。
+
+    失败方向一律 **fail-closed**：宁可让用户重新激活，也不给"改文件白嫖"留窗口。
     """
     f = _license_file()
     base = _default_state()
@@ -125,29 +202,89 @@ def load_state() -> dict:
         base["_state_ok"] = False
         base["_state_reason"] = "corrupt"
         return base
-    base.update({k: v for k, v in raw.items() if k in base})
+
+    keys = set(base.keys())
+    known = {k: v for k, v in raw.items() if k in keys}
+    sig = raw.get("_sig")
+
+    if not isinstance(sig, str) or not sig:
+        # 没有封印 —— 只有两种可能：
+        #   ① 旧版（v2.0.1 及更早）存的状态文件本来就不写 _sig；
+        #   ② 有人把 _sig 那一行删了，想让试用/激活「重置」。
+        # 本地无法区分，所以一律按 unsealed 处理（fail-closed，见 ③）。
+        # 同时把线索留给 require_fix_entitlement() 做**可验证迁移**：只有
+        # 「离线码能本地验签」或「在线码被中台确认为 active」才认 —— 伪造者拿不到
+        # 有效码，迁移必然失败。于是：已付费用户升级无感，删 _sig 依旧白嫖不到。
+        base.update(known)
+        base["_state_ok"] = False
+        base["_state_reason"] = "unsealed"
+        if base.get("activated"):
+            # 自称已激活但无法验证：先不认（否则删 _sig 就是万能后门），
+            # 原始线索留给迁移分支去自证。
+            base["activated"] = False
+            base["_legacy_activated"] = True
+            base["_legacy_code"] = known.get("code")
+            base["_legacy_offline"] = bool(known.get("offline"))
+        return base
+
+    if not hmac.compare_digest(_state_sign(known), sig):
+        base["activated"] = False
+        base["_state_ok"] = False
+        base["_state_reason"] = "tampered"
+        return base
+
+    base.update(known)
     base["_state_ok"] = True
     base["_state_reason"] = "ok"
     return base
 
 
 def save_state(state: dict):
-    """原子写状态文件（只落已知字段；内部 _state_* 标记不写盘）。"""
+    """原子写状态文件（只落已知字段 + 完整性封印；内部 _state_* 标记不写盘）。
+
+    原子性：先写 ``*.tmp`` 再 ``os.replace``，写一半崩溃不会退化成「未用过试用」。
+    """
     f = _license_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     keys = set(_default_state().keys())
+    # 内部字段（_state_ok/_state_reason/_sig/_legacy_*）本就不写盘，也不算「未登记字段」。
+    unknown = {k for k in state.keys() if k not in keys and not k.startswith("_")}
     payload = {k: v for k, v in state.items() if k in keys}
+    payload["_sig"] = _state_sign(payload)
     tmp = f.with_name(f.name + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(str(tmp), str(f))
+    # 未知字段会被静默丢弃——这曾导致 offline 标记丢失的真 bug（v2.0.1），
+    # 所以这里不再沉默：调用方传了未登记字段时至少留下可诊断的痕迹。
+    if unknown:
+        try:
+            print("[license] 警告：状态里存在未登记字段，已忽略：%s" % sorted(unknown),
+                  file=sys.stderr)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
 # 中台交互（带浏览器 UA，避免 1010；测试 monkeypatch 下面三个函数即可完全离线）
 # ---------------------------------------------------------------------------
 
+def _forced_offline() -> bool:
+    """显式离线开关（环境变量 ``TFD_FORCE_OFFLINE=1``）。
+
+    用途：
+      ① 无网/内网环境下，用户与自动化不必每次操作都干等超时（默认 3–5 秒）；
+      ② 自动化测试隔离中台，让回归不依赖服务器状态。
+
+    **不绕过门禁**：关掉网络路径后仍走本地状态的既有裁决（未激活 = 1 次试用、
+    离线授权直接放行），效果等同于拔网线，因此不引入新的白嫖口子。
+    """
+    return os.environ.get("TFD_FORCE_OFFLINE", "").strip().lower() in ("1", "true", "yes", "y")
+
+
 def _post(path: str, payload: dict, timeout: int = 5) -> dict:
     """POST JSON 到中台。失败（网络/超时/非 JSON）抛异常，由调用方决定宽限策略。"""
+    if _forced_offline():
+        raise RuntimeError("offline mode (TFD_FORCE_OFFLINE)")
     url = API_BASE.rstrip("/") + path
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -264,13 +401,26 @@ def generate_offline_code(machine_code: str) -> str:
 
 
 def verify_offline_code(code: str, machine_code: str) -> bool:
-    """校验离线备用码：签名正确 且 绑定本机机器码。"""
+    """校验离线备用码：签名正确 且 绑定本机机器码。
+
+    **对任意畸形输入都必须返回 False，绝不抛异常**：本函数在 GUI 回调里被调用，
+    而 Tk 回调抛出的异常在无控制台（打包版）时是**完全静默**的——用户看到的就是
+    「点了按钮什么也没发生」，正是本产品最忌讳的体感。
+    """
+    if not isinstance(code, str) or not isinstance(machine_code, str):
+        return False
+    code = code.strip()
     if not code or "|" not in code:
         return False
     payload, _, sig = code.rpartition("|")
     if not payload.startswith(machine_code + "|"):
         return False
-    return hmac.compare_digest(_offline_sign(payload), sig)
+    try:
+        return hmac.compare_digest(_offline_sign(payload), sig)
+    except (TypeError, ValueError):
+        # compare_digest 要求两侧都是 ASCII：用户把机器码那行连同中文一起复制过来，
+        # 或粘贴了带中文的乱码，会抛 TypeError。这里必须吞掉。
+        return False
 
 
 def activate_offline(code: str) -> dict:
@@ -336,11 +486,58 @@ def _require_fix_entitlement() -> dict:
         else:
             state["activated"] = False
 
-    # ①-b 离线授权：已离线激活 → 直接放行，绝不联网（隐私：离线版不回传）
+    # ①-b 离线授权：已离线激活 → 直接放行，绝不联网（隐私：离线版不回传）。
+    #      但**绝不盲信本地布尔字段**：手写 {"activated":true,"offline":true} 就能
+    #      永久白嫖。所以这里重新验签——没有有效离线码就不放行（fail-closed）。
     if state.get("activated") and state.get("offline"):
-        return {"allowed": True, "reason": "activated",
-                "message": f"已离线激活（{state.get('kind') or 'lifetime'}）",
-                "remaining_trial": None}
+        if verify_offline_code(state.get("code") or "", fp):
+            return {"allowed": True, "reason": "activated",
+                    "message": f"已离线激活（{state.get('kind') or 'lifetime'}）",
+                    "remaining_trial": None}
+        # 状态被改动 / 指纹已变（换机、重装）→ 降级，走下面的试用与激活逻辑
+        state["activated"] = False
+        state["offline"] = False
+        try:
+            save_state(state)
+        except Exception:
+            pass
+
+    # ①-c 旧版状态文件（无封印）的**可验证迁移** —— 保护 v2.0.1 及更早版本的
+    #      已付费用户：那批版本的 save_state 不写 _sig，升级到本版后会被判
+    #      unsealed → 未激活，弹窗还会误导成「试用已用完」（明确的用户事故）。
+    #      这里只认**能自证**的身份，两条路：
+    #        ① 离线码：本地 HMAC 验签（不联网，密码学上等价于 ①-b）；
+    #        ② 在线码：问一次中台，服务器确认本机 active。
+    #      伪造者拿不到有效码 → 两条路都失败 → 依旧 fail-closed（不给"删 _sig 即
+    #      白嫖"留口子），但给**专门文案**而不是"试用已用完"。
+    if state.get("_state_reason") == "unsealed" and state.get("_legacy_activated"):
+        legacy_code = state.get("_legacy_code") or ""
+        legacy_offline = bool(state.get("_legacy_offline"))
+        migrated = False
+        if legacy_offline and verify_offline_code(legacy_code, fp):
+            migrated = True
+        elif legacy_code:
+            hb = _safe_heartbeat(legacy_code, fp)
+            migrated = bool(hb and hb.get("ok") and hb.get("status") == "active")
+        if migrated:
+            state["activated"] = True
+            state["code"] = legacy_code
+            state["offline"] = legacy_offline
+            state["machine"] = fp
+            state["last_heartbeat"] = int(time.time())
+            try:
+                save_state(state)          # 重封印 → 从此走上新格式
+            except Exception:
+                pass
+            kind = state.get("kind") or "lifetime"
+            return {"allowed": True, "reason": "activated",
+                    "message": (f"已离线激活（{kind}）" if legacy_offline
+                                else f"已激活（{kind}）"),
+                    "remaining_trial": None}
+        return {"allowed": False, "reason": "needs_reactivation",
+                "message": "检测到旧版授权文件（本次升级前激活的）。"
+                           "请重新输入一次激活码即可恢复：离线码直接粘贴，在线码需联网。",
+                "remaining_trial": 0}
 
     # ② 已激活：心跳 + 吊销/过期检查（服务器明确 revoked/expired 才锁；离线宽限）
     if state.get("activated"):
@@ -362,10 +559,13 @@ def _require_fix_entitlement() -> dict:
                 "message": "授权已被吊销或已过期，请重新输入激活码。",
                 "remaining_trial": 0}
 
-    # ③ 未激活：试用额度（中台优先、本地兜底、损坏 fail-closed）
+    # ③ 未激活：试用额度（中台优先、本地兜底、损坏/被篡改 fail-closed）
     trial_used = bool(state.get("trial_fix_used"))
-    if state.get("_state_reason") == "corrupt":
-        trial_used = True          # 状态损坏 → 按已用处理（不给白嫖窗口）
+    if state.get("_state_reason") in ("corrupt", "tampered", "unsealed"):
+        # 损坏、被改动、或「有文件但没封印」→ 一律按已用处理。
+        # 关键：unsealed 也必须 fail-closed，否则「删掉 _sig 那一行」就等于
+        # 免费重置试用（删一次白嫖一次）。全新用户走的是 missing，不受影响。
+        trial_used = True
 
     srv = _safe_trial_sync(fp, claim=False)
     if srv is not None and srv.get("trial_used"):
