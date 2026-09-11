@@ -40,6 +40,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -97,6 +98,7 @@ def _default_state() -> dict:
         "expires_at": None,
         "trial_fix_used": False,
         "revoked": False,
+        "offline": False,
         "machine": _machine_fingerprint(),
         "last_heartbeat": 0,
     }
@@ -241,6 +243,65 @@ def activate(code: str) -> dict:
     return {"ok": True, "kind": state["kind"], "message": "激活成功"}
 
 
+# ---------------------------------------------------------------------------
+# 兜底方案：离线备用码（与 tools/reedcode*.py 共用密钥；与国内版密钥隔离，防互用）
+# ---------------------------------------------------------------------------
+# 与国内版 reedcode 的算法完全一致（machine_code|时间戳|HMAC 前 24 位），仅密钥不同，
+# 保证国内码无法激活海外版、海外码也无法激活国内版。客户把本机机器码发给卖家，
+# 卖家用 tools/reedcode_gui.py 生成离线码，客户在激活页选「离线激活」粘贴即可。
+_OFFLINE_KEY = b"tfdglobal|kami|offline|2026|sign|v1"
+
+
+def _offline_sign(payload: str) -> str:
+    return hmac.new(_OFFLINE_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+
+
+def generate_offline_code(machine_code: str) -> str:
+    """卖家发码工具用：machine_code + 时间戳 + 签名 → 离线码（与 verify 兼容）。"""
+    ts = int(time.time())
+    payload = "%s|%d" % (machine_code, ts)
+    return payload + "|" + _offline_sign(payload)
+
+
+def verify_offline_code(code: str, machine_code: str) -> bool:
+    """校验离线备用码：签名正确 且 绑定本机机器码。"""
+    if not code or "|" not in code:
+        return False
+    payload, _, sig = code.rpartition("|")
+    if not payload.startswith(machine_code + "|"):
+        return False
+    return hmac.compare_digest(_offline_sign(payload), sig)
+
+
+def activate_offline(code: str) -> dict:
+    """离线激活：校验离线码（绑定本机机器码）→ 写入本地状态（终身、离线、不联网）。
+
+    返回 {ok, kind, message}。离线激活后授权为终身且永久离线，不再触网（隐私：离线版不回传）。
+    """
+    code = (code or "").strip()
+    if not code:
+        return {"ok": False, "message": "离线激活码为空"}
+    fp = _machine_fingerprint()
+    if not verify_offline_code(code, fp):
+        return {"ok": False, "message":
+                "离线激活码无效，或不属于本机（请确认是用本机的机器码生成的码）。"}
+    state = load_state()
+    state["activated"] = True
+    state["code"] = code
+    state["kind"] = "lifetime"
+    state["expires_at"] = None
+    state["revoked"] = False
+    state["offline"] = True
+    state["machine"] = fp
+    state["last_heartbeat"] = int(time.time())
+    try:
+        save_state(state)
+    except Exception as e:
+        return {"ok": False, "message": f"离线激活失败：无法写入本地状态（{e}）"}
+    return {"ok": True, "kind": "lifetime",
+            "message": "离线激活成功（终身版，无需联网）。"}
+
+
 def require_fix_entitlement() -> dict:
     """修正前的授权裁决（CLI/GUI 在调用 fixer 前先调）。
 
@@ -274,6 +335,12 @@ def _require_fix_entitlement() -> dict:
             save_state(state)
         else:
             state["activated"] = False
+
+    # ①-b 离线授权：已离线激活 → 直接放行，绝不联网（隐私：离线版不回传）
+    if state.get("activated") and state.get("offline"):
+        return {"allowed": True, "reason": "activated",
+                "message": f"已离线激活（{state.get('kind') or 'lifetime'}）",
+                "remaining_trial": None}
 
     # ② 已激活：心跳 + 吊销/过期检查（服务器明确 revoked/expired 才锁；离线宽限）
     if state.get("activated"):
@@ -361,6 +428,7 @@ def status() -> dict:
         "expires_at": s.get("expires_at"),
         "trial_fix_used": bool(s.get("trial_fix_used")),
         "revoked": bool(s.get("revoked")),
+        "offline": bool(s.get("offline")),
         "state_ok": bool(s.get("_state_ok")),
         "machine": s.get("machine") or _machine_fingerprint(),
         "trial_limit": TRIAL_FIX_LIMIT,

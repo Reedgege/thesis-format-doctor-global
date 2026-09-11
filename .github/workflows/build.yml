@@ -122,6 +122,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+  reedcode:
+    name: Offline Code Generator (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Nuitka
+        run: python -m pip install --upgrade nuitka
+
+      # Standalone folder build (no self-extract dropper fingerprint). The generator is
+      # pure tkinter + stdlib, so it compiles small and bundles its own Tcl/Tk.
+      - name: Build generator (Windows)
+        shell: bash
+        run: python build_reedcode.py
+
+      - name: Package (Windows zip)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path "dist\reedcode-global" -DestinationPath "release\reedcode-global-windows.zip" -Force
+          ls release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: reedcode-global-windows
+          path: release/reedcode-global-windows.zip
+          if-no-files-found: ignore
+          retention-days: 1
+
   release:
     name: Publish Release
     needs: build
@@ -140,10 +175,15 @@ jobs:
       - name: Stage assets
         run: |
           mkdir -p release
+          # 主程序三平台
           for plat in windows macos linux; do
-            find "artifacts/thesis-format-doctor-global-$plat" -type f | while read f; do
+            find "artifacts/thesis-format-doctor-global-$plat" -type f 2>/dev/null | while read f; do
               cp "$f" "release/$(basename "$f")"
             done
+          done
+          # 离线发码工具（Windows 卖家端）
+          find "artifacts/reedcode-global-windows" -type f 2>/dev/null | while read f; do
+            cp "$f" "release/$(basename "$f")"
           done
           ls -la release
 

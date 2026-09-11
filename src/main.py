@@ -359,7 +359,10 @@ def cmd_fix(args):
 
 def cmd_activate(args):
     from .license import license as lic
-    r = lic.activate(args.code)
+    if getattr(args, "offline", False):
+        r = lic.activate_offline(args.code)
+    else:
+        r = lic.activate(args.code)
     print(r["message"])
     return 0 if r["ok"] else 4
 
@@ -409,6 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("activate", help="输入激活码解锁无限修正")
     a.add_argument("code", help="激活码")
+    a.add_argument("--offline", action="store_true",
+                   help="作为离线激活码处理（卖家签发，无需联网）")
     a.set_defaults(func=cmd_activate)
 
     s = sub.add_parser("status", help="查看当前授权状态")

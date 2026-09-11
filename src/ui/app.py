@@ -310,11 +310,16 @@ class App:
 
     def _activate_dialog(self):
         win = tk.Toplevel(self.root)
-        win.title("输入激活码")
-        win.geometry("440x150")
-        ttk.Label(win, text="激活码（中台签发）：").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        win.title("激活")
+        win.geometry("480x380")
+        win.resizable(False, False)
+
+        # ① 在线激活（中台签发）
+        ttk.Label(win, text="① 在线激活码（中台签发）：").grid(
+            row=0, column=0, padx=12, pady=(12, 2), sticky="w")
         code_var = tk.StringVar()
-        ttk.Entry(win, textvariable=code_var, width=34).grid(row=0, column=1, padx=10, pady=10)
+        ttk.Entry(win, textvariable=code_var, width=40).grid(
+            row=1, column=0, columnspan=2, padx=12, sticky="we")
 
         def _submit():
             code = code_var.get().strip()
@@ -326,7 +331,53 @@ class App:
             if r["ok"]:
                 win.destroy()
 
-        ttk.Button(win, text="激活", command=_submit).grid(row=1, column=1, pady=10)
+        ttk.Button(win, text="激活", command=_submit).grid(
+            row=2, column=0, padx=12, pady=6, sticky="w")
+
+        ttk.Separator(win, orient="horizontal").grid(
+            row=3, column=0, columnspan=2, padx=12, pady=8, sticky="we")
+
+        # ② 复制本机机器码（发给卖家，由卖家生成离线码）
+        ttk.Label(win, text="② 本机机器码（发给卖家生成离线码）：").grid(
+            row=4, column=0, padx=12, pady=(2, 2), sticky="w")
+        mc_var = tk.StringVar(value=lic._machine_fingerprint())
+        ttk.Entry(win, textvariable=mc_var, width=40, state="readonly").grid(
+            row=5, column=0, columnspan=2, padx=12, sticky="we")
+
+        def _copy_mc():
+            try:
+                win.clipboard_clear()
+                win.clipboard_append(mc_var.get())
+                messagebox.showinfo(
+                    "已复制", "本机机器码已复制到剪贴板，把它发给卖家即可。", parent=win)
+            except Exception:
+                pass
+
+        ttk.Button(win, text="复制机器码", command=_copy_mc).grid(
+            row=6, column=0, padx=12, pady=6, sticky="w")
+
+        ttk.Separator(win, orient="horizontal").grid(
+            row=7, column=0, columnspan=2, padx=12, pady=8, sticky="we")
+
+        # ③ 离线激活（卖家签发的离线码，无需联网）
+        ttk.Label(win, text="③ 离线激活码（卖家签发，无需联网）：").grid(
+            row=8, column=0, padx=12, pady=(2, 2), sticky="w")
+        offline_var = tk.StringVar()
+        ttk.Entry(win, textvariable=offline_var, width=40).grid(
+            row=9, column=0, columnspan=2, padx=12, sticky="we")
+
+        def _submit_offline():
+            code = offline_var.get().strip()
+            if not code:
+                messagebox.showwarning("缺少离线码", "请先粘贴卖家给的离线激活码。", parent=win)
+                return
+            r = lic.activate_offline(code)
+            messagebox.showinfo("激活结果", r["message"], parent=win)
+            if r["ok"]:
+                win.destroy()
+
+        ttk.Button(win, text="离线激活", command=_submit_offline).grid(
+            row=10, column=0, padx=12, pady=6, sticky="w")
 
 
 def main():
