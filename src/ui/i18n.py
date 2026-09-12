@@ -75,6 +75,16 @@ def other_lang(lang: str) -> str:
     return "zh" if lang == "en" else "en"
 
 
+def detect_lang() -> str:
+    """返回当前生效语言（读取已保存的偏好，任何异常回退默认）。
+
+    供 UI 组件在自建界面（如弹窗）时取「当前语言」用 —— 与 :func:`load_lang`
+    同义；界面上所谓"detect"即按已存偏好决定显示语言，不读系统区域设置
+    （海外版默认英文，用户用语言切换按钮改完即落盘，见 :func:`save_lang`）。
+    """
+    return load_lang()
+
+
 # ---------------------------------------------------------------------------
 # 字体族：英文优先「漂亮」的衬线 + 清爽无衬线；中文沿用国内版的楷体 + 雅黑
 # ---------------------------------------------------------------------------
@@ -98,35 +108,47 @@ _FAMILY_FALLBACK = {
 
 # name -> (family, size, weight?)；weight 缺省为 normal
 _FONT_SPEC = {
+    # 字号换算：规格书给的是浏览器 px，tkinter 的字号单位是磅（96dpi 下 1pt≈1.33px），
+    # 所以 brand 32px→24pt / section 22px→16pt / body 14px→11pt / caption 12px→9pt。
     "en": {
-        "F_TITLE":        ("Georgia", 21, "bold"),      # 主标题（学术衬线）
-        "F_DIALOG_TITLE": ("Georgia", 15, "bold"),      # 弹窗标题
-        "F_HDR":          ("Georgia", 13, "bold"),      # 章节标题
-        "F_CARD_HDR":     ("Georgia", 13, "bold"),      # 卡片标题
-        "F_STAT":         ("Georgia", 12),              # 状态文字
-        "F_ICON":         ("Georgia", 12, "bold"),      # 行首印记
-        "F_SUB":          ("Segoe UI", 10),             # 副标题
-        "F_SUBTITLE":     ("Segoe UI", 11),             # 小标题 / 元信息
-        "F_BODY":         ("Segoe UI", 12),             # 正文
-        "F_SMALL":        ("Segoe UI", 10),             # 说明 / 次要
-        "F_SMALL_B":      ("Segoe UI", 10, "bold"),     # 提示框标题
-        "F_BTN":          ("Segoe UI", 12, "bold"),     # 按钮
-        "F_FOOT":         ("Segoe UI", 9),              # 页脚 / 状态栏
-        "F_MONO":         ("Consolas", 9),              # 机器码 / 离线码
+        "F_BRAND":        ("Georgia", 32, "bold"),      # 品牌标题（规格 brand 32px）
+        "F_TITLE":        ("Georgia", 23, "bold"),      # 弹窗主标题（沿用旧尺寸，别撑爆弹窗）
+        "F_DIALOG_TITLE": ("Georgia", 17, "bold"),      # 弹窗标题
+        "F_HDR":          ("Georgia", 15, "bold"),      # 弹窗章节标题
+        "F_CARD_HDR":     ("Georgia", 18, "bold"),      # 卡片标题（规格 section 22px）
+        "F_STAT":         ("Segoe UI", 13),             # 状态行（规格用无衬线，非衬线）
+        "F_ICON":         ("Georgia", 16, "bold"),      # 行首印记（旧布局保留，兼容）
+        "F_SUB":          ("Segoe UI", 14),             # 品牌标语（规格 tagline 16px）
+        "F_LABEL":        ("Segoe UI", 12, "bold"),     # 字段标签（规格 15px bold）
+        "F_SUBTITLE":     ("Segoe UI", 13),             # 小标题 / 元信息
+        "F_BODY":         ("Segoe UI", 13),             # 正文（规格 body 14px）
+        "F_HELP":         ("Segoe UI", 12),              # 字段说明（规格 caption 12px）
+        "F_SMALL":        ("Segoe UI", 12),             # 说明 / 次要（弹窗复用）
+        "F_SMALL_B":      ("Segoe UI", 12, "bold"),     # 提示框标题
+        "F_BTN":          ("Segoe UI", 14, "bold"),     # 主按钮（规格 16px）
+        "F_BTN_S":        ("Segoe UI", 12),             # 次按钮（描边，弱化）
+        "F_STEP_N":       ("Segoe UI", 13, "bold"),     # 步骤圆点里的数字/勾
+        "F_FOOT":         ("Segoe UI", 12),              # 页脚 / 状态栏
+        "F_MONO":         ("Consolas", 11),              # 机器码 / 离线码
     },
     "zh": {
+        "F_BRAND":        ("KaiTi", 22, "bold"),
         "F_TITLE":        ("KaiTi", 20, "bold"),
         "F_DIALOG_TITLE": ("KaiTi", 14, "bold"),
         "F_HDR":          ("KaiTi", 13, "bold"),
-        "F_CARD_HDR":     ("KaiTi", 13, "bold"),
-        "F_STAT":         ("KaiTi", 12),
+        "F_CARD_HDR":     ("KaiTi", 16, "bold"),
+        "F_STAT":         ("Microsoft YaHei", 11),
         "F_ICON":         ("KaiTi", 12, "bold"),
-        "F_SUB":          ("Microsoft YaHei", 10),
+        "F_SUB":          ("Microsoft YaHei", 12),
+        "F_LABEL":        ("Microsoft YaHei", 11, "bold"),
         "F_SUBTITLE":     ("Microsoft YaHei", 11),
-        "F_BODY":         ("Microsoft YaHei", 12),
+        "F_BODY":         ("Microsoft YaHei", 11),
+        "F_HELP":         ("Microsoft YaHei", 9),
         "F_SMALL":        ("Microsoft YaHei", 10),
         "F_SMALL_B":      ("Microsoft YaHei", 10, "bold"),
         "F_BTN":          ("Microsoft YaHei", 12, "bold"),
+        "F_BTN_S":        ("Microsoft YaHei", 11),
+        "F_STEP_N":       ("Microsoft YaHei", 11, "bold"),
         "F_FOOT":         ("Microsoft YaHei", 9),
         "F_MONO":         ("Consolas", 9),
     },
@@ -194,77 +216,122 @@ def font_spec(lang: str, available=None) -> dict:
     return out
 
 
+def resolve_font_spec(lang: str) -> dict:
+    """按语言返回字体规格字典 ``{F_XXX: (family, size, weight)}``。
+
+    供 GUI 组件直接用 tuple 形式传给 ``font=``（无需先建 ``tkinter.font.Font`` 对象）。
+    返回形状与 :func:`font_spec` 一致；此处**不传** ``available``，family 用原始族名，
+    由 tkinter 在渲染时按系统兜底（缺字落到系统默认，不会崩）。
+
+    与 :func:`font_spec` 的分工：
+    - 主界面用 ``fonts.Fonts`` 持有可缩放的命名 ``Font`` 对象（它走
+      ``font_spec(lang, available)`` 做平台级精确兜底）；
+    - 弹窗等一次性自建界面图省事，直接拿本函数返回的 tuple 规格喂 ``font=`` 即可。
+    """
+    return font_spec(lang)
+
+
 # ---------------------------------------------------------------------------
 # 界面文案
 # ---------------------------------------------------------------------------
 STRINGS: dict = {
     "en": {
         # —— 顶栏 / 标题区 ——
+        # 规格书：隐私声明从卡片里**移到顶栏**（卡片右上角不再挂 Offline 徽标）。
         "link_help": "Help",
         "link_about": "About",
-        "lang_button": "中文",                       # 显示"可切换到"的语言
+        "lang_button": "English  ▾",                 # 显示**当前**语言 + 下拉箭头（规格 header 段）
         "app_title": "Thesis Format Doctor",
-        "app_subtitle": "GLOBAL EDITION · FORMAT COMPLIANCE FOR ACADEMIC PAPERS",
+        "app_tagline": "Academic formatting, made simple.",
+        # 注：不用 🔒 之类的非 BMP emoji —— Tk 在 Windows 上常渲染成方框（tofu）。
+        "privacy_line": "Your documents stay on your computer",
+        "privacy_sub": "Private  ·  Secure  ·  Offline processing",
 
-        # —— 左栏：文件选择 ——
-        "files_title": "Files",
-        "badge_offline": "Offline",
+        # —— 左栏：文档选择 ——
+        # 规格书第 4 节：Files → "Your Documents"、Choose Material → "Select your documents"、
+        # Paper to Check → "Paper"、School Template → "University template"、
+        # AI-filled JSON → "Import configuration"。
+        "left_title": "Your Documents",
+        "left_desc": ("Select your document and formatting requirements. "
+                      "You can change these settings anytime before checking."),
         "mark_required": "Required",
         "mark_optional": "Optional",
-        "btn_choose": "Choose…",
-        "ic_spec": "S", "ic_template": "T", "ic_latex": "L",
-        "ic_questionnaire": "Q", "ic_ai": "A", "ic_paper": "P",
-        "row_spec_title": "Citation Style",
-        "row_spec_desc": "APA · MLA · Chicago · IEEE · Harvard · Other",
-        "row_template_title": "School Template",
-        "row_template_desc": "Word template — page layout follows your school",
-        "row_latex_title": "LaTeX Template",
-        "row_latex_desc": ".cls / .sty / .tex (parsed offline)",
-        "row_questionnaire_title": "Format Questionnaire",
+        "row_spec_title": "Citation style",
+        "row_spec_desc": "Choose the citation style required by your institution.",
+        "row_template_title": "University template",
+        "row_template_desc": "Use your university's official template if available.",
+        "row_template_placeholder": "Choose a template",
+        "row_latex_title": "LaTeX template",
+        "row_latex_desc": "For LaTeX users. (Optional)",
+        "row_latex_placeholder": "Choose a LaTeX template",
+        "row_questionnaire_title": "Questionnaire",
         "row_questionnaire_desc": "Page layout: margins, font, size, spacing",
         "btn_questionnaire": "Fill in",
-        "row_ai_title": "AI-filled JSON",
+        "row_ai_title": "Import configuration",
         "row_ai_desc": "Let any AI fill the questionnaire template for you",
         "btn_ai_json": "Import",
-        "row_paper_title": "Paper to Check",
-        "row_paper_desc": "Word document (.docx)",
-        "chip_style_hint": "Other = custom; pair it with a school template or questionnaire.",
+        "row_paper_title": "Paper",
+        # ⚠️ 能力声明必须与实际一致：引擎只读 .docx（LaTeX 仅作格式来源，不能当论文检查）。
+        # 规格书写的是 "PDF, DOCX, LaTeX (max 50 MB)"，那是**做不到的承诺**，故按真实支持面写。
+        "row_paper_helper": "Upload or select your document to check.",
+        "paper_support": "Word document (.docx)",
+        "btn_select_doc": "Select a document",
+        "adv_label": "Advanced options",
+        "adv_hint": "Questionnaire  ·  Import configuration  ·  AI assistance",
+        "chip_style_hint": "“Other” means a custom template — pair it with a university template or questionnaire.",
 
-        # 选中状态行
-        "st_paper_none": "No paper selected yet",
-        "st_paper_set": "Paper",
-        "st_tpl_none": "No template selected (optional)",
-        "st_tpl_set": "Template",
-        "st_latex_none": "No LaTeX template (optional)",
-        "st_latex_set": "LaTeX",
-        "st_q_none": "No questionnaire filled in (optional)",
-        "st_q_set": "Questionnaire filled in",
-        "st_ai_none": "No AI-filled JSON imported (optional)",
-        "st_ai_set": "AI-filled JSON",
+        # 选中状态行（新布局里这些显示在字段控件内部：未选=占位灰字，已选=蓝色文件名）
+        "st_paper_none": "No document selected",
+        "st_tpl_none": "Nothing selected (optional)",
+        "st_latex_none": "Nothing selected (optional)",
+        "st_q_none": "Not filled in",
+        "st_q_set": "Filled in",
+        "st_ai_none": "Not imported",
 
-        # —— 右栏：处理步骤 ——
-        "steps_title": "Workflow",
-        "step_counter": "%d / %d",
-        "step1_title": "Choose Material",
-        "step1_desc": "Citation style and the paper to process",
-        "step2_title": "Format Check",
-        "step2_desc": "Free and unlimited — read-only",
-        "step3_title": "One-click Fix",
-        "step3_desc": "First fix free, then activation",
-        "btn_check": "▶  Run Format Check",
-        "btn_fix": "✎  One-click Fix",
-        "btn_save_report": "Save Report",
-        "btn_export_ai": "Export AI Template",
+        # —— 右栏：Review & Fix ——
+        # 规格书：Workflow → "Review & Fix"；Run Format Check → "Check formatting"；
+        # One-click Fix → "Fix formatting"。步骤标签只留 Prepare / Check / Fix（去掉长描述与 1/3 计数）。
+        "right_title": "Review & Fix",
+        "right_desc": "Follow the steps to ensure your paper meets the required format.",
+        "step1_title": "Prepare",
+        "step2_title": "Check",
+        "step3_title": "Fix",
+        "how_title": "How it works",
+        "how_steps": [
+            ("Prepare", "Select your material and settings."),
+            ("Check", "We'll analyze your paper for formatting issues."),
+            ("Fix", "Review the results and apply fixes with one click."),
+        ],
+        "btn_check": "Check formatting  →",
+        "btn_check_busy": "Checking…",
+        "btn_fix": "Fix issues",
+        "btn_fix_n": "Fix %s issues  →",
+        "btn_review": "Review changes",
+        "trust_title": "Academic quality you can trust",
+        "trust_body": ("Accurate, reliable, and built for researchers and students worldwide."),
+        "btn_save_report": "Save report",
+        "btn_export_ai": "Export AI template",
         "btn_activate": "Activation",
-        "chapter_one": "Ⅰ · SELECT",
-        "chapter_two": "Ⅱ · PROCESS",
+
+        # —— 结果状态行（规格 states 段） ——
+        "state_missing_paper": "Select your paper to start — it is the only required input.",
+        "state_issues": "%s formatting issues found.",
+        "state_issue_one": "1 formatting issue found.",
+        "state_clean": "No formatting issues found.",
+        "state_fixed": "All fixes applied — your original file is untouched.",
+        "state_counts_hint": ("Pass %s · Info %s · Warn %s · Fail %s  —  "
+                              "the full report is exported with “Save report”."),
 
         # —— 报告区 ——
-        "report_title": "Report",
         "report_placeholder": (
-            "Pick a citation style and your paper, then run the format check.\n\n"
-            "Everything runs on this computer — no upload, no account, no network."
+            "Choose a citation style and your paper, then check the formatting.\n\n"
+            "Everything runs on this computer — no upload, no account. "
+            "Your paper never leaves it."
         ),
+        "report_summary_fix": "Fix preview ready · %s change(s) — confirm in the dialog.",
+        "report_summary_generic": "Done. Click “Save report” to export the full report.",
+        "report_summary_hint": ("The full report is not shown here — click “Save report” "
+                                "to export it as a file."),
 
         # —— 状态栏 ——
         "bar_left": "Thesis Format Doctor Global v%s",
@@ -272,21 +339,17 @@ STRINGS: dict = {
         "bar_checking": "Checking format…",
         "bar_fixing": "Applying format fixes…",
         "bar_check_done": "Check complete",
-        "bar_fix_done": "Fix complete",
         "bar_error": "Error",
-        "status_idle": "Ready — select a style and a paper to begin.",
         "status_checking": "Checking the format of your document…",
         "status_fixing": "Applying format fixes (content stays untouched)…",
-        "status_error": "Something went wrong.",
 
-        # —— 页脚 ——
-        "footer_line1": "All processing happens on your device — your paper never leaves this computer.",
-        "footer_line2": "© 2026 %s · %s" % (BRAND_NAME, BRAND_EMAIL),
-        "footer_site": "Website: %s" % BRAND_SITE,
+        # —— 页脚（规格 footer 段：左邮箱 / 中官网 / 右标语，**只此三项**） ——
+        # 旧版的「隐私声明 + © 2026」不在这里：隐私声明已上移到顶栏，规格要求页脚只有这三项。
+        "footer_email": BRAND_EMAIL,
+        "footer_site": BRAND_SITE,
+        "footer_tagline": "Better formatting. Greater academic success.",
 
         # —— 通用提示 ——
-        "msg_missing_paper_title": "No paper selected",
-        "msg_missing_paper": "Please choose the Word document (.docx) you want to process.",
         "msg_read_error_title": "Cannot read the document",
         "msg_check_error_title": "Check failed",
         "msg_check_error_unexpected": "Check failed (unexpected error)",
@@ -295,15 +358,14 @@ STRINGS: dict = {
         "msg_fix_error_unexpected": "Preview failed (unexpected error)",
         "msg_cannot_overwrite_title": "Cannot overwrite the original",
         "msg_cannot_overwrite": "The output path is the same file as your paper. Please choose another location.",
-        "msg_no_change_title": "Nothing to fix",
-        "msg_no_change": ("Your document already matches the target format. "
-                          "No copy was created and no trial quota was used."),
+        "msg_no_change": ("No changes needed — the items in the report are advisory "
+                          "for this style. Nothing was rewritten, no copy was created, "
+                          "and no trial quota was used."),
         "msg_need_activation_title": "Activation required",
         "msg_fix_confirm_title": "Confirm the fix",
         "msg_fix_confirm_body": "\n\nClick Yes to apply the fixes, then choose where to save.\nYour original file will not be modified.",
         "msg_fix_pick_output": "Choose where to save the fixed copy (default: name_fixed.docx)",
         "msg_fix_done_title": "Fix complete",
-        "msg_fix_done_before": "Saved to:",
         "msg_fix_done_before_file": "Saved:",
         "preview_header": "Format fixes to apply (format only — the text itself is never changed):",
         "preview_trial": "License status: %s",
@@ -394,8 +456,10 @@ STRINGS: dict = {
              "reference formatting. Headings keep their existing size and weight on purpose, and the "
              "app always writes a new file instead of overwriting yours."),
             ("Q3 · Is my paper uploaded anywhere?",
-             "No. There is no server in the loop — checking and fixing both run entirely on your "
-             "computer, and the app works with the network unplugged."),
+             "No. Your paper never leaves this computer — checking and fixing run entirely on your "
+             "machine (no upload, works with the network unplugged). The app contacts the server only "
+             "for activation and for the one-time free-trial registration, and sends the machine code "
+             "only — never your document."),
             ("Q4 · It says activation is required. How do I activate?",
              "The first fix is free. After that, open Activation: either paste an online activation "
              "code, or copy your machine code, email it to %s, and paste back the offline code "
@@ -409,84 +473,96 @@ STRINGS: dict = {
     "zh": {
         "link_help": "帮 助",
         "link_about": "关 于",
-        "lang_button": "English",
+        "lang_button": "中文  ▾",
         "app_title": "论 文 格 式 医 生",
-        "app_subtitle": "海外版 · 学术论文格式规范引擎",
+        "app_tagline": "学术格式，本可以更简单。",
+        "privacy_line": "论文不离开这台电脑",
+        "privacy_sub": "私密  ·  安全  ·  本机离线处理",
 
-        "files_title": "文件选择",
-        "badge_offline": "本机离线",
+        "left_title": "你的文档",
+        "left_desc": "选择文档与格式要求。体检前随时可以修改这些设置。",
         "mark_required": "必选",
         "mark_optional": "可选",
-        "btn_choose": "选择…",
-        "ic_spec": "规", "ic_template": "模", "ic_latex": "L",
-        "ic_questionnaire": "问", "ic_ai": "A", "ic_paper": "论",
         "row_spec_title": "引用规范",
-        "row_spec_desc": "APA · MLA · Chicago · IEEE · Harvard · Other",
+        "row_spec_desc": "选择你所在院校要求的引用规范。",
         "row_template_title": "学校模板",
-        "row_template_desc": "Word 模板 —— 页面排版以学校为准",
+        "row_template_desc": "如果有学校官方模板，用它更准。",
+        "row_template_placeholder": "选择模板",
         "row_latex_title": "LaTeX 模板",
-        "row_latex_desc": ".cls / .sty / .tex（本机离线解析）",
+        "row_latex_desc": "给 LaTeX 用户。（可选）",
+        "row_latex_placeholder": "选择 LaTeX 模板",
         "row_questionnaire_title": "格式问卷",
         "row_questionnaire_desc": "页面排版：页边距、字体、字号、行距",
         "btn_questionnaire": "手填问卷",
-        "row_ai_title": "AI 填表 JSON",
+        "row_ai_title": "导入配置",
         "row_ai_desc": "把问卷模板交给任意 AI，让它按学校要求填好",
         "btn_ai_json": "导入",
-        "row_paper_title": "待检论文",
-        "row_paper_desc": "Word 文档（.docx）",
-        "chip_style_hint": "Other = 自定义；须配学校模板或格式问卷。",
+        "row_paper_title": "论文",
+        "row_paper_helper": "上传或选择要体检的文档。",
+        "paper_support": "Word 文档（.docx）",
+        "btn_select_doc": "选择文档",
+        "adv_label": "高级选项",
+        "adv_hint": "格式问卷  ·  导入配置  ·  AI 辅助",
+        "chip_style_hint": "「Other」= 自定义规范；请配学校模板或格式问卷。",
 
-        "st_paper_none": "尚未选择论文",
-        "st_paper_set": "论文",
-        "st_tpl_none": "模板未选（可选）",
-        "st_tpl_set": "模板",
-        "st_latex_none": "LaTeX 模板未选（可选）",
-        "st_latex_set": "LaTeX 模板",
-        "st_q_none": "问卷未填（可选）",
-        "st_q_set": "问卷已填",
-        "st_ai_none": "未导入 AI 填表 JSON（可选）",
-        "st_ai_set": "AI 填表 JSON",
+        "st_paper_none": "未选择文档",
+        "st_tpl_none": "未选择（可选）",
+        "st_latex_none": "未选择（可选）",
+        "st_q_none": "未填写",
+        "st_q_set": "已填写",
+        "st_ai_none": "未导入",
 
-        "steps_title": "处理步骤",
-        "step_counter": "%d / %d",
-        "step1_title": "选择材料",
-        "step1_desc": "引用规范与待处理的论文",
-        "step2_title": "格式体检",
-        "step2_desc": "免费不限次 —— 只读不改",
-        "step3_title": "一键修正",
-        "step3_desc": "首次免费，之后需激活码",
-        "btn_check": "▶  运行格式体检",
-        "btn_fix": "✎  一键修正（仅改格式）",
+        "right_title": "检查与修正",
+        "right_desc": "按步骤操作，确保论文符合要求的格式。",
+        "step1_title": "准备",
+        "step2_title": "体检",
+        "step3_title": "修正",
+        "how_title": "使用流程",
+        "how_steps": [
+            ("准备", "选择材料与设置。"),
+            ("体检", "分析论文的格式问题。"),
+            ("修正", "查看结果，一键应用修正。"),
+        ],
+        "btn_check": "运行格式体检  →",
+        "btn_check_busy": "体检中…",
+        "btn_fix": "修正问题",
+        "btn_fix_n": "修正 %s 个问题  →",
+        "btn_review": "查看改动",
+        "trust_title": "值得信赖的学术品质",
+        "trust_body": "准确、可靠，为全球研究者与学生而做。",
         "btn_save_report": "保存报告",
         "btn_export_ai": "导出 AI 问卷模板",
         "btn_activate": "激活 / 授权",
-        "chapter_one": "壹 · 选择",
-        "chapter_two": "贰 · 处理",
 
-        "report_title": "体检报告",
+        "state_missing_paper": "请先选择论文 —— 这是唯一必填项。",
+        "state_issues": "发现 %s 个格式问题。",
+        "state_issue_one": "发现 1 个格式问题。",
+        "state_clean": "没有发现格式问题。",
+        "state_fixed": "修正已全部应用 —— 原文件未被改动。",
+        "state_counts_hint": ("通过 %s · 提示 %s · 警告 %s · 不达标 %s  ——  "
+                              "完整报告用「保存报告」导出。"),
+
         "report_placeholder": (
             "选好引用规范与论文，点「运行格式体检」即可。\n\n"
-            "全程在本机完成 —— 不上传、不需要账号、不联网。"
+            "全程在本机完成 —— 不上传、不需要账号；论文不离开这台电脑。"
         ),
+        "report_summary_fix": "修正预览已就绪 · 共 %s 处改动，请在弹窗中确认。",
+        "report_summary_generic": "已完成。点「保存报告」导出完整报告。",
+        "report_summary_hint": "完整报告不在界面展开 —— 点「保存报告」即可导出为文件。",
 
         "bar_left": "海外版论文格式医生 v%s",
         "bar_idle": "就绪",
         "bar_checking": "正在体检格式…",
         "bar_fixing": "正在应用格式修正…",
         "bar_check_done": "体检完成",
-        "bar_fix_done": "修正完成",
         "bar_error": "出错了",
-        "status_idle": "就绪 —— 选择规范与论文即可开始。",
         "status_checking": "正在检查文档格式…",
         "status_fixing": "正在应用格式修正（正文内容不会改动）…",
-        "status_error": "出错了。",
 
-        "footer_line1": "全部处理在本机完成 —— 论文不会离开这台电脑",
-        "footer_line2": "© 2026 %s · %s" % (BRAND_NAME, BRAND_EMAIL),
-        "footer_site": "官网：%s" % BRAND_SITE,
+        "footer_email": BRAND_EMAIL,
+        "footer_site": BRAND_SITE,
+        "footer_tagline": "更好的格式，更好的学术成绩。",
 
-        "msg_missing_paper_title": "缺少文档",
-        "msg_missing_paper": "请先选择要处理的 Word 文档（.docx）。",
         "msg_read_error_title": "无法读取文档",
         "msg_check_error_title": "检查失败",
         "msg_check_error_unexpected": "检查失败（未预期错误）",
@@ -495,14 +571,12 @@ STRINGS: dict = {
         "msg_fix_error_unexpected": "预览失败（未预期错误）",
         "msg_cannot_overwrite_title": "不能覆盖原件",
         "msg_cannot_overwrite": "输出路径与待修正文档是同一个文件，请另选保存位置。",
-        "msg_no_change_title": "无需修正",
-        "msg_no_change": "当前文档已符合目标格式，未生成副本、未消耗试用额度。",
+        "msg_no_change": "无需修改 —— 报告里的条目对该规范只是提示性质；未改写文档、未生成副本、也未消耗试用次数。",
         "msg_need_activation_title": "需要激活",
         "msg_fix_confirm_title": "确认修正",
         "msg_fix_confirm_body": "\n\n点「是」开始修正，随后选择保存位置（原件不会被改动）。",
         "msg_fix_pick_output": "选择修正稿保存位置（默认 原名_fixed.docx）",
         "msg_fix_done_title": "修正完成",
-        "msg_fix_done_before": "已保存到：",
         "msg_fix_done_before_file": "已生成：",
         "preview_header": "将进行的格式修正（仅改格式、绝不改正文）：",
         "preview_trial": "试用状态：%s",

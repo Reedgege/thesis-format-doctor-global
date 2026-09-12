@@ -1,6 +1,6 @@
 # Thesis Format Doctor Global · 海外版论文格式医生
 
-离线、安全、本机处理的海外论文格式体检桌面端。**论文不出本机**，全程零网络、零大模型调用。
+离线、安全、本机处理的海外论文格式体检桌面端。**论文不出本机**，零大模型调用；联网**仅**用于「激活校验」与「首次试用登记（只送机器码）」，其余全程离线。
 
 > 本仓库与国内版「论文格式医生」（`D:\AgentSpace\论文格式医生\`）**完全隔离、互不影响**：
 > 独立目录、独立虚拟环境、独立代码，不 import 国内版任何模块。
@@ -48,7 +48,6 @@ thesis-format-doctor-global/
 ├── VERSION                     # 版本号单一来源（运行时与 exe 属性都读它）
 ├── main.py                     # 打包入口：无参数 → 自动进 GUI（双击即开）
 ├── build.py                    # Nuitka 三平台构建
-├── build_reedcode.py           # 卖家离线发码器构建（Windows）
 ├── installer.nsi               # NSIS 安装包（全英文界面）
 ├── assets/                     # icon.png(1024) / icon.ico / icon.icns
 ├── src/
@@ -62,7 +61,9 @@ thesis-format-doctor-global/
 │   │   ├── fixer.py            # 纯格式层修正（绝不改内容）
 │   │   └── report.py           # 分维度裁决报告
 │   ├── license/
-│   │   └── license.py          # 授权：在线激活 + 离线激活码（HMAC 签名）
+│   │   ├── license.py          # 授权：在线激活（中台）+ 离线激活
+│   │   ├── crypto.py           # 内嵌 Ed25519 公钥（只验签）+ verify_offline_code
+│   │   └── ed25519_verify.py   # 纯标准库 Ed25519 验签（零第三方加密依赖）
 │   ├── ui/
 │   │   ├── app.py              # tkinter 桌面 GUI（宣纸学术风，双栏卡片）
 │   │   ├── i18n.py             # 中英文语言包（默认英文）
@@ -73,7 +74,6 @@ thesis-format-doctor-global/
 │       └── icon.png            # 窗口图标（512）
 ├── tools/
 │   ├── make_icon.py            # 源图 → 透明圆角 PNG/ICO/ICNS
-│   ├── reedcode.py / reedcode_gui.py   # 卖家发码器（CLI / GUI）
 │   ├── verify_entry.py         # 入口行为验证（无参数必须进 GUI）
 │   ├── smoke_gui.py            # 真机 GUI 冒烟
 │   └── check_layout.py         # 控件压缩/越界检查
@@ -128,8 +128,9 @@ GUI 需本机带 Tk（_tkinter）。**界面默认英文**，右上角可一键�
 - **在线激活**：`activate 激活码` —— 联网向中台核验，之后每 3 天一次心跳，中台只在明确吊销时才锁。
 - **离线激活**（无网环境）：客户在 GUI 激活弹窗（或 `status`）里取「本机机器码」，发给卖家；
   卖家用自己的发码器签发一条绑定该机器码的离线码；客户粘回即可，**全程不联网、不回传**。
-  - 卖家端：`tools/reedcode_gui.py`（打包产物 `reedcode-global`，见 CI 的 `reedcode` job）
-  - 算法：`机器码|时间戳|HMAC-SHA256 前 24 位`，密钥与国内版**不同**，两版激活码互不可用
+  - 卖家端：统一发码器 `reedcode_unified.py`（仅存卖家本机 `_signing_keys/`，不入库、不入安装包）
+  - 算法：对 `机器码|时间戳` 做 **Ed25519 签名**（私钥只在卖家本机；公钥内嵌客户端，
+    只能验签不能签名）。密钥与国内两版**不同**，三版激活码互不可用。
 - 查看状态：`status`（显示是否激活、来源、机器码）。
 
 ---
@@ -165,14 +166,15 @@ GUI 需本机带 Tk（_tkinter）。**界面默认英文**，右上角可一键�
 
 源码与打包链路完全独立于此仓库之外的中台/国内版，互不影响。
 
-- **依赖**：仅 `python-docx`（见 `requirements.txt`）；GUI 用标准库 `tkinter`。
+- **依赖**：仅 `python-docx`（见 `requirements.txt`）；GUI 用标准库 `tkinter`；
+  离线激活验签为纯标准库 Ed25519（`src/license/ed25519_verify.py`），**无第三方加密依赖**。
 - **构建**：`python build.py` 调用 Nuitka 把整个 `src` 包编译成原生「文件夹版」（Windows/Linux 为 `dist/thesis-format-doctor-global/`，macOS 为 `.app`）。
   - Windows 额外用 NSIS 打安装包：`makensis /DVERSION=x.y.z installer.nsi`（需先装 NSIS；界面全英文）。
-  - 卖家发码器：`python build_reedcode.py` → `dist/reedcode-global/`。
+  - 卖家发码器：统一发码器 `reedcode_unified.py` 仅存卖家本机（`_signing_keys/`），
+    **不参与 CI、不随产品分发**（私钥绝不入库）。
 - **CI 三平台构建**：`.github/workflows/build.yml` 在推送 `v*` 标签时，并行构建
   Windows（zip 免安装版 + setup 安装包）、macOS（`.app` zip）、Linux（文件夹 zip），
-  外加 Windows 发码器（`reedcode` job），然后自动发布到 GitHub Release（共 5 个产物，
-  `release` job 会校验产物齐全才发）。
+  然后自动发布到 GitHub Release（共 4 个产物，`release` job 会校验产物齐全才发）。
 - **发版流程**：`bump VERSION` → `git tag vX.Y.Z` → `git push origin vX.Y.Z`。
 - **图标**：`python tools/make_icon.py 源图.png --outdir assets --name icon` —— 自动裁白边、
   按源图圆角生成透明蒙版，输出 1024 PNG + 多尺寸 ICO + ICNS。

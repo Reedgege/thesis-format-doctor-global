@@ -1,2 +1,1 @@
 python-docx>=1.1.0
-rsa>=4.9

@@ -1,13 +1,13 @@
 [project]
 name = "thesis-format-doctor-global"
-version = "2.1.0"
+version = "2.2.0"
 description = "Thesis Format Doctor Global - offline, safe overseas thesis format checker & fixer (docs never leave your machine)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ReedSkill" }]
 keywords = ["docx", "thesis", "format-checker", "APA", "MLA", "Chicago", "IEEE", "Harvard", "GB/T 7714"]
-dependencies = ["python-docx>=1.1.0", "rsa>=4.9"]
+dependencies = ["python-docx>=1.1.0"]
 
 [project.urls]
 Homepage = "https://reedskill.com"

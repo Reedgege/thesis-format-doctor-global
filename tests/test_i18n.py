@@ -76,8 +76,8 @@ def test_no_empty_strings():
 
 
 def test_t_returns_text_and_formats():
-    assert i18n.t("en", "files_title") == "Files"
-    assert i18n.t("zh", "files_title") == "文件选择"
+    assert i18n.t("en", "left_title") == "Your Documents"
+    assert i18n.t("zh", "left_title") == "你的文档"
     assert i18n.t("en", "about_version", "2.0.2") == "Version 2.0.2"
     assert i18n.t("zh", "about_version", "2.0.2") == "版本 v2.0.2"
 
@@ -85,13 +85,13 @@ def test_t_returns_text_and_formats():
 def test_t_falls_back_gracefully():
     """未知 key / 未知语言 / 格式化参数不匹配，都不能让界面崩。"""
     assert i18n.t("en", "no_such_key") == "no_such_key"
-    assert i18n.t("fr", "files_title") == "Files"          # 非法语言 -> 英文
-    assert i18n.t("en", "files_title", "extra") == "Files"  # 无占位符时忽略多余参数
+    assert i18n.t("fr", "left_title") == "Your Documents"   # 非法语言 -> 英文
+    assert i18n.t("en", "left_title", "extra") == "Your Documents"  # 无占位符时忽略多余参数
 
 
 def test_help_lists_have_pairs():
     for lang in i18n.LANGS:
-        for key in ("help_steps", "help_faqs"):
+        for key in ("help_steps", "help_faqs", "how_steps"):
             items = i18n.t(lang, key)
             assert isinstance(items, list) and items, "%s.%s 应为非空列表" % (lang, key)
             for entry in items:
@@ -133,8 +133,10 @@ def test_no_wechat_or_miniapp_anywhere():
 def test_brand_contact_is_site_and_email_only():
     assert i18n.BRAND_EMAIL == "hi@reedskill.com"
     assert i18n.BRAND_SITE == "reedskill.com"
+    # v2.2.0：页脚按设计规格只留三项（邮箱 / 官网 / 标语），原来的 footer_line1/2 已移除
     for lang in i18n.LANGS:
-        footer = i18n.t(lang, "footer_line2") + i18n.t(lang, "footer_site")
+        footer = (i18n.t(lang, "footer_email") + i18n.t(lang, "footer_site")
+                  + i18n.t(lang, "footer_tagline"))
         assert "hi@reedskill.com" in footer
         assert "reedskill.com" in footer
 

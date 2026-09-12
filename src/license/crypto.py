@@ -1,57 +1,50 @@
 # -*- coding: utf-8 -*-
-"""离线激活的非对称（RSA）加解密 · 海外版
+"""离线激活的非对称（Ed25519）验签 · 海外版
 ================================================
 
-为什么是非对称：
-    旧方案离线码用**对称 HMAC**——验签密钥 == 签名密钥，必须同时塞进客户端，
-    于是它只能写成源码里的明文常量。仓库公开后，任何人 fork 都能拿到密钥、伪造
-    无限离线激活码。
+为什么是 Ed25519：
+    旧方案离线码用**对称 HMAC**——验签密钥 == 签名密钥，必须塞进客户端，
+    于是只能写成源码明文常量。仓库公开后任何人都能伪造无限离线激活码。
 
-    现在改成 **RSA 非对称签名**：
-      * 私钥：只在卖家本机（仓库根 `private_key.pem`，已 gitignore，绝不进安装包）。
+    现在改成 **Ed25519 非对称签名（RFC 8032）**：
+      * 私钥：只在卖家本机（`_signing_keys/overseas_ed25519_private.pem`，
+        由统一发码器 reedcode_unified.py 持有，绝不入库、绝不进安装包）。
         发码工具用它给客户的机器码签名。
-      * 公钥：本文件里的 ``PUBLIC_KEY_PEM`` 常量，编译进客户端二进制。公开也无害——
-        它只能「验签」，不能「签名」。所以哪怕把整个仓库 / 反编译客户端公开，
-        没有私钥就签不出任何一个能通过验证的离线码。
+      * 公钥：本文件里的 ``PUBLIC_KEY`` 常量（32 字节原始公钥，base64 编码存储），
+        编译进客户端二进制。公开也无害——它只能「验签」，不能「签名」。
+        哪怕把整个仓库 / 反编译客户端公开，没有私钥就签不出任何一个能过验签的离线码。
 
-    这样公开仓库里**不存在任何能伪造激活码的密钥**，彻底关闭泄露口子。
+    关键安全/误报收益：客户端**只验签、不签名**，且验签是纯标准库实现
+    （见 ed25519_verify.py，只用到 hashlib + 模运算，没有 decrypt / 私钥解析 /
+    密钥生成 任何代码）。这彻底消除了旧 RSA 方案把整个 ``rsa`` 库（含 decrypt /
+    生成密钥 等字符串）打进 exe 后撞上杀软「文件锁/勒索」启发式（HEUR:Ransom/
+    LockFile.a）的问题——Ed25519 是签名算法，本就没有「解密」概念。
 
-离线码格式（与 tools/reedcode*.py 共用）：
-    ``<machine_code>|<issued_at_unix>.<base64(RSA-SHA256 签名)>``
+离线码格式（与统一发码器 reedcode_unified.py 共用）：
+    ``<machine_code>|<issued_at_unix>.<base64urlsafe(Ed25519 签名 64 字节)>``
     验签时：① 用内嵌公钥验签名；② 校验前缀是本机机器码（绑定设备）。
 """
 import base64
-import os
-import time
 
-import rsa
+from .ed25519_verify import verify as _ed25519_verify
 
-# 内嵌公钥（PKCS#1 PEM）。由 tools/gen_keys.py 生成，可入库的 public_key.pem 与之相同。
-# 私钥绝不出现在此文件或任何安装包里。
-PUBLIC_KEY_PEM = """-----BEGIN RSA PUBLIC KEY-----
-MIIBCgKCAQEAhFJwSG+B2lh5+nf/aB9sJQmOxbUMlyxHj1nqlEkAzJfRXfNPi9mm
-ABVzJSV0umzZ4d/goU3FejObhfsjmKEkOWFtA4iBhVuB9XrbDDF2vcLHsqDFmpX7
-nxw6DzxCQzPGMMSlTqD/k2mUZtg8MLtnUoD/k09r3paC7ZstnEl6MQSwTCqq6+Oq
-tGtoTZwVlkQiCo3LgFMIXUvQ5qw5UQbr6kZBHaI/Xl4U3gTWxKyG9o6C2SqrvH3g
-15KSkIX8ZbCKJr9mhK5Su14xt3dtDji+HdMrE3aNUmbub6Ud5R+fgfz/l2bJ3QGE
-QdwW1zXfHfE9BriXOsms5tCvEK1p3uQ3CwIDAQAB
------END RSA PUBLIC KEY-----
-"""
+# 内嵌公钥（32 字节原始公钥，base64 存储）。由 gen_ed25519_keys.py 生成，
+# 与 _signing_keys/overseas_ed25519_private.pem 配对。私钥绝不出现在此文件或安装包。
+PUBLIC_KEY_B64 = "yPcze9RggoAEDF6tezfnRBbHbj0NQJHyCB3XGP+aAjg="
+PUBLIC_KEY = base64.b64decode(PUBLIC_KEY_B64)
 
-# 测试钩子：pytest 用临时密钥对覆盖公钥，避免依赖卖家私钥（CI 上也没有私钥）。
+# 测试钩子：pytest 用临时公钥覆盖内嵌公钥，避免依赖卖家私钥（CI 上也没有私钥）。
 _TEST_PUB = None
 
 
 def set_verify_public_key(pub):
-    """仅供测试：用临时公钥覆盖内嵌公钥。传 None 恢复默认。"""
+    """仅供测试：用临时 32 字节公钥覆盖内嵌公钥。传 None 恢复默认。"""
     global _TEST_PUB
     _TEST_PUB = pub
 
 
-def _public_key():
-    if _TEST_PUB is not None:
-        return _TEST_PUB
-    return rsa.PublicKey.load_pkcs1(PUBLIC_KEY_PEM.encode("utf-8"), "PEM")
+def _public_key() -> bytes:
+    return _TEST_PUB if _TEST_PUB is not None else PUBLIC_KEY
 
 
 def b64u(b: bytes) -> str:
@@ -59,38 +52,13 @@ def b64u(b: bytes) -> str:
 
 
 def ub64u(s: str) -> bytes:
-    return base64.urlsafe_b64decode(s.encode("ascii"))
+    """base64url 解码 —— 容忍缺失的 '=' 填充与标准 base64 的 +/ 字符。
 
-
-def load_private_key(path: str = None) -> "rsa.PrivateKey":
-    """加载卖家私钥。默认读取仓库根目录 private_key.pem（仅本机持有）。
-
-    找不到时抛出清晰的错误，而不是让 GUI 静默崩溃。
+    宽松解码可避免「发码器未补 padding 就整批离线码失效」这种静默故障。
     """
-    if path is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        repo_root = os.path.abspath(os.path.join(here, "..", ".."))
-        path = os.path.join(repo_root, "private_key.pem")
-    if not os.path.isfile(path):
-        raise FileNotFoundError(
-            "未找到卖家私钥：%s\n卖家发码工具需要本机私钥（private_key.pem）。"
-            "该文件只存于你的电脑，绝不入库、绝不进安装包。"
-            "用 `python tools/gen_keys.py` 在你机器上生成一次即可。" % path)
-    with open(path, "rb") as fh:
-        return rsa.PrivateKey.load_pkcs1(fh.read(), "PEM")
-
-
-def sign_offline(private_key: "rsa.PrivateKey", machine_code: str) -> str:
-    """machine_code + 时间戳 → RSA 签名 → 离线码（与 verify_offline_code 兼容）。"""
-    ts = int(time.time())
-    payload = "%s|%d" % (machine_code, ts)
-    sig = rsa.sign(payload.encode("utf-8"), private_key, "SHA-256")
-    return payload + "." + b64u(sig)
-
-
-def generate_offline_code(machine_code: str, private_key_path: str = None) -> str:
-    """卖家发码工具用：用本机私钥给客户机器码签名生成离线码。"""
-    return sign_offline(load_private_key(private_key_path), machine_code)
+    s = s.strip().replace("+", "-").replace("/", "_")
+    s += "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode("ascii"))
 
 
 def verify_offline_code(code: str, machine_code: str) -> bool:
@@ -109,8 +77,7 @@ def verify_offline_code(code: str, machine_code: str) -> bool:
         if not payload.startswith(machine_code + "|"):
             return False
         sig = ub64u(sig_b64)
-        # rsa.verify 验签失败会抛 rsa.pkcs1.VerificationError；成功返回哈希名（忽略）。
-        rsa.verify(payload.encode("utf-8"), sig, _public_key())
-        return True
+        msg = payload.encode("utf-8")          # 被签名的消息 = "机器码|时间戳"
+        return _ed25519_verify(_public_key(), msg, sig)
     except Exception:
         return False

@@ -31,7 +31,7 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest
+          python -m pip install -r requirements.txt -r requirements-dev.txt pytest
 
       - name: Run regression tests
         run: python -m pytest tests -q -p no:cacheprovider
@@ -78,9 +78,9 @@ jobs:
       - name: Install Nuitka
         run: python -m pip install --upgrade nuitka
 
-      # RSA 非对称离线激活（公钥已嵌入源码，私钥只在卖家本机，无需任何 CI secret）。
-      - name: Install rsa (offline-activation crypto)
-        run: python -m pip install "rsa>=4.9"
+      # 离线激活验签为**纯标准库 Ed25519**（src/license/ed25519_verify.py），
+      # 无任何第三方加密依赖，故无需在此安装 crypto 包。公钥已嵌入源码，
+      # 私钥只在卖家本机（绝不进 CI）。
 
       # Linux needs the Tk runtime for the tkinter GUI to bundle correctly.
       - name: Install Tk runtime (Linux only)
@@ -98,8 +98,9 @@ jobs:
           ls -la assets/icon.icns
 
       # Nuitka compiles to a standalone folder (no runtime self-extract -> no dropper fingerprint).
-      # Offline-activation uses RSA (public key embedded in source, private key only on the
-      # seller's machine) — no repository secret needed; the build never touches any key.
+      # Offline activation uses Ed25519 (pure-stdlib verify; public key embedded in source,
+      # private key only on the seller's machine) — no repository secret needed; the build
+      # never touches any key.
       - name: Build (${{ matrix.os }})
         shell: bash
         run: python build.py
@@ -164,16 +165,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-  # NOTE: the offline code generator (reedcode-global) is intentionally NOT built here.
-  # Source stays in tools/reedcode*.py for the seller to run locally with Python, but
-  # we no longer ship a CI-built exe in the Release. Two reasons (2026-09-11):
+  # NOTE: the offline code generator is intentionally NOT built here, and its source is
+  # NOT in this repository. Signing now lives in a seller-local unified issuer
+  # (reedcode_unified.py, kept OUTSIDE the repo next to the Ed25519 private keys), so the
+  # public repo contains nothing that could forge an offline code. History:
   #   1) Private-repo CI minutes are exhausted; every saved job counts.
-  #   2) Public repo + built exe in Release = trivial reverse-engineering target for
-  #      anyone who wants to sign their own codes. Local seller-side Python keeps
-  #      the surface area much smaller.
-  # The corresponding needs/reedcode / Stage-assets reedcode branch was removed
-  # below; if you ever want to bring it back, restore this job and re-add
-  # 'needs: [build, reedcode]' on the release job.
+  #   2) Public repo + a built signer exe in the Release = trivial reverse-engineering
+  #      target for anyone who wants to sign their own codes.
+  # Do NOT reintroduce a signer job here, nor 'needs: [build, reedcode]' on release.
 
   release:
     name: Publish Release

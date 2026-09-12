@@ -44,8 +44,10 @@ import hmac
 import json
 import os
 import platform
+import socket
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -150,11 +152,37 @@ def _machine_fingerprint() -> str:
 
 
 # 状态文件完整性封印（HMAC-SHA256，24 位 hex）。
-# 封印密钥不再是什么「隐藏的对称秘密」——它直接取**内嵌公钥**的字节。公钥本就该
-# 公开，所以这个封印只是「防小白手改 JSON 白嫖」的低成本护栏，不提供密码学强度
-# （决心逆向者照样能重算）。真正能伪造激活码的**私钥**只在卖家本机（private_key.pem），
-# 不在仓库、不在安装包，因此公开仓库无任何泄露风险。详见 src/license/crypto.py。
-from .crypto import PUBLIC_KEY_PEM as _SEAL_KEY_PEM
+# 封印密钥直接取**内嵌公钥**的字节（32 字节，base64 存于 crypto.PUBLIC_KEY）。
+# 公钥本就该公开，所以这个封印只是「防小白手改 JSON 白嫖」的低成本护栏，不提供密码学强度
+# （决心逆向者照样能重算）。真正能伪造激活码的**Ed25519 私钥**只在卖家本机
+# （_signing_keys/overseas_ed25519_private.pem），不在仓库、不在安装包。详见 crypto.py。
+from .crypto import PUBLIC_KEY as _SEAL_KEY
+
+# 历史封印密钥：v2.1.0 及更早用「RSA 公钥 PEM 的 utf-8 字节」当 HMAC 密钥。
+# **必须继续接受**，否则老用户本地那份**带 _sig 的** license.json 验签必然失败 →
+# load_state 判 "tampered" → 那条分支既丢掉 code 与试用计数、又不走下面的
+# "可验证迁移"（那条分支是专门为保护老付费用户写的）→ 升级后直接被提示
+# 「免费试用已用完，请输入激活码」，这是明确的用户事故（Codex 2026-09-12 P0-3）。
+#
+# 安全性：公钥本就公开，多接受一把**公开**密钥不引入任何新的伪造面 ——
+# 能读到源码的人本来就能用新密钥重算封印（封印只是防"手改 JSON 白嫖"的低成本护栏）。
+# 值取自 `git show HEAD:src/license/crypto.py`（换算法前的最后一个提交）。
+_LEGACY_SEAL_KEYS = (
+    b"""-----BEGIN RSA PUBLIC KEY-----
+MIIBCgKCAQEAhFJwSG+B2lh5+nf/aB9sJQmOxbUMlyxHj1nqlEkAzJfRXfNPi9mm
+ABVzJSV0umzZ4d/goU3FejObhfsjmKEkOWFtA4iBhVuB9XrbDDF2vcLHsqDFmpX7
+nxw6DzxCQzPGMMSlTqD/k2mUZtg8MLtnUoD/k09r3paC7ZstnEl6MQSwTCqq6+Oq
+tGtoTZwVlkQiCo3LgFMIXUvQ5qw5UQbr6kZBHaI/Xl4U3gTWxKyG9o6C2SqrvH3g
+15KSkIX8ZbCKJr9mhK5Su14xt3dtDji+HdMrE3aNUmbub6Ud5R+fgfz/l2bJ3QGE
+QdwW1zXfHfE9BriXOsms5tCvEK1p3uQ3CwIDAQAB
+-----END RSA PUBLIC KEY-----
+""",
+)
+
+
+def _seal_blob(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
 
 
 def _state_sign(payload: dict) -> str:
@@ -163,11 +191,30 @@ def _state_sign(payload: dict) -> str:
     目的**不是**「防死逆向」——公钥在客户端里，能逆向就能重算封印；目的是挡住
     「打开 license.json 把 activated 改成 true」这种**零成本白嫖**：
     手改后封印必然对不上，状态按被篡改处理（fail-closed）。
-    真正的激活码伪造被 RSA 私钥挡住（私钥不在客户端），与此封印无关。
+    真正的激活码伪造被 Ed25519 私钥挡住（私钥不在客户端），与此封印无关。
     """
-    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True,
-                      separators=(",", ":")).encode("utf-8")
-    return hmac.new(_SEAL_KEY_PEM.encode("utf-8"), blob, hashlib.sha256).hexdigest()[:24]
+    return hmac.new(_SEAL_KEY, _seal_blob(payload), hashlib.sha256).hexdigest()[:24]
+
+
+def _seal_matches(known: dict, sig: str) -> bool:
+    """封印校验：先试当前密钥（Ed25519 公钥字节），再试历史密钥（RSA PEM）。
+
+    兼容历史密钥是**升级兼容性**要求，不是安全放松：任何异常一律返回 False。
+    """
+    try:
+        if hmac.compare_digest(_state_sign(known), sig):
+            return True
+    except Exception:
+        return False
+    blob = _seal_blob(known)
+    for key in _LEGACY_SEAL_KEYS:
+        try:
+            if hmac.compare_digest(
+                    hmac.new(key, blob, hashlib.sha256).hexdigest()[:24], sig):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _default_state() -> dict:
@@ -232,7 +279,7 @@ def load_state() -> dict:
             base["_legacy_offline"] = bool(known.get("offline"))
         return base
 
-    if not hmac.compare_digest(_state_sign(known), sig):
+    if not _seal_matches(known, sig):
         base["activated"] = False
         base["_state_ok"] = False
         base["_state_reason"] = "tampered"
@@ -287,7 +334,16 @@ def _forced_offline() -> bool:
 
 
 def _post(path: str, payload: dict, timeout: int = 5) -> dict:
-    """POST JSON 到中台。失败（网络/超时/非 JSON）抛异常，由调用方决定宽限策略。"""
+    """POST JSON 到中台，**业务错误也当响应体读回来**（非 2xx 不算网络故障）。
+
+    中台用 HTTP 4xx/5xx 承载业务结果，例如输错码时返回
+    ``{"ok":false,"error":"invalid_code"}`` 配 **HTTP 404**。``urlopen`` 对非 2xx 抛
+    ``HTTPError``，若不把它当响应读取，客户端只能拿到 "HTTP Error 404: Not Found"，
+    于是用户输错一个码会看到「网络不可用，可稍后重试」——既误导排查、又让客户以为
+    是自家网络问题（海外版漏了这层，2026-09-12 补；导师版/学生版的 ``_http_json``
+    一直是这么处理的）。真正的网络故障（连不上/超时/响应不是 JSON）仍照旧抛异常，
+    由调用方决定宽限策略。
+    """
     if _forced_offline():
         raise RuntimeError("offline mode (TFD_FORCE_OFFLINE)")
     url = API_BASE.rstrip("/") + path
@@ -296,8 +352,20 @@ def _post(path: str, payload: dict, timeout: int = 5) -> dict:
         url, data=body, method="POST",
         headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    # socket 默认超时兜底：urlopen(timeout=) 覆盖不到所有悬挂路径（DNS 解析阶段最典型）。
+    prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", "ignore"))
+    except urllib.error.HTTPError as e:
+        # 非 2xx：先按响应体解析（中台的业务错误信封都在这里）；解析不出来才算网络故障。
+        try:
+            return json.loads(e.read().decode("utf-8", "ignore"))
+        except Exception:
+            raise
+    finally:
+        socket.setdefaulttimeout(prev)
 
 
 def _check_mid_platform(code: str) -> dict:
@@ -320,7 +388,9 @@ def _trial_sync(machine: str, claim: bool = False) -> dict:
     claim=False → 只查该机器是否已用过试用；
     claim=True  → 首次领取（幂等：已领过返回 first=False）。
 
-    端点未部署（404）会抛异常 → 由 _safe_* 包成「不可达」，走本地兜底。
+    端点未部署 → 响应不是 JSON（如网关 HTML 404）→ 抛异常 → 由 ``_safe_*`` 包成
+    「不可达」，走本地兜底。端点存在但返回业务错误（JSON 信封）则会正常读回，
+    调用方必须显式要求 ``ok=True`` 才采信（见 ``server_trial_used``）。
     """
     return _post(_P_TRIAL, {
         "product": PRODUCT, "machine_code": machine, "claim": bool(claim),
@@ -386,12 +456,12 @@ def activate(code: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 兜底方案：离线备用码（RSA 非对称签名，见 src/license/crypto.py）
+# 兜底方案：离线备用码（Ed25519 非对称签名，见 src/license/crypto.py + ed25519_verify.py）
 # ---------------------------------------------------------------------------
-# 算法与 tools/reedcode*.py 完全一致（machine_code|时间戳 → RSA 签名）。
-# 与导师版密钥隔离（各自独立 RSA 密钥对），保证跨产品码不互通。客户把本机机器码
-# 发给卖家，卖家用 tools/reedcode_gui.py（持本机私钥）生成离线码，客户在激活页选
-# 「离线激活」粘贴即可。私钥只在卖家本机，公开仓库 / 反编译客户端都拿不到。
+# 算法与统一发码器 reedcode_unified.py 完全一致（machine_code|时间戳 → Ed25519 签名）。
+# 与导师版 / 学生版密钥隔离（各自独立 Ed25519 密钥对），保证跨产品码不互通。
+# 客户把本机机器码发给卖家，卖家用统一发码器（持本机私钥）生成离线码，客户在激活页
+# 选「离线激活」粘贴即可。私钥只在卖家本机（_signing_keys/），公开仓库 / 反编译客户端都拿不到。
 from .crypto import verify_offline_code
 
 
@@ -478,7 +548,7 @@ def _require_fix_entitlement() -> dict:
     #      已付费用户：那批版本的 save_state 不写 _sig，升级到本版后会被判
     #      unsealed → 未激活，弹窗还会误导成「试用已用完」（明确的用户事故）。
     #      这里只认**能自证**的身份，两条路：
-    #        ① 离线码：本地 HMAC 验签（不联网，密码学上等价于 ①-b）；
+    #        ① 离线码：本地 Ed25519 验签（纯标准库，不联网，密码学上等价于 ①-b）；
     #        ② 在线码：问一次中台，服务器确认本机 active。
     #      伪造者拿不到有效码 → 两条路都失败 → 依旧 fail-closed（不给"删 _sig 即
     #      白嫖"留口子），但给**专门文案**而不是"试用已用完"。

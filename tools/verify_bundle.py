@@ -34,6 +34,7 @@ REQUIRED_FILES = (
     "icon.ico",
     "icon.png",
     "icon.icns",
+    "backdrop.png",                       # 装饰背景层（assets/ 目录随包，缺失=界面降级，但必须红灯而非静默）
     "ai_questionnaire_template.json",
     "VERSION",
 )

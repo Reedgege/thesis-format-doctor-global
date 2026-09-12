@@ -26,9 +26,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def _candidate_paths() -> list:
     """按优先级列出 VERSION 文件的候选路径。"""
     cands = []
-    # ① 源码树：src/versioninfo.py -> <repo>/VERSION
+    # ① 源码树：src/versioninfo.py -> <repo>/VERSION（_HERE 即 <repo>/src，只需上一级）
     try:
-        cands.append(os.path.normpath(os.path.join(_HERE, "..", "..", "VERSION")))
+        cands.append(os.path.normpath(os.path.join(_HERE, "..", "VERSION")))
     except Exception:
         pass
     # ② 打包产物：exe / 入口脚本所在目录

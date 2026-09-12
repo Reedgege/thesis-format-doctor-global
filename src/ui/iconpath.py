@@ -87,6 +87,47 @@ def find_icon() -> "str | None":
     return None
 
 
+def _data_candidates(filename: str) -> list:
+    """通用数据资源候选路径（与图标同款布局假设，按「最可能命中」排序）。"""
+    here = os.path.dirname(_norm(__file__))
+    cands = [
+        os.path.join(here, "..", "data", filename),          # 源码运行：src/ui -> src/data
+        os.path.join(here, "data", filename),
+        os.path.join(here, "..", "..", "assets", filename),  # 源码运行：<repo>/assets
+    ]
+    for base in _runtime_bases():
+        cands += [
+            os.path.join(base, "assets", filename),          # build.py 拷到 exe 同级
+            os.path.join(base, filename),
+            os.path.join(base, "src", "data", filename),     # include-package-data
+        ]
+    out = []
+    for c in cands:
+        c = _norm(c)
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def find_backdrop() -> "str | None":
+    """装饰背景图的路径（``src/data/backdrop.png``）。
+
+    视觉规格包（2026-09-12）给了一张**独立的**背景素材：右上角一片极淡的蓝灰学术
+    天际线，其余是与页面同色的平坦纸底。它只能当最底层背景用，绝不许拿整张 UI 稿当
+    背景（那样控件就成了图片的一部分，既不可点也不可读）。
+
+    纯装饰，找不到就返回 ``None``（调用方降级成纯纸底，不影响任何功能）；
+    但**打包漏件必须由 ``tools/verify_bundle.py`` 在 CI 拦下**，不能靠这里的静默降级。
+    """
+    for path in _data_candidates("backdrop.png"):
+        try:
+            if os.path.isfile(path):
+                return path
+        except Exception:
+            continue
+    return None
+
+
 def ico_candidates() -> list:
     """按「最可能命中」的顺序返回 Windows 图标（``.ico``）候选路径。
 

@@ -17,8 +17,11 @@ import json
 import os
 import sys
 
+import base64
+import time
+
 import pytest
-import rsa
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -27,15 +30,22 @@ from src.license import license as lic
 from src.license import crypto as crypto_mod
 
 
-# 离线程测试用临时 RSA 密钥对：真实私钥只在卖家本机，CI/单测都不持有。
-# 这里生成一份临时密钥对——公钥注入 crypto.verify_offline_code 的校验路径，
-# 私钥用于签发测试离线码，闭环完全离线、不依赖任何密钥文件。
+# 离线程测试用临时 Ed25519 密钥对：真实私钥只在卖家本机，CI/单测都不持有。
+# 这里生成一份临时密钥对——公钥（32 字节原始值）注入 crypto.verify_offline_code 的
+# 校验路径，私钥用于签发测试离线码，闭环完全离线、不依赖任何密钥文件。
 @pytest.fixture
 def offline_keys(monkeypatch):
-    pub, priv = rsa.newkeys(512)  # 512 位足够测试，加速
-    crypto_mod.set_verify_public_key(pub)
+    priv = Ed25519PrivateKey.generate()
+    crypto_mod.set_verify_public_key(priv.public_key().public_bytes_raw())
     yield priv
     crypto_mod.set_verify_public_key(None)
+
+
+def _sign(priv, machine_code):
+    """测试用离线码签名器（真实签名只由卖家统一发码器 reedcode_unified.py 完成）。"""
+    payload = "%s|%d" % (machine_code, int(time.time()))
+    sig = priv.sign(payload.encode("utf-8"))          # 64 字节 Ed25519 签名
+    return payload + "." + base64.urlsafe_b64encode(sig).decode("ascii")
 
 
 @pytest.fixture
@@ -197,13 +207,13 @@ def test_no_network_endpoints_stale():
 
 
 # ---------------------------------------------------------------------------
-# 兜底方案：离线备用码（RSA 非对称；与 tools/reedcode*.py 共用算法；与导师版密钥隔离）
+# 兜底方案：离线备用码（Ed25519 非对称；与统一发码器 reedcode_unified.py 共用算法；与导师版密钥隔离）
 # ---------------------------------------------------------------------------
 
 def test_offline_code_roundtrip(offline_keys):
     """sign -> verify 闭环：本机机器码生成可校验通过。"""
     mc = lic._machine_fingerprint()
-    code = crypto_mod.sign_offline(offline_keys, mc)
+    code = _sign(offline_keys, mc)
     assert code.count(".") == 1, "离线码格式应为 payload.signature"
     assert lic.verify_offline_code(code, mc) is True
 
@@ -211,7 +221,7 @@ def test_offline_code_roundtrip(offline_keys):
 def test_offline_code_rejects_wrong_machine_and_tamper(offline_keys):
     """离线码绑定机器码：错机器 / 篡改签名均拒。"""
     mc = lic._machine_fingerprint()
-    code = crypto_mod.sign_offline(offline_keys, mc)
+    code = _sign(offline_keys, mc)
     assert lic.verify_offline_code(code, "WRONG-MACHINE") is False
     payload, _, sig = code.rpartition(".")
     tampered = payload + "." + ("A" if sig[-1] != "A" else "B")
@@ -222,7 +232,7 @@ def test_activate_offline_persists(tmp_license, offline_keys):
     """离线激活写盘后：状态含 offline=True 且持久化（回归：offline 曾漏进 _default_state
     导致 save/load 被剥离、标志丢失）。"""
     mc = lic._machine_fingerprint()
-    code = crypto_mod.sign_offline(offline_keys, mc)
+    code = _sign(offline_keys, mc)
     r = lic.activate_offline(code)
     assert r["ok"] is True
     assert r["kind"] == "lifetime"
@@ -235,7 +245,7 @@ def test_activate_offline_persists(tmp_license, offline_keys):
 
 def test_activate_offline_rejects_other_machine(tmp_license, offline_keys):
     """用别的机器码生成的离线码，在本机激活必须失败。"""
-    code = crypto_mod.sign_offline(offline_keys, "OTHER-MACHINE-CODE")
+    code = _sign(offline_keys, "OTHER-MACHINE-CODE")
     r = lic.activate_offline(code)
     assert r["ok"] is False
     assert "机器码" in r["message"]
@@ -244,7 +254,7 @@ def test_activate_offline_rejects_other_machine(tmp_license, offline_keys):
 def test_offline_activation_grants_fix_without_network(tmp_license, monkeypatch, offline_keys):
     """离线激活后：fix 授权放行，且全程不触网（心跳/试用同步均被拦截）。"""
     mc = lic._machine_fingerprint()
-    code = crypto_mod.sign_offline(offline_keys, mc)
+    code = _sign(offline_keys, mc)
     assert lic.activate_offline(code)["ok"] is True
     # 即便中台全部不可达，离线授权也应直接放行
     monkeypatch.setattr(lic, "_safe_heartbeat", lambda code, machine: None)
@@ -310,7 +320,7 @@ def _legacy_state(**fields):
 def test_legacy_offline_state_migrates_without_network(tmp_license, monkeypatch, offline_keys):
     """旧版离线激活用户：升级后自动迁移（本地验签即可，全程不联网）。"""
     mc = lic._machine_fingerprint()
-    code = crypto_mod.sign_offline(offline_keys, mc)
+    code = _sign(offline_keys, mc)
     tmp_license.write_text(json.dumps(_legacy_state(
         activated=True, code=code, kind="lifetime", offline=True,
         trial_fix_used=True, machine=mc, last_heartbeat=0)), encoding="utf-8")
@@ -427,7 +437,7 @@ def test_verify_offline_code_rejects_non_ascii_without_raising(offline_keys):
     for bad in ["", ".", mc, mc + "|", mc + ".", "机器码.签名",
                 "机器码.中文签名", None, 12345]:
         assert lic.verify_offline_code(bad, mc) is False   # 不得抛异常
-    assert lic.verify_offline_code(crypto_mod.sign_offline(offline_keys, mc), mc) is True
+    assert lic.verify_offline_code(_sign(offline_keys, mc), mc) is True
 
 
 def test_machine_fingerprint_is_stable_16_hex():
@@ -441,3 +451,165 @@ def test_machine_fingerprint_is_stable_16_hex():
     assert _pf.node() not in fp1     # 主机名不得以明文出现在指纹里
 
 
+# ---------------------------------------------------------------------------
+# 小阶/单位元点拒绝（纵深加固回归）
+# ---------------------------------------------------------------------------
+
+def test_rejects_small_order_points(tmp_license):
+    """签名里的 R 或公钥 A 若为小阶点（含单位元）必须被拒。
+
+    小阶点会让 [S]B == R + [k]A 出现可延展性；ed25519_verify._decompress 显式拒绝
+    （[8]P == O 判据）。此用例把这道加固钉住，防日后被"优化"掉。
+    """
+    identity = b"\x01" + b"\x00" * 31          # 单位元（阶 1）
+
+    # ① R 为单位元：构造 64 字节签名（R=单位元, S=1）
+    mc = lic._machine_fingerprint()
+    payload = "%s|%d" % (mc, 1700000000)
+    code = payload + "." + base64.urlsafe_b64encode(
+        identity + (1).to_bytes(32, "little")).decode("ascii")
+    assert lic.verify_offline_code(code, mc) is False
+
+    # ② 公钥 A 为单位元：即便签名结构正常也必须拒
+    crypto_mod.set_verify_public_key(identity)
+    try:
+        assert crypto_mod.verify_offline_code(code, mc) is False
+    finally:
+        crypto_mod.set_verify_public_key(None)
+
+
+# ---------------------------------------------------------------------------
+# 封印密钥升级兼容（Codex 2026-09-12 P0-3）
+# ---------------------------------------------------------------------------
+def test_legacy_rsa_seal_is_still_accepted(tmp_path, monkeypatch):
+    """v2.1.0 及更早用「RSA 公钥 PEM 的 utf-8 字节」当 HMAC 封印密钥。
+
+    换成 Ed25519 公钥字节后，老用户本地那份**带 _sig 的** license.json 验签必然失败。
+    若不兼容，load_state 会判 "tampered" —— 那条分支既丢掉 code 与试用计数、又不走
+    「可验证迁移」，升级后直接被提示「免费试用已用完，请输入激活码」= 明确的用户事故。
+    """
+    import hashlib
+    import hmac
+
+    monkeypatch.setenv("TFD_LICENSE_FILE", str(tmp_path / "license.json"))
+    payload = {
+        "activated": True,
+        "code": "PAID-CODE-123",
+        "kind": "perpetual",
+        "expires_at": None,
+        "trial_fix_used": True,
+        "revoked": False,
+        "offline": True,
+        "machine": lic._machine_fingerprint(),
+        "last_heartbeat": 0,
+    }
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+    legacy = lic._LEGACY_SEAL_KEYS[0]
+    legacy_sig = hmac.new(legacy, blob, hashlib.sha256).hexdigest()[:24]
+
+    (tmp_path / "license.json").write_text(
+        json.dumps(dict(payload, _sig=legacy_sig)), encoding="utf-8")
+    st = lic.load_state()
+    assert st["_state_reason"] == "ok", st["_state_reason"]
+    assert st["activated"] is True
+    assert st["code"] == "PAID-CODE-123"
+    assert st["trial_fix_used"] is True
+
+    # 兼容 ≠ 放松：改一个字段后必须仍然判篡改（老密钥也救不了伪造）
+    (tmp_path / "license.json").write_text(
+        json.dumps(dict(payload, code="FORGED", _sig=legacy_sig)),
+        encoding="utf-8")
+    assert lic.load_state()["_state_reason"] == "tampered"
+
+    # 新密钥封印照常生效
+    good = lic._state_sign(payload)
+    (tmp_path / "license.json").write_text(
+        json.dumps(dict(payload, _sig=good)), encoding="utf-8")
+    assert lic.load_state()["_state_reason"] == "ok"
+
+# ---------------------------------------------------------------------------
+# 中台业务错误信封（非 2xx 也是"有效响应"）— 2026-09-12
+# ---------------------------------------------------------------------------
+def test_post_reads_body_of_non_2xx(monkeypatch):
+    """中台用 HTTP 404 承载业务错误（``{"ok":false,"error":"invalid_code"}``）。
+
+    ``urlopen`` 对非 2xx 抛 ``HTTPError``；若不当成响应读回来，用户输错一个码
+    看到的是「网络不可用，可稍后重试」——把客户端错误说成客户网络问题。
+    这里锁住：非 2xx 的 JSON 响应体必须被解析并返回。
+    """
+    import io
+    import urllib.error
+
+    body = json.dumps({"ok": False, "error": "invalid_code"}).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
+    res = lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
+    assert res == {"ok": False, "error": "invalid_code"}
+
+    # 进而 activate() 必须给出"激活码无效"，而不是网络错误
+    out = lic.activate("X")
+    assert out["ok"] is False
+    assert "无效" in out["message"], out["message"]
+
+
+def test_post_reraises_when_error_body_is_not_json(monkeypatch):
+    """真正的网络故障（网关返回 HTML/空体）仍须抛异常，由调用方走宽限。"""
+    import io
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {},
+                                     io.BytesIO(b"<html>bad gateway</html>"))
+
+    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
+    with pytest.raises(Exception):
+        lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
+
+# ---------------------------------------------------------------------------
+# 中台业务错误信封（非 2xx 也是"有效响应"）— 2026-09-12
+# ---------------------------------------------------------------------------
+def test_post_reads_body_of_non_2xx(monkeypatch):
+    """中台用 HTTP 404 承载业务错误（``{"ok":false,"error":"invalid_code"}``）。
+
+    ``urlopen`` 对非 2xx 抛 ``HTTPError``；若不当成响应读回来，用户输错一个码
+    看到的是「网络不可用，可稍后重试」——把客户端错误说成客户网络问题。
+    这里锁住：非 2xx 的 JSON 响应体必须被解析并返回。
+    """
+    import io
+    import urllib.error
+
+    body = json.dumps({"ok": False, "error": "invalid_code"}).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
+    res = lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
+    assert res == {"ok": False, "error": "invalid_code"}
+
+    # 进而 activate() 必须给出"激活码无效"，而不是网络错误
+    out = lic.activate("X")
+    assert out["ok"] is False
+    assert "无效" in out["message"], out["message"]
+
+
+def test_post_reraises_when_error_body_is_not_json(monkeypatch):
+    """真正的网络故障（网关返回 HTML/空体）仍须抛异常，由调用方走宽限。"""
+    import io
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {},
+                                     io.BytesIO(b"<html>bad gateway</html>"))
+
+    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
+    with pytest.raises(Exception):
+        lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})

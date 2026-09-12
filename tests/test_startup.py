@@ -321,7 +321,8 @@ def test_gui_defaults_to_english(tmp_path, monkeypatch, tk_root):
     assert ui.lang == "en"
     texts = _label_texts(tk_root)
     assert "Thesis Format Doctor" in texts
-    assert "Files" in texts and "Workflow" in texts
+    # v2.2.0 按设计规格改了卡片标题：Files → Your Documents、Workflow → Review & Fix
+    assert "Your Documents" in texts and "Review & Fix" in texts
     # 除语言切换按钮外，英文界面不应出现中文（那个按钮按设计显示目标语言名"中文"）
     lang_btn = ui.tr("lang_button")
     rest = [t for t in texts if t != lang_btn]
@@ -344,7 +345,7 @@ def test_gui_language_switch_rebuilds_and_persists(tmp_path, monkeypatch, tk_roo
 
     texts = _label_texts(tk_root)
     assert "论 文 格 式 医 生" in texts
-    assert "文件选择" in texts and "处理步骤" in texts
+    assert "你的文档" in texts and "检查与修正" in texts
     # 状态保持：已选论文不能被语言切换清掉
     assert ui.docx_path.get() == r"C:\tmp\my thesis.docx"
     assert any("论文" in t for t in texts)
@@ -352,7 +353,7 @@ def test_gui_language_switch_rebuilds_and_persists(tmp_path, monkeypatch, tk_roo
     # 再切回英文
     ui._set_lang("en")
     assert ui.lang == "en"
-    assert "Files" in _label_texts(tk_root)
+    assert "Your Documents" in _label_texts(tk_root)
     assert i18n.load_lang() == "en"
 
 
