@@ -32,6 +32,13 @@ release/
 private_key.pem
 public_key.pem
 
+# 卖家发码台账（**含客户机器码与所发离线码，属敏感信息**）与运行日志。
+# 仓库是 public，误提交 = 泄露客户信息 + 白送可用离线码，所以一律挡在仓外。
+tools/reedcode_log.txt
+reedcode_log.txt
+*_log.txt
+*.log
+
 # Codex 审查产出（不构成代码；留本地复盘用）
 tools/codex_review/round*_diff.txt
 tools/codex_review/prompt_*.txt
