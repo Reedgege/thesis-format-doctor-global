@@ -418,7 +418,7 @@ def cmd_status(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Thesis Format Doctor Global · 海外版论文格式医生（离线）")
+    p = argparse.ArgumentParser(description="Thesis Format Doctor Global — offline thesis format checker & fixer")
     # --version 用 argparse 内置 action：解析到就打印并 SystemExit(0)，
     # 不进入任何子命令 —— 版本号读 VERSION 文件（打包时随产物一起带出）。
     p.add_argument("-V", "--version", action="version",

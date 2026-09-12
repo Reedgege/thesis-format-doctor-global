@@ -134,6 +134,12 @@ class ModalShell(tk.Toplevel):
         except Exception:
             pass
 
+    # ---------------------------------------------------------------- 对外
+    @property
+    def content(self) -> tk.Frame:
+        """内容容器：调用方把正文 pack/grid 进来（标题与按钮栏由本类负责）。"""
+        return self._content
+
     def show_separator(self):
         """显示标题下方的分隔线。"""
         self._separator.pack(fill="x", padx=24, pady=(16, 0))

@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 
 from . import theme
@@ -100,6 +101,20 @@ class RoundCard(tk.Frame):
 
         self._cv.bind("<Configure>", self._relayout)
         self.inner.bind("<Configure>", self._sync_request)
+        # 首帧自愈：canvas 的 <Configure> 有可能早于"内容装进 inner"发生（量到 1px），
+        # 之后再没有任何事件能把它唤醒 —— 虚线投放区就被压成一条线。idle 时补量一次；
+        # 窗口在 idle 前销毁则取消，避免触发已删除的 Tcl 命令。
+        self._idle_id = self.after_idle(self._sync_request)
+        self.bind("<Destroy>", self._cancel_idle, add="+")
+
+    def _cancel_idle(self, _e=None):
+        aid = getattr(self, "_idle_id", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+            self._idle_id = None
 
     # ---------------------------------------------------------------- 内部
     def _sync_request(self, _e=None):
@@ -111,6 +126,13 @@ class RoundCard(tk.Frame):
             return
         if (w, h) == self._req:
             return                      # 值没变就停，否则会来回触发成死循环
+        # 宽度请求封顶：卡片都长在 fill="x" / sticky="nsew" 的格子里，真实宽度由窗口
+        # 决定；而自动换行标签的 wraplength 又反过来按格宽算 —— 把内容宽度原样发布
+        # 出去会和 grid 列宽形成正反馈（两列 506↔669 无限互推、update_idletasks 卡死）。
+        # 封顶后列宽只由窗口决定，换行再也不会反向撑宽布局。
+        w = min(w, theme.CARD_REQ_W)
+        if (w, h) == self._req:
+            return
         self._req = (w, h)
         try:
             self._cv.configure(width=w, height=h)
@@ -129,9 +151,13 @@ class RoundCard(tk.Frame):
             h = e.height if e is not None else self._cv.winfo_height()
         except Exception:
             return
-        if w <= 2 or h <= 2:
+        # 高度可能还是首帧的 1px：pack 只按"请求高度"给空间，而请求高度要等内容量完
+        # 才有值。以前这里连 h<=2 一起早退 → item 永远停在 1×1、inner 的 <Configure>
+        # 再也不触发，圆形/虚线卡片（上传投放区）就这么被压成一条线。
+        if w <= 2:
             return
-        self._draw(w, h)
+        if h > 2:
+            self._draw(w, h)
         try:
             natural = self.inner.winfo_reqheight()
             self._cv.itemconfigure(
@@ -347,7 +373,7 @@ class RoundButton(tk.Frame):
 
     def __init__(self, parent, text: str, command=None, *, style: str = "primary",
                  font=None, radius: int = 9, height: int = 52, padx: int = 20,
-                 bg: str = None):
+                 bg: str = None, icon: str = None):
         bg = bg or parent.cget("bg")
         super().__init__(parent, bg=bg, highlightthickness=0, bd=0)
         self._style = style if style in self.STYLES else "primary"
@@ -356,6 +382,7 @@ class RoundButton(tk.Frame):
         self._padx = int(padx)
         self._font = font
         self._text = text
+        self._icon = icon
         self._command = command
         self._enabled = True
         self._hover = False
@@ -363,7 +390,8 @@ class RoundButton(tk.Frame):
         self._pack_opts: dict = {"fill": "x"}
 
         self._cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0,
-                             height=self._h, width=1, takefocus=1)
+                             height=self._h, width=self._fit_width(),
+                             takefocus=1)
         self._cv.pack(fill="both", expand=True)
         self._cv.bind("<Configure>", lambda e: self.draw())
         self._cv.bind("<Enter>", self._on_enter)
@@ -377,6 +405,16 @@ class RoundButton(tk.Frame):
     def pack(self, **kw):                      # noqa: D102  （见类 docstring）
         self._pack_opts = dict(kw)
         super().pack(**kw)
+
+    def pack_anchor(self, widget):
+        """记下 ``set_visible(True)`` 重新 pack 时的锚点（插到 ``widget`` 之前）。
+
+        主/次 CTA 的摆法在建卡时定不下来（锚点控件可能后建），显隐又要靠
+        ``set_visible`` 重新入队，所以单独给一个"事后补锚点"的入口。
+        """
+        if widget is not None:
+            self._pack_opts = dict(self._pack_opts)
+            self._pack_opts["before"] = widget
 
     # ---------------------------------------------------------------- 绘制
     def draw(self):
@@ -403,7 +441,17 @@ class RoundButton(tk.Frame):
                                   outline=border if border else fill, width=1)
             elif border:                       # ghost：只描边不填充
                 cv.create_polygon(pts, fill="", outline=border, width=1)
-            cv.create_text(w / 2.0, h / 2.0, text=self._text, fill=fg,
+            cx, cy = w / 2.0, h / 2.0
+            if self._icon:
+                # 规格稿的主 CTA 是「图标 + 文字」整体居中：先量文字宽度，把图标放到
+                # 文字左侧，再把文字整体右移半个图标位。
+                try:
+                    tw = tkfont.Font(font=self._font).measure(self._text)
+                except Exception:
+                    tw = len(self._text) * 8
+                draw_icon(cv, self._icon, cx - tw / 2.0 - 15, cy, 16, fg, 2)
+                cx += 8
+            cv.create_text(cx, cy, text=self._text, fill=fg,
                            font=self._font, width=max(40, w - 2 * self._padx))
         except Exception:
             pass
@@ -438,7 +486,25 @@ class RoundButton(tk.Frame):
         text = str(text)
         if text != self._text:
             self._text = text
+            # 不给 fill="x" 的摆法（如商业区的 Upgrade）靠请求宽度定宽，改字要跟着改
+            try:
+                self._cv.configure(width=self._fit_width())
+            except Exception:
+                pass
             self.draw()
+
+    def _fit_width(self) -> int:
+        """按文字实测宽度算请求宽度（+ 图标位 + 左右内边距）。
+
+        ttk 按钮自己会按文字算宽；自绘按钮得自己算 —— 否则 ``pack(side="right")``
+        这类不给 fill 的摆法会把按钮压成 1px（商业区 Upgrade 按钮踩过这个坑）。
+        """
+        try:
+            tw = tkfont.Font(font=self._font).measure(self._text)
+        except Exception:
+            tw = len(self._text) * 8
+        extra = 26 if self._icon else 0
+        return max(24, int(tw) + extra + 2 * self._padx)
 
     @property
     def text(self) -> str:
@@ -532,3 +598,201 @@ class StepCircle(tk.Canvas):
                              font=self._font)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# 线描图标（纯 Canvas 自绘）
+# ---------------------------------------------------------------------------
+# 规格包里的图标全是单色线描件，且**不许引入第三方图形库**（禁 PIL、不许内嵌图片）。
+# 这里用一个 24×24 的设计网格 + 统一缩放把常用图标画出来：调用方只给中心点与边长，
+# 内部所有坐标都按 ``P(x, y)`` 换算，换尺寸不会走形。
+#
+# 为什么值得有：设计稿每个字段行、每个面板标题前都有一枚小图标，缺了它整页会显得
+# 「只有字没有结构」。图标是**装饰**，任何一步失败都静默跳过（绝不能拖垮界面）。
+def draw_icon(cv, name: str, cx: float, cy: float, size: float,
+              color: str, width: int = 2, tags=()) -> bool:
+    """在画布 ``cv`` 上以 (cx, cy) 为中心画一枚 ``size`` 边长的线描图标。"""
+    s = float(size) / 24.0
+
+    def P(x, y):
+        return (cx + (x - 12.0) * s, cy + (y - 12.0) * s)
+
+    def line(*pts):
+        flat = []
+        for x, y in pts:
+            flat.extend(P(x, y))
+        cv.create_line(*flat, fill=color, width=width, capstyle="round",
+                       joinstyle="round", tags=tags)
+
+    def oval(x0, y0, x1, y1, fill="", w=None):
+        a, b = P(x0, y0), P(x1, y1)
+        cv.create_oval(a[0], a[1], b[0], b[1], outline=color, fill=fill,
+                       width=(width if w is None else w), tags=tags)
+
+    def poly(*pts, fill="", outline=None, w=None):
+        flat = []
+        for x, y in pts:
+            flat.extend(P(x, y))
+        cv.create_polygon(*flat, fill=fill,
+                          outline=(color if outline is None else outline),
+                          width=(width if w is None else w), tags=tags)
+
+    try:
+        if name == "doc":
+            poly((7, 3.5), (15.5, 3.5), (19, 7), (19, 20.5), (7, 20.5))
+            line((15, 3.8), (15, 7.2), (18.6, 7.2))
+            line((10, 12), (16, 12))
+            line((10, 16), (16, 16))
+        elif name == "quote":
+            for dx in (0, 7.5):
+                oval(5.5 + dx, 8.5, 11 + dx, 14, fill=color, w=0)
+                poly((5.6 + dx, 13.4), (8.4 + dx, 13.4), (6.2 + dx, 17.6),
+                     fill=color, outline="", w=0)
+        elif name == "bank":
+            poly((3, 10), (12, 4), (21, 10), fill="")
+            line((3.5, 10.4), (20.5, 10.4))
+            for x in (6.5, 10, 14, 17.5):
+                line((x, 12.2), (x, 18.6))
+            line((3.5, 20.5), (20.5, 20.5))
+        elif name == "code":
+            line((9, 8), (4.8, 12), (9, 16))
+            line((15, 8), (19.2, 12), (15, 16))
+        elif name == "gear":
+            oval(6.5, 6.5, 17.5, 17.5)
+            oval(10.2, 10.2, 13.8, 13.8)
+            for ax, ay in ((12, 3.4), (12, 20.6), (3.4, 12), (20.6, 12),
+                           (5.9, 5.9), (18.1, 5.9), (5.9, 18.1), (18.1, 18.1)):
+                px, py = P(ax, ay)
+                qx, qy = P(12 + (ax - 12) * 0.72, 12 + (ay - 12) * 0.72)
+                cv.create_line(px, py, qx, qy, fill=color, width=width,
+                               capstyle="round", tags=tags)
+        elif name == "sliders":
+            for y, knob in ((8, 9.5), (12, 15), (16, 11)):
+                line((4, y), (20, y))
+                oval(knob - 2.2, y - 2.2, knob + 2.2, y + 2.2,
+                     fill=theme.SURFACE, w=width)
+        elif name == "bulb":
+            oval(8, 5.5, 16, 14)
+            line((9.6, 15.6), (10.6, 17.4), (13.4, 17.4), (14.4, 15.6))
+            line((10.4, 19.6), (13.6, 19.6))
+            line((12, 1.8), (12, 3.6))
+            line((4.6, 6.6), (6.2, 8.2))
+            line((19.4, 6.6), (17.8, 8.2))
+        elif name == "shield":
+            poly((12, 3), (19.5, 6), (19.5, 12), (12, 21), (4.5, 12), (4.5, 6))
+            line((9, 12), (11.4, 14.4), (15.4, 9.8))
+        elif name == "search":
+            oval(4, 4, 15, 15)
+            line((13.8, 13.8), (19.5, 19.5))
+        elif name == "wrench":
+            line((4.6, 19.4), (13.4, 10.6))
+            oval(12.4, 3.6, 20.4, 11.6)
+            poly((18.6, 5.4), (20.4, 8.4), (17.4, 9.2), fill=theme.SURFACE,
+                 outline=color, w=width)
+        elif name == "cloud":
+            for x0, y0, x1, y1 in ((3.5, 11.5, 12.5, 20.5), (8, 9, 18, 19),
+                                   (13, 12.5, 21, 20.5)):
+                oval(x0, y0, x1, y1, fill=color, w=0)
+            flat = P(3.5, 16)
+            cv.create_rectangle(flat[0], flat[1], P(21, 20.5)[0], P(21, 20.5)[1],
+                                fill=color, outline=color, tags=tags)
+            line((12, 18.6), (12, 11.6)) if False else None
+            a = P(12, 18.4)
+            b = P(12, 11.8)
+            cv.create_line(a[0], a[1], b[0], b[1], fill="#FFFFFF",
+                           width=max(2, width), capstyle="round", tags=tags)
+            c, d, e = P(9.6, 14.2), P(12, 11.8), P(14.4, 14.2)
+            cv.create_line(c[0], c[1], d[0], d[1], e[0], e[1], fill="#FFFFFF",
+                           width=max(2, width), capstyle="round",
+                           joinstyle="round", tags=tags)
+        elif name == "mail":
+            poly((3, 5.5), (21, 5.5), (21, 18.5), (3, 18.5))
+            line((3.4, 6.4), (12, 13.2), (20.6, 6.4))
+        elif name == "globe":
+            oval(3, 3, 21, 21)
+            line((3.4, 12), (20.6, 12))
+            oval(8, 3, 16, 21)
+        elif name == "chevron":
+            line((9.5, 6), (15.5, 12), (9.5, 18))
+        elif name == "cap":
+            poly((12, 4), (22, 9), (12, 14), (2, 9), fill=color, outline="", w=0)
+            poly((7, 11.4), (17, 11.4), (15.4, 18.6), (8.6, 18.6),
+                 fill=color, outline="", w=0)
+            a, b = P(21.2, 9.6), P(21.2, 16.4)
+            cv.create_line(a[0], a[1], b[0], b[1], fill=color,
+                           width=max(1, int(width * 0.8)), capstyle="round",
+                           tags=tags)
+            oval(20, 15.6, 22.4, 18, fill=color, w=0)
+        else:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+class BrandMark(tk.Canvas):
+    """头部品牌 mark：深蓝圆角方块 + 白色学士帽剪影（规格 GLOBAL_UI_REFERENCE.png）。
+
+    ``GLOBAL_MARK.svg`` 里是线描书本，与设计稿不一致 —— 老板拍板以设计稿的实心学士帽
+    为准，配色取 DESIGN_TOKENS 的深蓝一族（方块 #174B7A，帽体白色）。整个 mark 只用
+    ``create_polygon`` / ``create_oval`` / ``create_line`` 画，零第三方依赖、零图片资源。
+    """
+
+    def __init__(self, parent, size: int = theme.MARK_SIZE, bg: str = None, **kw):
+        bg = bg or parent.cget("bg")
+        size = int(size)
+        super().__init__(parent, width=size, height=size, bg=bg,
+                         highlightthickness=0, bd=0, **kw)
+        self._size = size
+        self.draw()
+
+    def draw(self):
+        try:
+            self.delete("all")
+        except Exception:
+            return
+        s = self._size
+        pts = rounded_points(0.5, 0.5, s - 0.5, s - 0.5, theme.MARK_RADIUS)
+        self.create_polygon(pts, fill=theme.MARK_BG, outline=theme.MARK_BG,
+                            width=1, tags="mark")
+        k = s / 48.0
+        # 学士帽（48 网格）：帽板菱形 → 帽体梯形 → 右侧帽穗
+        self.create_polygon(17 * k, 22.2 * k, 31 * k, 22.2 * k,
+                            29.2 * k, 29.6 * k, 18.8 * k, 29.6 * k,
+                            fill=theme.MARK_FG, outline="", tags="mark")
+        self.create_polygon(24 * k, 12.6 * k, 37.4 * k, 19 * k,
+                            24 * k, 25.4 * k, 10.6 * k, 19 * k,
+                            fill=theme.MARK_FG, outline="", tags="mark")
+        self.create_line(36.6 * k, 19.8 * k, 36.6 * k, 27.2 * k,
+                         fill=theme.MARK_FG, width=max(1, int(round(1.6 * k))),
+                         capstyle="round", tags="mark")
+        self.create_oval(34.9 * k, 26.6 * k, 38.3 * k, 30 * k,
+                         fill=theme.MARK_FG, outline="", tags="mark")
+
+
+class IconBadge(tk.Canvas):
+    """柔和蓝小圆徽标 + 线描图标（设计稿每个字段行 / 面板标题前的装饰件）。"""
+
+    def __init__(self, parent, icon: str, size: int = theme.BADGE_SIZE,
+                 bg: str = None, fill: str = theme.PRIMARY_SOFT,
+                 fg: str = theme.PRIMARY, **kw):
+        bg = bg or parent.cget("bg")
+        size = int(size)
+        super().__init__(parent, width=size, height=size, bg=bg,
+                         highlightthickness=0, bd=0, **kw)
+        self._size = size
+        self._icon = icon
+        self._fill = fill
+        self._fg = fg
+        self.draw()
+
+    def draw(self):
+        try:
+            self.delete("all")
+        except Exception:
+            return
+        s = self._size
+        pad = 0.5
+        self.create_oval(pad, pad, s - pad, s - pad, fill=self._fill,
+                         outline=self._fill, width=1)
+        draw_icon(self, self._icon, s / 2.0, s / 2.0, s * 0.62, self._fg, 2)

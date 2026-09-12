@@ -6,8 +6,13 @@ import time
 import tkinter as tk
 import traceback
 
-# 添加 src 到路径
-sys.path.insert(0, "D:/AgentSpace/thesis-format-doctor-global/src")
+# 添加 src 到路径（**不许写死本机绝对路径**：CI runner 上没有 D:/AgentSpace，
+# 写死会让 `from ui import ...` 直接 ImportError；一律用 __file__ 求根）
+import os
+
+_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 from ui import app as app_module
 

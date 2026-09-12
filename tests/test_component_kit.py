@@ -1,23 +1,72 @@
-"""冒烟测试：验证 UI 组件是否按新的 Component Kit 规范实现。"""
+"""冒烟测试：验证 UI 组件是否按新的 Component Kit 规范实现。
 
+跑法：需要**带 tkinter** 的 Python。托管 venv 没有 tkinter 时整个文件自动 skip；
+本机用系统 Python + venv 的 site-packages 可全量跑：
+
+    PYTHONPATH=<venv>/Lib/site-packages python -m pytest tests/test_component_kit.py
+
+注意两条仓库约定（CI 上曾经因此变红，别再改回去）：
+
+1. **不许写死本机绝对路径**。CI runner 上没有 ``D:/AgentSpace/...``，
+   写死会让 ``from ui import ...`` 直接 ImportError。一律用 ``__file__`` 求根。
+2. **同进程只建一个 ``tk.Tk()``**。第二次 ``tk.Tk()`` 在本机会因 Tcl 库加载失败
+   抛 TclError，整套跑时随机有 1 个用例失败。复用 session 级 root（见
+   ``test_ui_redesign.py`` 的同名夹具约定）。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
 import sys
-import tkinter as tk
-from tkinter import ttk
 
-# 添加 src 到路径
-sys.path.insert(0, "D:/AgentSpace/thesis-format-doctor-global/src")
+import pytest
 
-from ui import theme, widgets, i18n
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = os.path.join(ROOT, "src")
+for _p in (_SRC, ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from ui import theme, widgets, i18n  # noqa: E402
 
 
-def test_button_primary():
+@pytest.fixture(scope="session")
+def _tk_session():
+    """整个会话共用一个 Tk root（见模块 docstring 约定 2）。"""
+    if importlib.util.find_spec("tkinter") is None:
+        pytest.skip("本机 Python 无 tkinter（GUI 冒烟需带 tkinter 的解释器）")
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except Exception as e:                     # noqa: BLE001
+        pytest.skip("Tk 不可用：%s" % e)
+    yield root
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+
+@pytest.fixture
+def host(_tk_session):
+    """在每个用例里挂一个独立容器，用完销毁，避免会话 root 上组件越堆越多。"""
+    import tkinter as tk
+
+    frame = tk.Frame(_tk_session, bg=theme.BG)
+    frame.pack(fill="both", expand=True)
+    yield frame
+    try:
+        frame.destroy()
+    except Exception:
+        pass
+
+
+def test_button_primary(host):
     """验证主按钮样式：52px 高，9px 圆角，Primary 色填充"""
-    root = tk.Tk()
-    root.title("Test Primary Button")
-    root.configure(bg=theme.BG)
-
     F = i18n.resolve_font_spec("en")
-    btn = widgets.RoundButton(root, text="Check formatting  ›",
+    btn = widgets.RoundButton(host, text="Check formatting  ›",
                               style="primary", font=F["F_BTN"], height=52)
     btn.pack(padx=40, pady=40)
 
@@ -25,19 +74,13 @@ def test_button_primary():
     assert btn._radius == 9, f"Expected radius 9, got {btn._radius}"
     assert btn._h == 52, f"Expected height 52, got {btn._h}"
     assert btn._style == "primary", f"Expected style primary, got {btn._style}"
-
-    root.destroy()
     print("✓ Primary button style OK")
 
 
-def test_button_secondary():
+def test_button_secondary(host):
     """验证次按钮样式：52px 高，9px 圆角，描边"""
-    root = tk.Tk()
-    root.title("Test Secondary Button")
-    root.configure(bg=theme.BG)
-
     F = i18n.resolve_font_spec("en")
-    btn = widgets.RoundButton(root, text="Fix issues",
+    btn = widgets.RoundButton(host, text="Fix issues",
                               style="secondary", font=F["F_BTN_S"], height=52)
     btn.pack(padx=40, pady=40)
 
@@ -45,19 +88,15 @@ def test_button_secondary():
     assert btn._radius == 9, f"Expected radius 9, got {btn._radius}"
     assert btn._h == 52, f"Expected height 52, got {btn._h}"
     assert btn._style == "secondary", f"Expected style secondary, got {btn._style}"
-
-    root.destroy()
     print("✓ Secondary button style OK")
 
 
-def test_badge_required():
+def test_badge_required(host):
     """验证 Required 徽标：胶囊形，PRIMARY_SOFT 背景"""
-    root = tk.Tk()
-    root.title("Test Required Badge")
-    root.configure(bg=theme.BG)
+    import tkinter as tk
 
     F = i18n.resolve_font_spec("en")
-    row = tk.Frame(root, bg=theme.SURFACE)
+    row = tk.Frame(host, bg=theme.SURFACE)
     row.pack(padx=40, pady=40)
 
     tk.Label(row, text="Citation style", bg=theme.SURFACE, fg=theme.TEXT,
@@ -72,19 +111,15 @@ def test_badge_required():
     # 验证颜色
     assert badge.cget("bg") == theme.PRIMARY_SOFT, f"Expected bg {theme.PRIMARY_SOFT}, got {badge.cget('bg')}"
     assert badge.cget("fg") == theme.PRIMARY, f"Expected fg {theme.PRIMARY}, got {badge.cget('fg')}"
-
-    root.destroy()
     print("✓ Required badge style OK")
 
 
-def test_badge_optional():
+def test_badge_optional(host):
     """验证 Optional 徽标：胶囊形，SURFACE_SOFT 背景"""
-    root = tk.Tk()
-    root.title("Test Optional Badge")
-    root.configure(bg=theme.BG)
+    import tkinter as tk
 
     F = i18n.resolve_font_spec("en")
-    row = tk.Frame(root, bg=theme.SURFACE)
+    row = tk.Frame(host, bg=theme.SURFACE)
     row.pack(padx=40, pady=40)
 
     tk.Label(row, text="University template", bg=theme.SURFACE, fg=theme.TEXT,
@@ -99,18 +134,12 @@ def test_badge_optional():
     # 验证颜色
     assert badge.cget("bg") == theme.SURFACE_SOFT, f"Expected bg {theme.SURFACE_SOFT}, got {badge.cget('bg')}"
     assert badge.cget("fg") == theme.TEXT_2, f"Expected fg {theme.TEXT_2}, got {badge.cget('fg')}"
-
-    root.destroy()
     print("✓ Optional badge style OK")
 
 
-def test_round_card():
+def test_round_card(host):
     """验证圆角卡片：12px 圆角，SURFACE 填充，BORDER 描边"""
-    root = tk.Tk()
-    root.title("Test Round Card")
-    root.configure(bg=theme.BG)
-
-    card = widgets.RoundCard(root, padx=theme.CARD_PAD_X,
+    card = widgets.RoundCard(host, padx=theme.CARD_PAD_X,
                              pady=theme.CARD_PAD_Y)
     card.pack(padx=40, pady=40, fill="both", expand=True)
 
@@ -118,19 +147,15 @@ def test_round_card():
     assert card._radius == 12, f"Expected radius 12, got {card._radius}"
     assert card._fill == theme.SURFACE, f"Expected fill {theme.SURFACE}, got {card._fill}"
     assert card._border == theme.BORDER, f"Expected border {theme.BORDER}, got {card._border}"
-
-    root.destroy()
     print("✓ Round card style OK")
 
 
-def test_stepper():
+def test_stepper(host):
     """验证步进圆点：todo/active/done 三态"""
-    root = tk.Tk()
-    root.title("Test Stepper")
-    root.configure(bg=theme.BG)
+    import tkinter as tk
 
     F = i18n.resolve_font_spec("en")
-    row = tk.Frame(root, bg=theme.BG)
+    row = tk.Frame(host, bg=theme.BG)
     row.pack(padx=40, pady=40)
 
     for i, state in enumerate(["todo", "active", "done"]):
@@ -139,8 +164,6 @@ def test_stepper():
         step.pack(side="left", padx=10)
 
         assert step.state == state, f"Expected state {state}, got {step.state}"
-
-    root.destroy()
     print("✓ Stepper states OK")
 
 
@@ -164,12 +187,16 @@ def test_theme_tokens():
 
 
 if __name__ == "__main__":
+    import tkinter as tk
+
     print("Running UI component smoke tests...")
     test_theme_tokens()
-    test_button_primary()
-    test_button_secondary()
-    test_badge_required()
-    test_badge_optional()
-    test_round_card()
-    test_stepper()
+    root = tk.Tk()
+    for fn in (test_button_primary, test_button_secondary, test_badge_required,
+               test_badge_optional, test_round_card, test_stepper):
+        frame = tk.Frame(root, bg=theme.BG)
+        frame.pack(fill="both", expand=True)
+        fn(frame)
+        frame.destroy()
+    root.destroy()
     print("\nAll smoke tests passed! ✓")

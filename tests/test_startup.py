@@ -259,8 +259,18 @@ def test_window_icon_reference_is_retained(tk_root, monkeypatch):
     from src.ui import iconpath as ui_iconpath
 
     sentinel = object()
+    real_photo = ui_app.tk.PhotoImage
     monkeypatch.setattr(ui_iconpath, "find_icon", lambda: os.path.abspath(__file__))
-    monkeypatch.setattr(ui_app.tk, "PhotoImage", lambda *a, **kw: sentinel)
+    # 背景层也走 tk.PhotoImage（规格 VII.3：加载失败必须可见地抛错）。本用例只验
+    # 「窗口图标的引用是否保留」，所以只把"图标"那次调用（路径是本 .py 文件）换成
+    # 哨兵；背景图（.png）仍走真实解码，避免把背景层一起打桩。
+    def _fake_photo(*a, **kw):
+        src = kw.get("file", a[0] if a else "")
+        if isinstance(src, str) and src.lower().endswith(".png"):
+            return real_photo(*a, **kw)
+        return sentinel
+
+    monkeypatch.setattr(ui_app.tk, "PhotoImage", _fake_photo)
     applied = []
     monkeypatch.setattr(tk_root, "iconphoto", lambda *a, **kw: applied.append(a))
 
@@ -371,4 +381,3 @@ def test_gui_shows_placeholder_then_survives_language_switch(tmp_path, monkeypat
     ui._set_lang("zh")
     # 用户已经跑过体检 —— 报告正文不该被语言切换清空
     assert ui._report_text == "SOME REPORT BODY"
-

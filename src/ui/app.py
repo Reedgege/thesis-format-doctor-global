@@ -48,7 +48,9 @@ from ..license import license as lic
 from .. import versioninfo
 from . import i18n, iconpath, theme
 from .fonts import Fonts
-from .widgets import RoundButton, RoundCard, ScrollArea, StepCircle
+from .modal_shell import ModalShell
+from .widgets import (BrandMark, IconBadge, RoundButton, RoundCard, ScrollArea,
+                      StepCircle, draw_icon)
 
 # ---------------------------------------------------------------------------
 # 配色别名 —— 新令牌在 theme.py，这里保留旧名字是为了**没重写的弹窗**（关于 /
@@ -75,6 +77,22 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _TEMPLATE_PATH = os.path.join(_HERE, "..", "data", "ai_questionnaire_template.json")
 
 _FIELD_RANGE = FIELD_RANGES
+
+# 引用规范下拉的展示名：引擎 key 不变（build_target 仍收 APA），
+# 仅把界面上的 APA 显示成设计稿的 "APA 7th edition"。
+_SPEC_DISPLAY = {"APA": "APA 7th edition"}
+
+
+def _spec_display(key: str) -> str:
+    return _SPEC_DISPLAY.get(key, key)
+
+# 字段行左侧的小圆徽标用的线描图标（设计稿每个字段前都有一枚，见 widgets.draw_icon）
+_FIELD_ICONS = {
+    "row_spec_title": "quote",
+    "row_paper_title": "doc",
+    "row_template_title": "bank",
+    "row_latex_title": "code",
+}
 
 
 def _app_version() -> str:
@@ -158,13 +176,40 @@ def _scroll_frame(parent, bg: str = PAPER):
 def _auto_wrap(label: tk.Label, container, padx: int):
     """让 label 的 wraplength 跟随容器宽度（弹窗拉宽时文字重排，不出现横向滚动）。"""
 
-    def _apply(_e=None):
+    state = {"wl": None, "busy": False}
+
+    def _refresh_card(w):
+        """换行一变，label 的请求高度就变；向上找最近的 RoundCard 让它重新测量。
+
+        卡片内容区（``RoundCard.inner``）的尺寸是钉死的，label 变高**不会**触发父级
+        重排 —— 不主动喊一声，宽窗口拖窄后信任卡/说明文字的第二行会被圆角矩形裁掉。
+        """
         try:
-            w = container.winfo_width() - 2 * padx
-            if w > 80:
-                label.configure(wraplength=w)
+            while w is not None:
+                if isinstance(w, RoundCard):
+                    w.refresh()
+                    return
+                w = w.master
         except Exception:
             pass
+
+    def _apply(_e=None):
+        if state["busy"]:
+            return
+        try:
+            w = container.winfo_width() - 2 * padx
+            if w <= 80 or w == state["wl"]:
+                return
+            state["wl"] = w
+            label.configure(wraplength=w)
+        except Exception:
+            return
+        # busy 防重入：refresh() 会再次触发 <Configure>，没有它就可能来回重排。
+        state["busy"] = True
+        try:
+            _refresh_card(label)
+        finally:
+            state["busy"] = False
 
     container.bind("<Configure>", _apply, add="+")
     # 首帧来不及算宽度，延后 30ms 补一次。**必须能取消**：弹窗在 30ms 内被关掉时，
@@ -279,6 +324,13 @@ class App:
         「内容涨了但卡片没涨、滚动条也没出现」→ 用户看不到也滚不到
         （Codex 2026-09-12 P0-2）。这个方法是那类问题的**唯一收口**。
         """
+        # 先内后外：嵌套卡片没有自己的布局入口，父卡量到的会是它们的旧请求高度。
+        for card in list(getattr(self, "_extra_cards", [])):
+            if card is not None:
+                try:
+                    card.refresh()
+                except Exception:
+                    pass
         for card in (getattr(self, "_left_card", None),
                      getattr(self, "_right_card", None)):
             if card is not None:
@@ -445,6 +497,9 @@ class App:
         """
         self._build_style()
         self.root.configure(bg=theme.BG)
+        # 嵌套的圆角卡片（Advanced 条 / How it works / 信任面板）要跟着一起重测量，
+        # 否则父卡按旧高度画圆角矩形、新内容被裁掉（见 _relayout_all）。
+        self._extra_cards: list = []
 
         self._build_backdrop()
         self._build_footer()
@@ -461,9 +516,13 @@ class App:
 
         main = tk.Frame(self._main_scroll.inner, bg=theme.BG)
         main.pack(fill="both", expand=True)
-        main.columnconfigure(0, weight=1, uniform="half", minsize=460)
-        main.columnconfigure(1, weight=1, uniform="half", minsize=460)
+        main.columnconfigure(0, weight=1, uniform="half", minsize=380)
+        main.columnconfigure(1, weight=1, uniform="half", minsize=380)
         main.rowconfigure(0, weight=1)
+        self._main_frame = main
+        # 两栏宽度只由窗口决定（见 _sync_columns），否则卡片里的自动换行会和 grid
+        # 的列宽分配互相追着跑。
+        main.bind("<Configure>", self._sync_columns, add="+")
 
         # 两栏等宽；grid 两边各给半个 CARD_GAP，合计正好一个卡片间距
         self._left_card = RoundCard(main, padx=theme.CARD_PAD_X,
@@ -495,20 +554,43 @@ class App:
             self._set_status(text, kind, spec=spec)
 
     # ------------------------------------------------------------ 背景 / 顶栏
+    def _sync_columns(self, e=None):
+        """把两栏列宽钉成"窗口算出来的半宽"。
+
+        卡片里的自动换行标签按格宽重排 → 内容请求宽度跟着变。若让 grid 按内容请求
+        分配列宽，请求更大的那一列会先吃掉空间、另一列被压窄，换行结果再反过来改
+        请求 —— 两个值互推，``update_idletasks`` 永远收敛不了（实测卡死）。
+        列宽一旦只跟窗口宽度走，内容请求就再也顶不动布局了。
+        """
+        try:
+            main = self._main_frame
+            w = int(e.width) if e is not None else int(main.winfo_width())
+            if w <= 2:
+                return
+            half = max(300, (w - theme.CARD_GAP) // 2)
+            for col in (0, 1):
+                main.columnconfigure(col, minsize=half)
+        except Exception:
+            pass
+
     def _build_backdrop(self):
         """最底层装饰背景（视觉规格包 2026-09-12 给的独立底图）。
 
         实现约束（照抄规格 README 的三条硬要求）：
           * **只作最底层背景**，绝不拿整张 UI 稿当背景、也不许从稿子里裁图当控件；
-          * **居中靠上、等比、不变形** —— 所以 1:1 画在 ``anchor="n"`` 水平居中处，
-            不做任何缩放（tkinter 只有整数 ``subsample``，缩放会很粗糙）；
+          * **等比、不变形** —— 1:1 画，不做缩放（tkinter 只有整数 ``subsample``，
+            缩放会很粗糙）；
           * 够淡、不干扰阅读 —— 底图最暗处 #CAD8E2（亮度 213/255），本身就极淡。
 
-        窗口比底图宽时两侧留空：底图的平坦区已在入库时规范成与 ``theme.BG`` 同色，
-        所以**看不出接缝**（这正是把素材底色统一成页面色的原因）。
+        **定位纪律（v2.3.0 修掉「花屏横带」的关键）**：素材贴**窗口右上角**
+        （``anchor="ne"``）并上移 ``theme.BACKDROP_DY``，让素材里那条 1536 宽的学术
+        天际线（素材 y 65~215）整条落在顶部品牌带里（窗口 y 7~157）。
+        旧写法是「水平居中、贴顶」：窗口一旦宽过 1536px（1440/1920 都超），素材右边缘
+        就切在天际线中间，露出一条被硬切开的图片横带；同时主体容器从顶栏下方起画，
+        又把天际线的下沿拦腰截断 —— 老板看到的「乱码/花屏横带」就是这两处硬边。
 
-        素材缺失 / Tk 没编 PNG 解码器 → 降级成纯纸底，功能零影响。
-        **但打包漏件不许靠这个降级兜过去**：``tools/verify_bundle.py`` 会在 CI 拦下。
+        **不许静默降级**（规格 VII.3）：素材缺失或 Tk 解码失败 → 写 stderr 并**抛异常**，
+        让问题立刻可见；打包漏件另由 ``tools/verify_bundle.py`` 在 CI 拦下。
         """
         self._backdrop = tk.Canvas(self.root, bg=theme.BG,
                                    highlightthickness=0, bd=0, width=1, height=1)
@@ -518,79 +600,122 @@ class App:
         self._backdrop_item = None
         self._backdrop_loaded = False
         path = iconpath.find_backdrop()
-        if path:
-            try:
-                self._backdrop_img = tk.PhotoImage(file=path)   # Tk 8.6 原生读 PNG
-                self._backdrop_item = self._backdrop.create_image(
-                    0, 0, image=self._backdrop_img, anchor="n")
-                self._backdrop_loaded = True
-            except Exception:
-                self._backdrop_img = None
-                self._backdrop_item = None
+        if not path:
+            msg = ("Global background layer missing: backdrop.png "
+                   "(02_BACKGROUND/GLOBAL_BACKGROUND.png)")
+            sys.stderr.write("[TFD] ERROR " + msg + "\n")
+            raise RuntimeError(msg)
+        try:
+            # master 必须显式指向这块画布：进程里存在 >1 个 Tk 解释器时
+            # （测试会话），默认 master 会把图片建到另一个解释器 → create_image 找不到。
+            self._backdrop_img = tk.PhotoImage(master=self._backdrop,
+                                               file=path)   # Tk 8.6 原生读 PNG
+            self._backdrop_item = self._backdrop.create_image(
+                0, 0, image=self._backdrop_img, anchor="ne")
+            self._backdrop_loaded = True
+        except Exception as exc:
+            sys.stderr.write("[TFD] ERROR failed to load background image %s: %s\n"
+                             % (path, exc))
+            raise
         self._place_backdrop()
 
     def _place_backdrop(self):
-        """底图水平居中、贴顶（规格 ``background.position = center top``）。"""
+        """底图贴窗口右上角（天际线因此永远跑到窗口右边缘，不会被竖切）。"""
         if getattr(self, "_backdrop_item", None) is None:
             return
         try:
             w = self.root.winfo_width()
             if w <= 1:
                 return
-            self._backdrop.coords(self._backdrop_item, w // 2, 0)
+            self._backdrop.coords(self._backdrop_item, w, -theme.BACKDROP_DY)
         except Exception:
             pass
 
     def _top_gap(self) -> int:
-        """主体上方该留出的高度 = 顶栏高度 + ``HEADER_GAP``。
+        """主体上方该留出的高度。
 
-        顶栏现在画在背景画布上（不占 pack 空间），所以这段高度必须显式留出来；
-        而这段留白的背景正是背景画布 —— 天际线就是从这里露出来的。
+        取「顶栏实际高度 + HEADER_GAP」与「天际线下沿」的较大者：顶栏画在背景画布上
+        （不占 pack 空间），这段高度必须显式留出来；同时绝对不能小于天际线的下沿，
+        否则主体容器会把背景里的天际线拦腰切断（老板报的「横带」就是这个）。
         """
-        return theme.HEADER_PAD_Y + self._header_height() + theme.HEADER_GAP
+        header_bottom = theme.HEADER_PAD_Y + self._header_height() + theme.HEADER_GAP
+        return max(header_bottom, theme.SKYLINE_BOTTOM + 4)
 
     def _header_height(self) -> int:
         try:
             return max(self._hdr_brand.winfo_reqheight(),
+                       self._hdr_privacy.winfo_reqheight(),
                        self._hdr_nav.winfo_reqheight())
         except Exception:
-            return 70
+            return 56
 
     def _place_header(self):
-        """顶栏右侧导航随窗口宽度贴右边（左侧品牌固定 PAGE_PAD）。"""
+        """顶栏定位：品牌贴左、导航贴右、隐私声明跟在品牌右侧，三者都不吃 pack 空间。
+
+        隐私声明是「有位置就显示、挤到了就整块收起」的可选件：窄窗口下它跟右上导航
+        相撞时直接隐藏，绝不允许压字（规格：隐私提示必须安静，不能抢版面）。
+        """
         try:
             w = self.root.winfo_width()
             if w <= 1:
                 return
-            self._backdrop.coords(self._hdr_nav_win, w - theme.PAGE_PAD,
-                                  theme.HEADER_PAD_Y)
+            cv = self._backdrop
+            pad = theme.PAGE_PAD
+            bh = self._hdr_brand.winfo_reqheight()
+            nh = self._hdr_nav.winfo_reqheight()
+            cv.coords(self._hdr_brand_win, pad, theme.HEADER_PAD_Y)
+            nav_y = theme.HEADER_PAD_Y + max(0, (bh - nh) // 2)
+            cv.coords(self._hdr_nav_win, w - pad, nav_y)
+
+            px = pad + self._hdr_brand.winfo_reqwidth() + 34
+            ph = self._hdr_privacy.winfo_reqheight()
+            pw = self._hdr_privacy.winfo_reqwidth()
+            nav_x = w - pad - self._hdr_nav.winfo_reqwidth()
+            fits = px + pw + 16 <= nav_x
+            state = "normal" if fits else "hidden"
+            cv.coords(self._hdr_privacy_win, px,
+                      theme.HEADER_PAD_Y + max(0, (bh - ph) // 2))
+            cv.itemconfigure(self._hdr_privacy_win, state=state)
+            cv.itemconfigure(self._hdr_sep_item, state=state)
+            cv.coords(self._hdr_sep_item, px - 18, theme.HEADER_PAD_Y + 2,
+                      px - 18, theme.HEADER_PAD_Y + bh - 2)
         except Exception:
             pass
 
     def _build_header(self):
         """顶栏：品牌 + 标语 + 隐私声明（左）／语言 ▾ · About · Help（右）。
 
-        与前版的两个差别（都是为背景服务）：
-          ① 顶栏不再是一整条**不透明**框架，而是画在背景画布上的两个小组件
-             （``create_window``）—— 背景素材的天际线正好压在顶栏这条带上，整条盖住
-             就等于白放了一张图；
-          ② **删掉顶栏下的通栏细线**：参考稿里没有这条线，留着会横穿天际线。
+        与前版的差别（都是为背景服务）：
+          ① 顶栏仍画在背景画布上（``create_window``，不占 pack 空间）—— 背景素材的
+             天际线正好压在顶栏这条带上，整条不透明框架盖住就等于白放了一张图；
+          ② **删掉顶栏下的通栏细线**：参考稿里没有这条线，留着会横穿天际线；
+          ③ 按设计稿补上**品牌 mark**（蓝底圆角方块 + 白色学士帽，``widgets.BrandMark``）
+             与隐私声明前的盾牌小徽标；语言选择器改成「当前语言 ▾」。
         """
         F = self.F
         cv = self._backdrop
 
+        # —— 品牌：mark + 两行文字（mark 与文字块垂直居中，左缘 = 页面留白）——
         brand = tk.Frame(cv, bg=theme.BG)
-        tk.Label(brand, text=self.tr("app_title"), bg=theme.BG, fg=theme.PRIMARY,
-                 font=F["F_BRAND"]).pack(anchor="w")
-        tk.Label(brand, text=self.tr("app_tagline"), bg=theme.BG,
-                 fg=theme.SECONDARY, font=F["F_SUB"]).pack(anchor="w", pady=(4, 9))
-        # 隐私声明：规格要求从卡片里**移到顶栏**（卡片右上角的 Offline 徽标已删除）
-        prow = tk.Frame(brand, bg=theme.BG)
+        BrandMark(brand, size=theme.MARK_SIZE, bg=theme.BG).pack(side="left")
+        btxt = tk.Frame(brand, bg=theme.BG)
+        btxt.pack(side="left", padx=(13, 0))
+        tk.Label(btxt, text=self.tr("app_title"), bg=theme.BG, fg=theme.PRIMARY,
+                 font=F["F_BRAND"], anchor="w").pack(anchor="w")
+        tk.Label(btxt, text=self.tr("app_tagline"), bg=theme.BG,
+                 fg=theme.SECONDARY, font=F["F_SUB"], anchor="w").pack(
+                     anchor="w", pady=(2, 0))
+
+        # —— 隐私声明：规格要求从卡片里移到顶栏，且保持「安静」——
+        privacy = tk.Frame(cv, bg=theme.BG)
+        prow = tk.Frame(privacy, bg=theme.BG)
         prow.pack(anchor="w")
+        IconBadge(prow, "shield", size=theme.BADGE_SIZE, bg=theme.BG).pack(side="left")
         tk.Label(prow, text=self.tr("privacy_line"), bg=theme.BG, fg=theme.PRIMARY,
-                 font=F["F_SMALL_B"]).pack(side="left")
-        tk.Label(prow, text="   " + self.tr("privacy_sub"), bg=theme.BG,
-                 fg=theme.TEXT_3, font=F["F_HELP"]).pack(side="left")
+                 font=F["F_SMALL_B"]).pack(side="left", padx=(8, 0))
+        tk.Label(privacy, text=self.tr("privacy_sub"), bg=theme.BG,
+                 fg=theme.TEXT_3, font=F["F_HELP"], anchor="w").pack(
+                     anchor="w", padx=(theme.BADGE_SIZE + 8, 0), pady=(3, 0))
 
         # 右侧导航：自右向左 pack
         nav = tk.Frame(cv, bg=theme.BG)
@@ -601,32 +726,42 @@ class App:
                    self._about_dialog).pack(side="right")
         self._nav_sep(nav)
         self._link(nav, self.tr("lang_button"),
-                   lambda: self._set_lang(i18n.other_lang(self.lang))).pack(side="right")
+                   lambda: self._set_lang(i18n.other_lang(self.lang)),
+                   fg=theme.TEXT).pack(side="right")
 
-        self._hdr_brand, self._hdr_nav = brand, nav
+        self._hdr_brand, self._hdr_nav, self._hdr_privacy = brand, nav, privacy
         self._hdr_brand_win = cv.create_window(theme.PAGE_PAD, theme.HEADER_PAD_Y,
                                                window=brand, anchor="nw")
         self._hdr_nav_win = cv.create_window(0, theme.HEADER_PAD_Y,
                                              window=nav, anchor="ne")
+        self._hdr_privacy_win = cv.create_window(0, theme.HEADER_PAD_Y,
+                                                 window=privacy, anchor="nw")
+        self._hdr_sep_item = cv.create_line(0, 0, 0, 0, fill=theme.BORDER)
         self._place_header()
 
     def _nav_sep(self, parent):
-        tk.Label(parent, text="   |   ", bg=theme.BG, fg=theme.BORDER,
+        tk.Label(parent, text="  |  ", bg=theme.BG, fg=theme.BORDER,
                  font=self.F["F_HELP"]).pack(side="right")
 
     def _build_footer(self):
-        """页脚：左邮箱 / 中官网 / 右标语 —— 规格明确「页脚只此三项」。"""
+        """页脚：左邮箱 / 中官网 / 右标语 —— 规格明确「页脚只此三项」。
+
+        右标语前加一根细分隔线（设计稿有），其余保持安静小字。
+        """
         F = self.F
         footer = tk.Frame(self.root, bg=theme.BG)
         footer.pack(side="bottom", fill="x", padx=theme.PAGE_PAD,
                     pady=(0, theme.FOOTER_PAD_Y))
-        mail = tk.Label(footer, text="✉   " + self.tr("footer_email"), bg=theme.BG,
+        mail = tk.Label(footer, text="✉  " + self.tr("footer_email"), bg=theme.BG,
                         fg=theme.SECONDARY, font=F["F_FOOT"], cursor="hand2")
         mail.pack(side="left")
         mail.bind("<Button-1>",
                   lambda e: webbrowser.open("mailto:" + i18n.BRAND_EMAIL))
-        tk.Label(footer, text=self.tr("footer_tagline"), bg=theme.BG,
-                 fg=theme.TEXT_3, font=F["F_FOOT"]).pack(side="right")
+        tag = tk.Label(footer, text=self.tr("footer_tagline"), bg=theme.BG,
+                       fg=theme.TEXT_3, font=F["F_FOOT"])
+        tag.pack(side="right", padx=(10, 0))
+        tk.Frame(footer, bg=theme.BORDER, width=1, height=14).pack(
+            side="right", padx=(0, 2))
         site = tk.Label(footer, text="◎   " + self.tr("footer_site"), bg=theme.BG,
                         fg=theme.SECONDARY, font=F["F_FOOT"], cursor="hand2")
         site.bind("<Button-1>", lambda e: webbrowser.open(i18n.BRAND_SITE_URL))
@@ -638,7 +773,7 @@ class App:
         tk.Frame(self.root, bg=theme.BORDER, height=1).pack(
             fill="x", side="bottom", padx=theme.PAGE_PAD)
         statusbar = tk.Frame(self.root, bg=theme.BG)
-        statusbar.pack(side="bottom", fill="x", padx=theme.PAGE_PAD, pady=(6, 8))
+        statusbar.pack(side="bottom", fill="x", padx=theme.PAGE_PAD, pady=(2, 4))
         self.bar_dot = tk.Label(statusbar, text="●", bg=theme.BG, fg=OKC,
                                 font=F["F_FOOT"])
         self.bar_dot.pack(side="left", padx=(0, 6))
@@ -652,20 +787,34 @@ class App:
     def _build_left(self, parent):
         """左卡 Your Documents：4 个字段 + 折叠的 Advanced options。
 
-        与旧版的关键差别：字段之间靠**留白 + 一根极细线**分区，不再给每个字段套一层
-        带边框的小盒子（规格第 5 节第 1 条「去掉过多的嵌套边框」）。
+        对照设计稿的关键差别：
+          ① 卡片标题左侧有一枚柔和蓝圆徽标（行首印记），不再只有裸文字；
+          ② 字段之间靠**留白 + 一根极细线**分区，不给每个字段套带边框的小盒子
+             （规格第 5 节第 1 条「去掉过多的嵌套边框」）；
+          ③ 每行是「小图标 + 标签 + Required/Optional」同行，控件另起一行铺满宽度，
+             Citation style 的下拉按设计稿同行右对齐；
+          ④ 每个像素都要省 —— 主视图在 1280×720 必须整屏放得下（老板实测硬伤 #2）。
         """
         F = self.F
-        tk.Label(parent, text=self.tr("left_title"), bg=theme.SURFACE,
+
+        head = tk.Frame(parent, bg=theme.SURFACE)
+        head.pack(fill="x")
+        IconBadge(head, "doc", size=theme.BADGE_SIZE + 8,
+                  bg=theme.SURFACE).pack(side="left")
+        htxt = tk.Frame(head, bg=theme.SURFACE)
+        htxt.pack(side="left", padx=(10, 0), fill="x", expand=True)
+        tk.Label(htxt, text=self.tr("left_title"), bg=theme.SURFACE,
                  fg=theme.PRIMARY, font=F["F_CARD_HDR"], anchor="w").pack(fill="x")
-        desc = tk.Label(parent, text=self.tr("left_desc"), bg=theme.SURFACE,
+        desc = tk.Label(htxt, text=self.tr("left_desc"), bg=theme.SURFACE,
                         fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
                         justify="left")
-        desc.pack(fill="x", pady=(6, theme.FIELD_GAP))
-        _auto_wrap(desc, parent, theme.CARD_PAD_X)
+        desc.pack(fill="x", pady=(2, 0))
+        _auto_wrap(desc, htxt, 0)
 
+        self._spacer(parent)
         # ① 引用规范（必选）
         self._build_field_spec(parent)
+        self._spacer(parent)
         self._hairline(parent)
 
         # ② 论文（必选）—— 虚线投放区
@@ -673,21 +822,30 @@ class App:
         self._helper(parent, "row_paper_helper")
         drop = RoundCard(parent, radius=9, fill="#FCFDFF",
                          border=theme.SECONDARY, shadow=False, dashed=True,
-                         padx=18, pady=13)
-        drop.pack(fill="x", pady=(0, theme.FIELD_GAP))
-        self._paper_name = tk.Label(drop.inner, text="", bg="#FCFDFF",
-                                    fg=theme.TEXT_3, font=F["F_BODY"],
-                                    cursor="hand2")
-        self._paper_name.pack()
-        sub = tk.Label(drop.inner,
-                       text=self.tr("btn_select_doc") + "   ·   "
-                       + self.tr("paper_support"),
+                         padx=14, pady=6)
+        # 嵌套卡片要登记进 _extra_cards：内容一变就得跟父卡一起重测量（见 _relayout_all）
+        self._extra_cards.append(drop)
+        drop.pack(fill="x", pady=(2, 0))
+        srow = tk.Frame(drop.inner, bg="#FCFDFF")
+        srow.pack()
+        cloud = tk.Canvas(srow, width=26, height=24, bg="#FCFDFF",
+                          highlightthickness=0, bd=0)
+        cloud.pack(side="left", padx=(0, 8))
+        draw_icon(cloud, "cloud", 13, 12, 22, theme.PRIMARY, 2)
+        scol = tk.Frame(srow, bg="#FCFDFF")
+        scol.pack(side="left")
+        self._paper_name = tk.Label(scol, text="", bg="#FCFDFF",
+                                    fg=theme.PRIMARY, font=F["F_SMALL_B"],
+                                    cursor="hand2", anchor="w")
+        self._paper_name.pack(anchor="w")
+        sub = tk.Label(scol, text=self.tr("paper_support"),
                        bg="#FCFDFF", fg=theme.TEXT_3, font=F["F_HELP"],
-                       cursor="hand2")
-        sub.pack(pady=(5, 0))
-        for w in (drop.inner, self._paper_name, sub):
+                       cursor="hand2", anchor="w")
+        sub.pack(anchor="w")
+        for w in (drop.inner, self._paper_name, sub, srow, cloud, scol):
             w.bind("<Button-1>", lambda e: self._pick_docx())
 
+        self._spacer(parent)
         self._hairline(parent)
         # ③ 学校模板（可选）
         self._field_label(parent, "row_template_title", required=False)
@@ -695,6 +853,7 @@ class App:
         self._tpl_name = self._select_field(parent, "row_template_placeholder",
                                             self._pick_template)
 
+        self._spacer(parent)
         self._hairline(parent)
         # ④ LaTeX 模板（可选）
         self._field_label(parent, "row_latex_title", required=False)
@@ -707,29 +866,47 @@ class App:
     def _hairline(self, parent):
         """字段之间的极细分隔线。
 
-        只给**上方** 16px：下方的间距由紧跟着的 ``_field_label`` 提供。
-        旧写法两边各给一个 FIELD_GAP，两个字段之间白吃 36px 高度，左卡一下就撑到 700+。
+        只给**上方**留白：下方的间距由紧跟着的 ``_field_label`` 提供。
+        旧写法两边各给一个 FIELD_GAP，两个字段之间白吃 30+px 高度，左卡一下就撑到 700+。
         """
-        tk.Frame(parent, bg=theme.HAIRLINE, height=1).pack(fill="x", pady=(16, 0))
+        tk.Frame(parent, bg=theme.HAIRLINE, height=1).pack(
+            fill="x", pady=(theme.HAIRLINE_PAD, 0))
+
+    def _spacer(self, parent):
+        """可伸缩留白：窗口拉高时把多出来的高度摊到各区块之间。
+
+        设计稿是"大留白"版式 —— 1440/1920 下卡片内容应当被撑开、区块间距变大，
+        而不是在卡片底部空一大块。``height=0`` 的 Frame 对自然高度零贡献
+        （1280×720 下布局一个像素都不变），只在容器被拉高时参与分空间。
+        """
+        try:
+            bg = parent.cget("bg")
+        except Exception:
+            bg = theme.SURFACE
+        tk.Frame(parent, bg=bg, height=0).pack(fill="x", expand=True)
 
     def _field_label(self, parent, key: str, required: bool = False):
-        """字段标签 + 小小的 Required/Optional 徽标。
+        """字段标签行：小圆徽标 + 标签 + Required/Optional 徽标（+ 可选右侧控件）。
 
         规格第 5 节第 5 条：必选/可选标签要**小、中性偏蓝、不吓人** ——
-        旧版用朱砂红，看着像报错，已改。
+        旧版用朱砂红，看着像报错，已改。方法返回这一行，调用方可以往右边挂控件
+        （Citation style 的下拉就是这么对齐到同一行的）。
         """
         F = self.F
         row = tk.Frame(parent, bg=theme.SURFACE)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(theme.FIELD_GAP, 0))
+        if _FIELD_ICONS.get(key):
+            IconBadge(row, _FIELD_ICONS[key], size=theme.BADGE_SIZE,
+                      bg=theme.SURFACE).pack(side="left")
         tk.Label(row, text=self.tr(key), bg=theme.SURFACE, fg=theme.TEXT,
-                 font=F["F_LABEL"]).pack(side="left")
+                 font=F["F_LABEL"]).pack(side="left", padx=(8, 0))
         badge_text = self.tr("mark_required" if required else "mark_optional")
         badge_color = theme.PRIMARY_SOFT if required else theme.SURFACE_SOFT
         badge_fg = theme.PRIMARY if required else theme.TEXT_2
         tk.Label(row,
                  text="  " + badge_text + "  ",
                  bg=badge_color, fg=badge_fg,
-                 font=F["F_HELP"], padx=6, pady=1).pack(side="left", padx=(7, 0))
+                 font=F["F_HELP"], padx=5).pack(side="left", padx=(6, 0))
         return row
 
     def _helper(self, parent, key: str):
@@ -737,19 +914,24 @@ class App:
         lbl = tk.Label(parent, text=self.tr(key), bg=theme.SURFACE,
                        fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
                        justify="left")
-        lbl.pack(fill="x", pady=(4, 8))
+        lbl.pack(fill="x", pady=(1, theme.ROW_GAP))
         _auto_wrap(lbl, parent, theme.CARD_PAD_X)
         return lbl
 
     def _build_field_spec(self, parent):
         """引用规范（必选）：下拉框 + 一行「Other 用法」轻提示。"""
         F = self.F
-        self._field_label(parent, "row_spec_title", required=True)
+        row = self._field_label(parent, "row_spec_title", required=True)
+        # 设计稿里 Citation style 的下拉与标签**同行**右对齐（省一整行高度）
+        # 设计稿把默认规范显示成 "APA 7th edition"，但引擎 key 仍是 APA
+        # （build_target 只认 SPEC_ORDER 里的 key），这里只做展示层映射。
+        self._spec_disp = tk.StringVar(value=_spec_display(self.spec_key.get()))
+        self._spec_cb = ttk.Combobox(row, textvariable=self._spec_disp,
+                                     values=[_spec_display(k) for k in SPEC_ORDER],
+                                     state="readonly", font=F["F_BODY"], width=18)
+        self._spec_cb.pack(side="right")
+        self._spec_cb.bind("<<ComboboxSelected>>", self._on_spec_pick)
         self._helper(parent, "row_spec_desc")
-        self._spec_cb = ttk.Combobox(parent, textvariable=self.spec_key,
-                                     values=SPEC_ORDER, state="readonly",
-                                     font=F["F_BODY"])
-        self._spec_cb.pack(fill="x", pady=(0, 6))
         # 下拉**弹出列表**的字体不受 widget 的 font 影响，得单独喂给 option 库，
         # 否则弹出来还是 Tk 默认字体（观感直接掉档）。
         try:
@@ -761,14 +943,20 @@ class App:
             self.spec_key.trace_add("write", lambda *a: self._on_input_changed())
         except Exception:
             pass
-        hint = tk.Label(parent, text=self.tr("chip_style_hint"), bg=theme.SURFACE,
-                        fg=theme.GOLD, font=F["F_HELP"], anchor="w",
-                        justify="left")
-        hint.pack(fill="x")
-        _auto_wrap(hint, parent, theme.CARD_PAD_X)
+
+    def _on_spec_pick(self, _e=None):
+        """下拉展示名 → 引擎 key（选 APA 7th edition 仍写回 APA）。"""
+        try:
+            disp = self._spec_disp.get()
+        except Exception:
+            return
+        for k in SPEC_ORDER:
+            if _spec_display(k) == disp:
+                self.spec_key.set(k)
+                return
 
     def _select_field(self, parent, placeholder_key: str, cmd):
-        """「下拉框外观 + 文件选择行为」的控件。
+        """「下拉框外观 + 打开文件行为」的控件。
 
         规格画的是 ``Choose a template ▾`` 这样的下拉；我们的真实动作是打开文件
         对话框（本机离线读模板），所以外观照规格做、行为照实际来：整行可点。
@@ -777,14 +965,14 @@ class App:
         box = tk.Frame(parent, bg=theme.BG, highlightthickness=1,
                        highlightbackground=theme.FIELD_BORDER,
                        highlightcolor=theme.PRIMARY)
-        box.pack(fill="x", pady=(0, 2))
+        box.pack(fill="x")
         inner = tk.Frame(box, bg=theme.SURFACE)
-        inner.pack(fill="x", padx=11, pady=9)
+        inner.pack(fill="x", padx=10, pady=3)
         lbl = tk.Label(inner, text=self.tr(placeholder_key), bg=theme.SURFACE,
                        fg=theme.TEXT_3, font=F["F_BODY"], anchor="w",
                        cursor="hand2")
         lbl.pack(side="left", fill="x", expand=True)
-        tk.Label(inner, text="▾", bg=theme.SURFACE, fg=theme.SECONDARY,
+        tk.Label(inner, text="⌄", bg=theme.SURFACE, fg=theme.SECONDARY,
                  font=F["F_BODY"], cursor="hand2").pack(side="right")
 
         def _click(_e=None):
@@ -799,26 +987,39 @@ class App:
 
         规格第 5 节第 7 条：技术性功能收进这里。旧版把问卷与 AI 填表 JSON 当作两个
         常驻行摆在明面上，既占版面、也抬高理解成本。
+
+        外观按设计稿做成一条**带边框的圆角条**（齿轮小徽标 + 标题 + 右侧箭头），
+        展开的内容长在条内部；条本身也是圆角卡片，所以展开/收起后必须重测量
+        （``_relayout_all`` 会连嵌套卡片一起刷新）。
         """
         F = self.F
         self._adv_open = False
+        self._spacer(parent)
         self._hairline(parent)
 
-        hdr = tk.Frame(parent, bg=theme.SURFACE, cursor="hand2")
-        hdr.pack(fill="x", pady=(6, 0))
-        self._adv_chev = tk.Label(hdr, text="▸  ", bg=theme.SURFACE,
+        bar = RoundCard(parent, radius=10, fill=theme.SURFACE,
+                        border=theme.BORDER, shadow=False, padx=12, pady=6)
+        bar.pack(fill="x", pady=(theme.FIELD_GAP, 0))
+        self._adv_card = bar
+        self._extra_cards.append(bar)
+
+        hdr = tk.Frame(bar.inner, bg=theme.SURFACE, cursor="hand2")
+        hdr.pack(fill="x")
+        self._adv_chev = tk.Label(hdr, text="▸", bg=theme.SURFACE,
                                   fg=theme.SECONDARY, font=F["F_LABEL"],
                                   cursor="hand2")
-        self._adv_chev.pack(side="left")
+        self._adv_chev.pack(side="right")
+        IconBadge(hdr, "gear", size=theme.BADGE_SIZE,
+                  bg=theme.SURFACE).pack(side="left")
         tk.Label(hdr, text=self.tr("adv_label"), bg=theme.SURFACE, fg=theme.TEXT,
-                 font=F["F_LABEL"], cursor="hand2").pack(side="left")
+                 font=F["F_LABEL"], cursor="hand2").pack(side="left", padx=(8, 0))
 
-        self._adv_hint = tk.Label(parent, text=self.tr("adv_hint"), bg=theme.SURFACE,
-                                  fg=theme.TEXT_3, font=F["F_HELP"], anchor="w",
-                                  cursor="hand2")
-        self._adv_hint.pack(fill="x", padx=(16, 0), pady=(3, 0))
+        self._adv_hint = tk.Label(bar.inner, text=self.tr("adv_hint"),
+                                  bg=theme.SURFACE, fg=theme.TEXT_3,
+                                  font=F["F_HELP"], anchor="w", cursor="hand2")
+        self._adv_hint.pack(fill="x", padx=(theme.BADGE_SIZE + 8, 0), pady=(2, 0))
 
-        self._adv_body = tk.Frame(parent, bg=theme.SURFACE)
+        self._adv_body = tk.Frame(bar.inner, bg=theme.SURFACE)
 
         # ① 格式问卷
         r1 = tk.Frame(self._adv_body, bg=theme.SURFACE)
@@ -859,12 +1060,13 @@ class App:
         try:
             if self._adv_open:
                 self._adv_body.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-                self._adv_chev.config(text="▾  ")
+                self._adv_chev.config(text="▾")
                 self._adv_hint.pack_forget()
             else:
                 self._adv_body.pack_forget()
-                self._adv_chev.config(text="▸  ")
-                self._adv_hint.pack(fill="x", padx=(16, 0), pady=(3, 0))
+                self._adv_chev.config(text="▸")
+                self._adv_hint.pack(fill="x", padx=(theme.BADGE_SIZE + 8, 0),
+                                    pady=(2, 0))
         except Exception:
             pass
         # 展开/收起改变了左卡内容高度 —— 必须主动重新测量，
@@ -874,16 +1076,30 @@ class App:
 
     # ------------------------------------------------------------ 右栏
     def _build_right(self, parent):
+        """右卡 Review & Fix。严格按规范的顺序：标题 → stepper → How it works →
+        主 CTA（Check formatting）→ 次 CTA（Fix issues）→ 信任小面板 → 商业区紧凑行。
+
+        设计稿把 stepper 摆在标题行右侧、把商业区压成一行小字 + 一个小按钮，
+        主页不再铺四张定价卡（规格 COMMERCIAL UI）。
+        """
         F = self.F
-        tk.Label(parent, text=self.tr("right_title"), bg=theme.SURFACE,
-                 fg=theme.PRIMARY, font=F["F_CARD_HDR"], anchor="w").pack(fill="x")
+        head = tk.Frame(parent, bg=theme.SURFACE)
+        head.pack(fill="x")
+        trow = tk.Frame(head, bg=theme.SURFACE)
+        trow.pack(side="left")
+        IconBadge(trow, "sliders", size=theme.BADGE_SIZE + 8,
+                  bg=theme.SURFACE).pack(side="left")
+        tk.Label(trow, text=self.tr("right_title"), bg=theme.SURFACE,
+                 fg=theme.PRIMARY, font=F["F_CARD_HDR"], anchor="w").pack(
+                     side="left", padx=(10, 0))
+        self._build_stepper(head)
         desc = tk.Label(parent, text=self.tr("right_desc"), bg=theme.SURFACE,
                         fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
                         justify="left")
-        desc.pack(fill="x", pady=(6, 0))
+        desc.pack(fill="x", pady=(2, 0))
         _auto_wrap(desc, parent, theme.CARD_PAD_X)
 
-        self._build_stepper(parent)
+        self._spacer(parent)
         self._build_how_card(parent)
 
         # 状态行：结果与提示都落这里（旧版状态行保留，位置改到按钮上方）
@@ -910,65 +1126,92 @@ class App:
                                      font=F["F_HELP"], anchor="w", justify="left")
         self.summary_hint.pack(fill="x")
         _auto_wrap(self.summary_hint, parent, theme.CARD_PAD_X)
+        # 空态（还没体检）不摆结果区：设计稿右栏在出结果前只有引导卡 + 两个 CTA，
+        # 结果明细与导出提示一律等真出了报告再出现（否则白占约 72px，1280×720 下
+        # 正好把主视图顶出滚动条）。显隐统一由状态机 _sync_ui_state 管。
+        self.summary_lbl.pack_forget()
+        self.summary_hint.pack_forget()
 
-        # 辅助动作（技术性功能，低调）。**必须先建**：下面 `_fix_btn` 的 pack 要以它为锚点。
+        # 主 CTA（视觉绝对主导）+ 次按钮（只在「就绪」态出现）—— 严格按规范的右栏
+        # 顺序，两个动作按钮**紧跟 How it works**，不被任何 ghost 动作插队。
+        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
+                                      style="primary", font=F["F_BTN"],
+                                      height=46, icon="search")
+        self._check_btn.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
+                                    style="secondary", font=F["F_BTN_S"],
+                                    height=46, icon="wrench")
+        self._fix_btn.pack(fill="x", pady=(6, 0))
+
+        # 辅助动作（技术性功能，低调）排在两个 CTA **之下**，保持安静。
+        # `pack_anchor` 把次按钮 `set_visible(True)` 的重排锚点钉在这行之前 ——
+        # 不钉的话次按钮会掉到 ghost 行下面，破坏"次要动作紧跟主 CTA"的层级
+        # （Codex 2026-09-12 P1-1，回归测试也断言这条）。
         aux = tk.Frame(parent, bg=theme.SURFACE)
-        aux.pack(fill="x", pady=(10, 0))
+        aux.pack(fill="x", pady=(theme.SECTION_GAP, 0))
         self._aux_row = aux          # 留引用：回归测试要断言次按钮排在它**上面**
         for text, cmd in ((self.tr("btn_save_report"), self._save_report),
-                          (self.tr("btn_export_ai"), self._export_template),
-                          (self.tr("btn_activate"), self._activate_dialog)):
+                          (self.tr("btn_export_ai"), self._export_template)):
             ttk.Button(aux, text=text, style="Ghost.TButton",
                        command=cmd).pack(side="left", padx=(0, 6))
+        self._fix_btn.pack_anchor(aux)
 
-        # 主 CTA（视觉绝对主导）+ 次按钮（只在「就绪」态出现）
-        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
-                                      style="primary", font=F["F_BTN"], height=52)
-        self._check_btn.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-        # before=aux 必须记进 pack 参数：`set_visible` 是 pack_forget 后再 pack，
-        # 不记锚点就会把它排到队尾 —— 次按钮会掉到三个 ghost 按钮**下面**，
-        # 破坏"次要动作紧跟主 CTA"的层级（Codex 2026-09-12 P1-1）。
-        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
-                                    style="secondary", font=F["F_BTN_S"], height=52)
-        self._fix_btn.pack(fill="x", pady=(8, 0), before=aux)
-
+        self._spacer(parent)
         self._build_trust_card(parent)
+        self._build_commercial(parent)
 
     def _build_stepper(self, parent):
-        """横排 ① Prepare → ② Check → ③ Fix（规格把竖排时间线换成横排）。"""
+        """横排 ① Prepare —— ② Check —— ③ Fix（规格把竖排时间线换成横排）。
+
+        连接线是 1px 的 Frame，用 ``pady`` 顶到圆点圆心高度；状态变化时
+        ``_set_step`` 会把已走过的连线刷成主色（设计稿里走过的那段是深蓝）。
+        """
         F = self.F
         wrap = tk.Frame(parent, bg=theme.SURFACE)
-        wrap.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-        for c in range(3):
-            wrap.columnconfigure(c, weight=1, uniform="step")
+        wrap.pack(side="right", padx=(12, 0))
         self._step_circles: list = []
         self._step_labels: list = []
+        self._step_links: list = []
+        step = theme.STEP_SIZE
         for i, key in enumerate(("step1_title", "step2_title", "step3_title")):
             cell = tk.Frame(wrap, bg=theme.SURFACE)
-            cell.grid(row=0, column=i, sticky="n")
-            circ = StepCircle(cell, i + 1, font=F["F_STEP_N"], bg=theme.SURFACE)
+            cell.grid(row=0, column=2 * i, sticky="n")
+            circ = StepCircle(cell, i + 1, font=F["F_STEP_N"], size=step,
+                              bg=theme.SURFACE)
             circ.pack()
             lbl = tk.Label(cell, text=self.tr(key), bg=theme.SURFACE,
                            fg=theme.TEXT_3, font=F["F_HELP"])
-            lbl.pack(pady=(5, 0))
+            lbl.pack(pady=(2, 0))
             self._step_circles.append(circ)
             self._step_labels.append(lbl)
+            if i < 2:
+                link = tk.Frame(wrap, bg=theme.BORDER, height=1, width=1)
+                link.grid(row=0, column=2 * i + 1, sticky="ew",
+                          pady=(step // 2, 0))
+                self._step_links.append(link)
+        for i in range(2):
+            wrap.columnconfigure(2 * i + 1, weight=1, minsize=step)
 
     def _build_how_card(self, parent):
         """How it works 引导卡：跑过体检后收起，把版面让给结果。"""
         F = self.F
         self._how_card = RoundCard(parent, radius=12, fill=theme.SURFACE_SOFT,
                                    border=theme.INFO_BORDER, shadow=False,
-                                   padx=16, pady=13)
+                                   padx=14, pady=10)
+        self._extra_cards.append(self._how_card)
         self._how_card.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-        tk.Label(self._how_card.inner, text=self.tr("how_title"),
-                 bg=theme.SURFACE_SOFT, fg=theme.PRIMARY, font=F["F_LABEL"],
-                 anchor="w").pack(fill="x", pady=(0, 7))
+        hrow = tk.Frame(self._how_card.inner, bg=theme.SURFACE_SOFT)
+        hrow.pack(fill="x", pady=(0, 4))
+        IconBadge(hrow, "bulb", size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
+                  fill=theme.PRIMARY_SOFT).pack(side="left")
+        tk.Label(hrow, text=self.tr("how_title"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"],
+                 anchor="w").pack(side="left", padx=(8, 0))
         for name, text in i18n.t(self.lang, "how_steps"):
             row = tk.Frame(self._how_card.inner, bg=theme.SURFACE_SOFT)
-            row.pack(fill="x", pady=1)
+            row.pack(fill="x", pady=0)
             tk.Label(row, text=name, bg=theme.SURFACE_SOFT, fg=theme.PRIMARY,
-                     font=F["F_LABEL"], width=9, anchor="w").pack(side="left")
+                     font=F["F_SMALL_B"], width=8, anchor="w").pack(side="left")
             tk.Label(row, text="— " + text, bg=theme.SURFACE_SOFT,
                      fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
                      justify="left").pack(side="left", fill="x", expand=True)
@@ -976,16 +1219,70 @@ class App:
     def _build_trust_card(self, parent):
         F = self.F
         trust = RoundCard(parent, radius=12, fill=theme.SURFACE_SOFT,
-                          border=theme.INFO_BORDER, shadow=False, padx=16, pady=13)
-        trust.pack(side="bottom", fill="x", pady=(theme.SECTION_GAP, 0))
-        tk.Label(trust.inner, text="✓   " + self.tr("trust_title"),
-                 bg=theme.SURFACE_SOFT, fg=theme.PRIMARY, font=F["F_LABEL"],
-                 anchor="w").pack(fill="x")
+                          border=theme.INFO_BORDER, shadow=False, padx=14, pady=10)
+        self._trust_card = trust
+        self._extra_cards.append(trust)
+        # 顺排（不用 side="bottom"）：右栏内容比左栏短时，多出来的高度要落在**卡片底部**，
+        # 而不是卡在"ghost 按钮"和"信任卡"中间留一块空洞。
+        trust.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+        row = tk.Frame(trust.inner, bg=theme.SURFACE_SOFT)
+        row.pack(fill="x")
+        IconBadge(row, "shield", size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
+                  fill=theme.PRIMARY_SOFT).pack(side="left")
+        tk.Label(row, text=self.tr("trust_title"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"],
+                 anchor="w").pack(side="left", padx=(8, 0))
+        cap = tk.Canvas(trust.inner, width=30, height=26, bg=theme.SURFACE_SOFT,
+                        highlightthickness=0, bd=0)
+        cap.pack(side="right", padx=(8, 0))
+        draw_icon(cap, "cap", 15, 13, 26, theme.PRIMARY_SOFT)
         body = tk.Label(trust.inner, text=self.tr("trust_body"),
                         bg=theme.SURFACE_SOFT, fg=theme.TEXT_2, font=F["F_HELP"],
                         anchor="w", justify="left")
-        body.pack(fill="x", pady=(4, 0))
-        _auto_wrap(body, trust.inner, 16)
+        body.pack(fill="x", pady=(3, 0), padx=(theme.BADGE_SIZE + 8, 0))
+        _auto_wrap(body, trust.inner, theme.BADGE_SIZE + 8 + 38)
+
+    # ------------------------------------------------------------ 商业区
+    def _build_commercial(self, parent):
+        """商业区：主页只留一行 ``Trial · X free fixes left`` + ``Upgrade ›``。
+
+        规格 COMMERCIAL UI 明确「主页不要铺四张定价卡」：四个方案收进
+        ``_upgrade_dialog`` 的定价弹窗，点 Upgrade 才展开。试用/授权状态全部来自
+        ``license.status()``（**只读**），UI 不碰任何计数与权益逻辑。
+        """
+        F = self.F
+        row = tk.Frame(parent, bg=theme.SURFACE)
+        row.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+        self._commercial_row = row
+        self._trial_lbl = tk.Label(row, text="", bg=theme.SURFACE,
+                                   fg=theme.TEXT_2, font=F["F_HELP"], anchor="w")
+        self._trial_lbl.pack(side="left")
+        self._upgrade_btn = RoundButton(
+            row, text=self.tr("btn_upgrade"), command=self._upgrade_dialog,
+            style="primary", font=F["F_BTN_S"], height=28, padx=12)
+        self._upgrade_btn.pack(side="right")
+        self._refresh_commercial()
+
+    def _refresh_commercial(self):
+        """按 license 的**只读**状态刷新试用行文案（任何异常都退回中性文案）。"""
+        tr = self.tr
+        text = tr("trial_none")
+        try:
+            st = lic.status()
+            limit = int(st.get("trial_limit") or 1)
+            if st.get("activated"):
+                text = tr("trial_licensed")
+            elif not st.get("trial_fix_used"):
+                left = max(0, limit)
+                text = tr("trial_fix_one", left) if left == 1 else tr("trial_fix_many", left)
+            else:
+                text = tr("trial_none")
+        except Exception:
+            pass
+        try:
+            self._trial_lbl.config(text=text)
+        except Exception:
+            pass
 
     def _set_step(self, index: int):
         """0=Prepare / 1=Check / 2=Fix / 3=三步全部完成。"""
@@ -1000,6 +1297,13 @@ class App:
             else:
                 circ.set_state("todo")
                 self._step_labels[i].config(fg=theme.TEXT_3)
+        # 连线：已走过的那段刷成主色（设计稿 stepper 的蓝色连接线）
+        for i, link in enumerate(getattr(self, "_step_links", []) or []):
+            try:
+                link.config(bg=theme.PRIMARY if i < self._step_index
+                            else theme.BORDER)
+            except Exception:
+                pass
 
     def _sync_ui(self):
         """状态机收口：先算状态，再统一做一次重新测量。
@@ -1040,6 +1344,16 @@ class App:
                                     before=self._status_row)
         except Exception:
             pass
+        # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
+        try:
+            if results:
+                self.summary_lbl.pack(fill="x", pady=(3, 0), before=self._aux_row)
+                self.summary_hint.pack(fill="x", before=self._aux_row)
+            else:
+                self.summary_lbl.pack_forget()
+                self.summary_hint.pack_forget()
+        except Exception:
+            pass
 
         if self._busy:
             if not paper:
@@ -1076,6 +1390,7 @@ class App:
             self._set_step(2)
             issues = self._last_issues or 0
             if issues:
+                # i18n 里 ``*_n`` 词条自带单复数回退（N=1 → "Fix 1 issue"）
                 self._check_btn.set_text(tr("btn_fix_n", issues))
                 self._check_btn.set_action(self._run_fix)
             else:
@@ -1108,7 +1423,14 @@ class App:
             else:
                 lbl.config(text=tr(none_key), fg=theme.TEXT_3)
 
-        _sel(self._paper_name, self.docx_path.get(), "st_paper_none")
+        # 投放区主行文案用设计稿的「Select a document」；选了非 .docx（文件对话框的
+        # All files 入口）则显示 05_STATES/ERROR.svg 的「File type not supported」。
+        # 05_STATES/SELECTED.svg 的示例文件名是 "Thesis_Final.docx"，运行时显示真实文件名。
+        paper = self.docx_path.get()
+        if paper and not paper.lower().endswith(".docx"):
+            self._paper_name.config(text=tr("st_paper_error"), fg=theme.ERROR)
+        else:
+            _sel(self._paper_name, paper, "btn_select_doc")
         _sel(self._tpl_name, self.school_template.get(), "st_tpl_none")
         _sel(self._latex_name, self.latex_template.get(), "st_latex_none")
         # 问卷的状态来自内存数据（不是文件路径），单独判
@@ -1492,30 +1814,165 @@ class App:
                  font=self.F["F_FOOT"]).pack(padx=padx, pady=(16, 18))
 
     # ------------------------------------------------------------ 激活
-    def _activate_dialog(self):
+    def _upgrade_dialog(self):
+        """升级 / 定价弹窗（规格 COMMERCIAL UI：主页只留一行，点开才展示四个方案）。
+
+        视觉一律走 ``modal_shell.ModalShell`` + ``widgets.RoundCard`` —— 规格硬要求
+        「同一功能不得造第二套样式」，弹窗不许自创标题栏/配色。
+
+        定价与权益逻辑在 ``license`` 层，**本弹窗只做呈现**：四个方案卡照
+        ``04_COMPONENTS/pricing-*.svg`` 的版式（名称 / 副题 / 价格 / 说明 / 选择按钮），
+        价格给占位符（规格稿本身就是 ``$—``），点「选择方案」接到既有的激活 / 联系流程，
+        绝不在这里发明价格或改动任何权益判断。
+        """
         tr = self.tr
         F = self.F
-        win = tk.Toplevel(self.root)
-        win.title(tr("act_title"))
-        win.configure(bg=PAPER)
-        self._center(win, 560, 640)
-        win.resizable(False, False)
+        win = ModalShell(self.root, tr("up_title"), width=640, height=840)
         self._track(win)
 
-        tk.Label(win, text=tr("act_title"), bg=PAPER, fg=INK,
-                 font=F["F_DIALOG_TITLE"]).pack(pady=(16, 2))
-        tk.Label(win, text=tr("act_subtitle"), bg=PAPER, fg=MUTED,
-                 font=F["F_SMALL"], wraplength=440, justify="center").pack(pady=(0, 10))
-        tk.Frame(win, bg=LINE, height=1).pack(fill="x", padx=24)
+        body = win.content
+        tk.Label(body, text=tr("up_subtitle"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_SMALL"], anchor="w").pack(fill="x")
+
+        # 规格 modal-shell.svg 的两条摘要信息条（One-time / 方案组）
+        one = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
+                        border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
+        one.pack(fill="x", pady=(12, 0))
+        tk.Label(one.inner, text=tr("up_plan_onetime"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
+        tk.Label(one.inner, text=tr("up_onetime_desc"), bg=theme.SURFACE_SOFT,
+                 fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
+
+        group = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
+                          border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
+        group.pack(fill="x", pady=(8, 0))
+        tk.Label(group.inner, text=tr("up_group_title"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
+        tk.Label(group.inner, text=tr("up_group_desc"), bg=theme.SURFACE_SOFT,
+                 fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
+
+        grid = tk.Frame(body, bg=theme.SURFACE)
+        grid.pack(fill="both", expand=True, pady=(12, 0))
+        grid.columnconfigure(0, weight=1, uniform="plan")
+        grid.columnconfigure(1, weight=1, uniform="plan")
+
+        plans = (
+            ("up_plan_onetime", "up_plan_onetime_sub", "up_plan_onetime_desc"),
+            ("up_plan_weekly", "up_plan_weekly_sub", "up_plan_weekly_desc"),
+            ("up_plan_monthly", "up_plan_monthly_sub", "up_plan_monthly_desc"),
+            ("up_plan_lifetime", "up_plan_lifetime_sub", "up_plan_lifetime_desc"),
+        )
+        for i, (name_key, sub_key, desc_key) in enumerate(plans):
+            card = RoundCard(grid, radius=12, fill=theme.SURFACE,
+                             border=theme.BORDER, shadow=False, padx=14, pady=12)
+            card.grid(row=i // 2, column=i % 2, sticky="nsew",
+                      padx=(0, 8) if i % 2 == 0 else (8, 0),
+                      pady=(0, 10))
+
+            def _choose(_e=None):
+                self._close_one(win)
+                self._activate_dialog()
+
+            tk.Label(card.inner, text=tr(name_key), bg=theme.SURFACE,
+                     fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
+            tk.Label(card.inner, text=tr(sub_key), bg=theme.SURFACE,
+                     fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
+            tk.Label(card.inner, text=tr("up_price_tbd"), bg=theme.SURFACE,
+                     fg=theme.PRIMARY, font=F["F_TITLE"], anchor="w").pack(
+                         fill="x", pady=(6, 0))
+            tk.Label(card.inner, text=tr(desc_key), bg=theme.SURFACE,
+                     fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
+                     justify="left", wraplength=230).pack(fill="x", pady=(2, 8))
+            RoundButton(card.inner, text=tr("up_choose"), command=_choose,
+                        style="secondary", font=F["F_BTN_S"],
+                        height=30, padx=10).pack(fill="x")
+
+        note = tk.Label(body, text=tr("up_note"), bg=theme.SURFACE,
+                        fg=theme.TEXT_3, font=F["F_HELP"], anchor="w",
+                        justify="left")
+        note.pack(fill="x", pady=(6, 0))
+        # 说明行跟着弹窗宽度换行：不设 wraplength 会被 590px 的内容区横向裁掉。
+        _auto_wrap(note, body, 0)
+
+        win.add_primary_action(tr("up_view_plans"), self._view_plans)
+        win.add_cancel_action(tr("up_close"))
+        win.add_secondary_action(tr("up_have_code"), self._activate_dialog)
+        # 内容比初始高度高时按真实需要长高，保证底部按钮与说明不被裁掉
+        # （上限 = 屏幕可用高度，避免小屏弹窗探出可视区）。
+        self._fit_modal(win, 640)
+
+    def _fit_modal(self, win, width: int):
+        """把弹窗调到内容的真实高度，并保证**整窗留在屏幕工作区内**。
+
+        两个坑：① ``_inner`` 的请求高度只在首帧可靠，必须 ``update_idletasks``
+        后再量；② ``winfo_rootx/rooty`` 是**客户区**坐标，含标题栏/边框偏移，
+        直接拿来再设一次 ``geometry`` 会越跑越偏（旧写法就是这么把弹窗推到任务栏
+        底下的）。这里用 ``winfo_x/y``（窗口外框坐标）定位，并按桌面底部留白夹一次。
+        """
+        try:
+            win.update_idletasks()
+            need = int(win._inner.winfo_reqheight()) + 6
+            sh = int(self.root.winfo_screenheight())
+            # 桌面保留区（任务栏）：1080p 下约 40-48px，取 56 留余量。
+            bottom_limit = sh - 56
+            cap = max(320, bottom_limit - 8)
+            height = min(max(need, 1), cap)
+            dy = win.winfo_rooty() - win.winfo_y()
+            y = min(win.winfo_y(), bottom_limit - height - dy)
+            y = max(8, y)
+            win.geometry("%dx%d+%d+%d" % (width, height, win.winfo_x(), y))
+        except Exception:
+            pass
+
+    def _view_plans(self):
+        """「View plans ›」：打开官网（与页脚官网同一入口，不引入新逻辑）。"""
+        try:
+            webbrowser.open(i18n.BRAND_SITE_URL)
+        except Exception:
+            pass
+
+    def _activate_dialog(self):
+        """激活弹窗 —— 视觉与升级弹窗同一套 modal-shell 语言（规格禁止弹窗自创样式）。
+
+        **只换外壳**：``lic.activate`` / ``lic.activate_offline`` / ``_machine_fingerprint``
+        与三个处理函数逐字未动，颜色全部走 theme 令牌。
+        """
+        tr = self.tr
+        F = self.F
+        win = ModalShell(self.root, tr("act_title"), width=600, height=660)
+        self._track(win)
+        body = win.content
+
+        tk.Label(body, text=tr("act_subtitle"), bg=theme.SURFACE,
+                 fg=theme.TEXT_2, font=F["F_SMALL"], anchor="w", justify="left",
+                 wraplength=500).pack(fill="x")
+
+        def _section(label_key: str, icon: str):
+            """一节 = 柔和面圆角卡（与主页信息面板同款），返回卡片内容区。"""
+            card = RoundCard(body, radius=12, fill=theme.SURFACE_SOFT,
+                             border=theme.INFO_BORDER, shadow=False,
+                             padx=14, pady=10)
+            card.pack(fill="x", pady=(10, 0))
+            head = tk.Frame(card.inner, bg=theme.SURFACE_SOFT)
+            head.pack(fill="x")
+            IconBadge(head, icon, size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
+                      fill=theme.PRIMARY_SOFT).pack(side="left")
+            tk.Label(head, text=tr(label_key), bg=theme.SURFACE_SOFT,
+                     fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w",
+                     justify="left").pack(side="left", padx=(8, 0))
+            return card.inner
+
+        def _hint(parent, key):
+            tk.Label(parent, text=tr(key), bg=theme.SURFACE_SOFT,
+                     fg=theme.TEXT_3, font=F["F_FOOT"], anchor="w",
+                     justify="left").pack(fill="x", pady=(3, 6))
 
         # ① 在线激活码
-        tk.Label(win, text=tr("act_online_label"), bg=PAPER, fg=INK,
-                 font=F["F_SMALL_B"], anchor="w").pack(fill="x", padx=24, pady=(12, 2))
+        sec = _section("act_online_label", "globe")
         code_var = tk.StringVar()
-        ttk.Entry(win, textvariable=code_var, width=44,
-                  font=F["F_BODY"]).pack(padx=24, fill="x")
-        tk.Label(win, text=tr("act_online_hint"), bg=PAPER, fg=MUTED,
-                 font=F["F_FOOT"], anchor="w").pack(fill="x", padx=24, pady=(2, 6))
+        ttk.Entry(sec, textvariable=code_var, width=40,
+                  font=F["F_BODY"]).pack(fill="x", pady=(8, 0))
+        _hint(sec, "act_online_hint")
 
         def _submit():
             code = code_var.get().strip()
@@ -1527,20 +1984,16 @@ class App:
             if r["ok"]:
                 self._close_one(win)
 
-        ttk.Button(win, text=tr("act_online_btn"), style="TButton",
-                   command=_submit).pack(anchor="w", padx=24, pady=(0, 8))
-
-        tk.Frame(win, bg=LINE, height=1).pack(fill="x", padx=24, pady=6)
+        RoundButton(sec, text=tr("act_online_btn"), command=_submit,
+                    style="secondary", font=F["F_BTN_S"], height=34,
+                    padx=14).pack(anchor="w")
 
         # ② 本机机器码（发给卖家换离线码）
-        tk.Label(win, text=tr("act_machine_label"), bg=PAPER, fg=INK,
-                 font=F["F_SMALL_B"], anchor="w").pack(fill="x", padx=24, pady=(6, 2))
+        sec = _section("act_machine_label", "mail")
         mc_var = tk.StringVar(value=lic._machine_fingerprint())
-        ttk.Entry(win, textvariable=mc_var, width=44, state="readonly",
-                  font=F["F_MONO"]).pack(padx=24, fill="x")
-        tk.Label(win, text=tr("act_machine_hint"), bg=PAPER, fg=MUTED,
-                 font=F["F_FOOT"], anchor="w", justify="left",
-                 wraplength=470).pack(fill="x", padx=24, pady=(2, 6))
+        ttk.Entry(sec, textvariable=mc_var, width=40, state="readonly",
+                  font=F["F_MONO"]).pack(fill="x", pady=(8, 0))
+        _hint(sec, "act_machine_hint")
 
         def _copy_mc():
             try:
@@ -1551,19 +2004,16 @@ class App:
             except Exception:
                 pass
 
-        ttk.Button(win, text=tr("act_copy_btn"), style="TButton",
-                   command=_copy_mc).pack(anchor="w", padx=24, pady=(0, 8))
-
-        tk.Frame(win, bg=LINE, height=1).pack(fill="x", padx=24, pady=6)
+        RoundButton(sec, text=tr("act_copy_btn"), command=_copy_mc,
+                    style="secondary", font=F["F_BTN_S"], height=34,
+                    padx=14).pack(anchor="w")
 
         # ③ 离线激活码（卖家签发，无需联网）
-        tk.Label(win, text=tr("act_offline_label"), bg=PAPER, fg=INK,
-                 font=F["F_SMALL_B"], anchor="w").pack(fill="x", padx=24, pady=(6, 2))
+        sec = _section("act_offline_label", "shield")
         off_var = tk.StringVar()
-        ttk.Entry(win, textvariable=off_var, width=44,
-                  font=F["F_MONO"]).pack(padx=24, fill="x")
-        tk.Label(win, text=tr("act_offline_hint"), bg=PAPER, fg=MUTED,
-                 font=F["F_FOOT"], anchor="w").pack(fill="x", padx=24, pady=(2, 6))
+        ttk.Entry(sec, textvariable=off_var, width=40,
+                  font=F["F_MONO"]).pack(fill="x", pady=(8, 0))
+        _hint(sec, "act_offline_hint")
 
         def _submit_offline():
             code = off_var.get().strip()
@@ -1575,8 +2025,11 @@ class App:
             if r["ok"]:
                 self._close_one(win)
 
-        ttk.Button(win, text=tr("act_offline_btn"), style="TButton",
-                   command=_submit_offline).pack(anchor="w", padx=24, pady=(0, 14))
+        RoundButton(sec, text=tr("act_offline_btn"), command=_submit_offline,
+                    style="secondary", font=F["F_BTN_S"], height=34,
+                    padx=14).pack(anchor="w")
+
+        win.add_cancel_action(tr("up_close"))
 
     # ------------------------------------------------------------ 目标画像
     def _build_target(self) -> TargetProfile:

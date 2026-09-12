@@ -129,7 +129,7 @@ def main() -> int:
         ui._set_lang("zh")
         root.update_idletasks()
         zh_texts = _labels(root)
-        if "论 文 格 式 医 生" not in zh_texts or "文件选择" not in zh_texts:
+        if "你的文档" not in zh_texts or "检查与修正" not in zh_texts:
             _fail("切到中文后界面没跟着变：%s" % zh_texts[:6])
         if i18n.load_lang() != "zh":
             _fail("语言偏好没有落盘")
@@ -137,7 +137,7 @@ def main() -> int:
 
         ui._set_lang("en")
         root.update_idletasks()
-        if "Files" not in _labels(root):
+        if "Your Documents" not in _labels(root):
             _fail("切回英文失败")
         print("[ok] 切回英文：控件数=%d" % _count_widgets(root))
 

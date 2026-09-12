@@ -8,7 +8,7 @@
   否则加一种语言就要满仓库找字符串。
 - **品牌口径（海外版铁律）**：只出现官网 ``reedskill.com`` 与邮箱 ``hi@reedskill.com``。
   **绝不出现微信 / 公众号 / 小程序**（海外用户不用这些，老板 2026-09-11 明确要求）；
-  国内版的公众号二维码、客服微信号在搬布局时一并剔除。
+   国内版遗留的第三方联系入口（二维码 / 客服号）在搬布局时一并剔除。
 
 语言偏好落盘在 ``~/.thesis-format-doctor-global/settings.json``（与 license.json 同目录），
 可用环境变量 ``TFD_SETTINGS_FILE`` 覆盖 —— 与授权状态文件同样的隔离策略，便于测试。
@@ -111,46 +111,48 @@ _FONT_SPEC = {
     # 字号换算：规格书给的是浏览器 px，tkinter 的字号单位是磅（96dpi 下 1pt≈1.33px），
     # 所以 brand 32px→24pt / section 22px→16pt / body 14px→11pt / caption 12px→9pt。
     "en": {
-        "F_BRAND":        ("Georgia", 32, "bold"),      # 品牌标题（规格 brand 32px）
-        "F_TITLE":        ("Georgia", 23, "bold"),      # 弹窗主标题（沿用旧尺寸，别撑爆弹窗）
-        "F_DIALOG_TITLE": ("Georgia", 17, "bold"),      # 弹窗标题
-        "F_HDR":          ("Georgia", 15, "bold"),      # 弹窗章节标题
-        "F_CARD_HDR":     ("Georgia", 18, "bold"),      # 卡片标题（规格 section 22px）
-        "F_STAT":         ("Segoe UI", 13),             # 状态行（规格用无衬线，非衬线）
-        "F_ICON":         ("Georgia", 16, "bold"),      # 行首印记（旧布局保留，兼容）
-        "F_SUB":          ("Segoe UI", 14),             # 品牌标语（规格 tagline 16px）
-        "F_LABEL":        ("Segoe UI", 12, "bold"),     # 字段标签（规格 15px bold）
-        "F_SUBTITLE":     ("Segoe UI", 13),             # 小标题 / 元信息
-        "F_BODY":         ("Segoe UI", 13),             # 正文（规格 body 14px）
-        "F_HELP":         ("Segoe UI", 12),              # 字段说明（规格 caption 12px）
-        "F_SMALL":        ("Segoe UI", 12),             # 说明 / 次要（弹窗复用）
-        "F_SMALL_B":      ("Segoe UI", 12, "bold"),     # 提示框标题
-        "F_BTN":          ("Segoe UI", 14, "bold"),     # 主按钮（规格 16px）
-        "F_BTN_S":        ("Segoe UI", 12),             # 次按钮（描边，弱化）
-        "F_STEP_N":       ("Segoe UI", 13, "bold"),     # 步骤圆点里的数字/勾
-        "F_FOOT":         ("Segoe UI", 12),              # 页脚 / 状态栏
-        "F_MONO":         ("Consolas", 11),              # 机器码 / 离线码
+        # 字号纪律（v2.3.0）：主视图要在 1280×720 整屏放下，字号按最小窗口倒推，不再
+        # 照抄规格书的浏览器 px（tkinter 用磅，150% 缩放的机器上 1pt≈2px，直接照抄会撑爆）。
+        "F_BRAND":        ("Georgia", 22, "bold"),      # 品牌标题
+        "F_TITLE":        ("Georgia", 17, "bold"),      # 弹窗主标题
+        "F_DIALOG_TITLE": ("Georgia", 14, "bold"),      # 弹窗标题
+        "F_HDR":          ("Georgia", 12, "bold"),      # 弹窗章节标题
+        "F_CARD_HDR":     ("Georgia", 14, "bold"),      # 卡片标题
+        "F_STAT":         ("Segoe UI", 10),             # 状态行
+        "F_ICON":         ("Georgia", 12, "bold"),      # 行首印记
+        "F_SUB":          ("Segoe UI", 11),             # 品牌标语
+        "F_LABEL":        ("Segoe UI", 10, "bold"),     # 字段标签
+        "F_SUBTITLE":     ("Segoe UI", 10),             # 小标题 / 元信息
+        "F_BODY":         ("Segoe UI", 10),             # 正文
+        "F_HELP":         ("Segoe UI", 9),              # 字段说明 / 次要文字
+        "F_SMALL":        ("Segoe UI", 9),              # 说明 / 次要（弹窗复用）
+        "F_SMALL_B":      ("Segoe UI", 9, "bold"),      # 提示框标题
+        "F_BTN":          ("Segoe UI", 11, "bold"),     # 主按钮
+        "F_BTN_S":        ("Segoe UI", 10),             # 次按钮（描边，弱化）
+        "F_STEP_N":       ("Segoe UI", 9, "bold"),      # 步骤圆点里的数字/勾
+        "F_FOOT":         ("Segoe UI", 9),              # 页脚 / 状态栏
+        "F_MONO":         ("Consolas", 9),              # 机器码 / 离线码
     },
     "zh": {
-        "F_BRAND":        ("KaiTi", 22, "bold"),
-        "F_TITLE":        ("KaiTi", 20, "bold"),
-        "F_DIALOG_TITLE": ("KaiTi", 14, "bold"),
-        "F_HDR":          ("KaiTi", 13, "bold"),
-        "F_CARD_HDR":     ("KaiTi", 16, "bold"),
-        "F_STAT":         ("Microsoft YaHei", 11),
-        "F_ICON":         ("KaiTi", 12, "bold"),
-        "F_SUB":          ("Microsoft YaHei", 12),
-        "F_LABEL":        ("Microsoft YaHei", 11, "bold"),
-        "F_SUBTITLE":     ("Microsoft YaHei", 11),
-        "F_BODY":         ("Microsoft YaHei", 11),
-        "F_HELP":         ("Microsoft YaHei", 9),
-        "F_SMALL":        ("Microsoft YaHei", 10),
-        "F_SMALL_B":      ("Microsoft YaHei", 10, "bold"),
-        "F_BTN":          ("Microsoft YaHei", 12, "bold"),
-        "F_BTN_S":        ("Microsoft YaHei", 11),
-        "F_STEP_N":       ("Microsoft YaHei", 11, "bold"),
-        "F_FOOT":         ("Microsoft YaHei", 9),
-        "F_MONO":         ("Consolas", 9),
+        "F_BRAND":        ("KaiTi", 16, "bold"),
+        "F_TITLE":        ("KaiTi", 15, "bold"),
+        "F_DIALOG_TITLE": ("KaiTi", 12, "bold"),
+        "F_HDR":          ("KaiTi", 11, "bold"),
+        "F_CARD_HDR":     ("KaiTi", 12, "bold"),
+        "F_STAT":         ("Microsoft YaHei", 9),
+        "F_ICON":         ("KaiTi", 11, "bold"),
+        "F_SUB":          ("Microsoft YaHei", 10),
+        "F_LABEL":        ("Microsoft YaHei", 9, "bold"),
+        "F_SUBTITLE":     ("Microsoft YaHei", 9),
+        "F_BODY":         ("Microsoft YaHei", 9),
+        "F_HELP":         ("Microsoft YaHei", 8),
+        "F_SMALL":        ("Microsoft YaHei", 8),
+        "F_SMALL_B":      ("Microsoft YaHei", 8, "bold"),
+        "F_BTN":          ("Microsoft YaHei", 10, "bold"),
+        "F_BTN_S":        ("Microsoft YaHei", 9),
+        "F_STEP_N":       ("Microsoft YaHei", 8, "bold"),
+        "F_FOOT":         ("Microsoft YaHei", 8),
+        "F_MONO":         ("Consolas", 8),
     },
 }
 
@@ -240,7 +242,7 @@ STRINGS: dict = {
         # 规格书：隐私声明从卡片里**移到顶栏**（卡片右上角不再挂 Offline 徽标）。
         "link_help": "Help",
         "link_about": "About",
-        "lang_button": "English  ▾",                 # 显示**当前**语言 + 下拉箭头（规格 header 段）
+        "lang_button": "English ▾",
         "app_title": "Thesis Format Doctor",
         "app_tagline": "Academic formatting, made simple.",
         # 注：不用 🔒 之类的非 BMP emoji —— Tk 在 Windows 上常渲染成方框（tofu）。
@@ -252,18 +254,17 @@ STRINGS: dict = {
         # Paper to Check → "Paper"、School Template → "University template"、
         # AI-filled JSON → "Import configuration"。
         "left_title": "Your Documents",
-        "left_desc": ("Select your document and formatting requirements. "
-                      "You can change these settings anytime before checking."),
+        "left_desc": "Select your document and formatting requirements. You can change these settings anytime before checking.",
         "mark_required": "Required",
         "mark_optional": "Optional",
         "row_spec_title": "Citation style",
         "row_spec_desc": "Choose the citation style required by your institution.",
         "row_template_title": "University template",
-        "row_template_desc": "Use your university's official template if available.",
+        "row_template_desc": "Use your university's official template (if available).",
         "row_template_placeholder": "Choose a template",
         "row_latex_title": "LaTeX template",
         "row_latex_desc": "For LaTeX users. (Optional)",
-        "row_latex_placeholder": "Choose a LaTeX template",
+        "row_latex_placeholder": "Choose a template",
         "row_questionnaire_title": "Questionnaire",
         "row_questionnaire_desc": "Page layout: margins, font, size, spacing",
         "btn_questionnaire": "Fill in",
@@ -271,8 +272,12 @@ STRINGS: dict = {
         "row_ai_desc": "Let any AI fill the questionnaire template for you",
         "btn_ai_json": "Import",
         "row_paper_title": "Paper",
-        # ⚠️ 能力声明必须与实际一致：引擎只读 .docx（LaTeX 仅作格式来源，不能当论文检查）。
-        # 规格书写的是 "PDF, DOCX, LaTeX (max 50 MB)"，那是**做不到的承诺**，故按真实支持面写。
+        # ⚠️ 对外能力声明必须与实际一致（上架铁律）。引擎只读 .docx：
+        #   src/engine/docx_reader.py 用 python-docx，打开文件的对话框也只收 *.docx；
+        #   LaTeX 仅作**格式来源**（latex_template.py），不能当被检查的论文；
+        #   PDF 无任何解析路径（venv 里连 pdf 库都没装）。
+        # 规格书整屏稿写的是 "PDF, DOCX, LaTeX (max 50 MB)"，那是**做不到的承诺**——
+        # 照着写等于虚假宣传（用户选 PDF 会发现根本选不了），故此处按真实支持面写。
         "row_paper_helper": "Upload or select your document to check.",
         "paper_support": "Word document (.docx)",
         "btn_select_doc": "Select a document",
@@ -282,8 +287,10 @@ STRINGS: dict = {
 
         # 选中状态行（新布局里这些显示在字段控件内部：未选=占位灰字，已选=蓝色文件名）
         "st_paper_none": "No document selected",
-        "st_tpl_none": "Nothing selected (optional)",
-        "st_latex_none": "Nothing selected (optional)",
+        "st_paper_sample": "Thesis_Final.docx",
+        "st_paper_error": "File type not supported",
+        "st_tpl_none": "Choose a template",
+        "st_latex_none": "Choose a template",
         "st_q_none": "Not filled in",
         "st_q_set": "Filled in",
         "st_ai_none": "Not imported",
@@ -302,16 +309,50 @@ STRINGS: dict = {
             ("Check", "We'll analyze your paper for formatting issues."),
             ("Fix", "Review the results and apply fixes with one click."),
         ],
-        "btn_check": "Check formatting  →",
+        "btn_check": "Check formatting ›",
         "btn_check_busy": "Checking…",
         "btn_fix": "Fix issues",
-        "btn_fix_n": "Fix %s issues  →",
+        "btn_fix_n": "Fix %s issues  ›",
+        "btn_fix_one": "Fix 1 issue  ›",
         "btn_review": "Review changes",
         "trust_title": "Academic quality you can trust",
         "trust_body": ("Accurate, reliable, and built for researchers and students worldwide."),
         "btn_save_report": "Save report",
         "btn_export_ai": "Export AI template",
         "btn_activate": "Activation",
+
+        # —— 商业区（规格 COMMERCIAL UI：主页只放一条紧凑的试用/升级入口，
+        #     点开才展示定价弹窗；定价/权益逻辑本身在 license 层，UI 只做呈现） ——
+        "trial_fix_one": "Trial · %s check left",
+        "trial_fix_many": "Trial · %s checks left",
+        "trial_none": "Trial · no checks left",
+        "trial_licensed": "Licensed · unlimited checks",
+        "btn_upgrade": "Upgrade ›",
+        "up_title": "Upgrade to continue",
+        "up_subtitle": "Choose the plan that fits your workflow.",
+        "up_plan_onetime": "One-time",
+        "up_plan_weekly": "Weekly",
+        "up_plan_monthly": "Monthly",
+        "up_plan_lifetime": "Lifetime",
+        "up_plan_onetime_sub": "For occasional checks",
+        "up_plan_weekly_sub": "For short projects",
+        "up_plan_monthly_sub": "For ongoing work",
+        "up_plan_lifetime_sub": "For frequent users",
+        "up_plan_onetime_desc": "Includes a set number of checks",
+        "up_plan_weekly_desc": "Use during a focused week",
+        "up_plan_monthly_desc": "Best for regular academic work",
+        "up_plan_lifetime_desc": "One purchase, long-term access",
+        "up_price_tbd": "$—",
+        "up_choose": "Choose plan",
+        "up_note": ("Plans are confirmed by email before purchase — no account, "
+                    "no subscription charges inside the app."),
+        "up_onetime_desc": "Pay once for a set number of checks.",
+        "up_group_title": "Weekly / Monthly / Lifetime",
+        "up_group_desc": "Keep it simple — compare plans here.",
+        "up_view_plans": "View plans ›",
+        "up_have_code": "I already have an activation code",
+        "up_close": "Close",
+        "btn_continue": "Continue",
 
         # —— 结果状态行（规格 states 段） ——
         "state_missing_paper": "Select your paper to start — it is the only required input.",
@@ -335,10 +376,10 @@ STRINGS: dict = {
 
         # —— 状态栏 ——
         "bar_left": "Thesis Format Doctor Global v%s",
-        "bar_idle": "Ready",
-        "bar_checking": "Checking format…",
+        "bar_idle": "Ready · Your files stay on your computer",
+        "bar_checking": "Checking formatting…",
         "bar_fixing": "Applying format fixes…",
-        "bar_check_done": "Check complete",
+        "bar_check_done": "Formatting check complete",
         "bar_error": "Error",
         "status_checking": "Checking the format of your document…",
         "status_fixing": "Applying format fixes (content stays untouched)…",
@@ -473,7 +514,7 @@ STRINGS: dict = {
     "zh": {
         "link_help": "帮 助",
         "link_about": "关 于",
-        "lang_button": "中文  ▾",
+        "lang_button": "中文 ▾",
         "app_title": "论 文 格 式 医 生",
         "app_tagline": "学术格式，本可以更简单。",
         "privacy_line": "论文不离开这台电脑",
@@ -490,7 +531,7 @@ STRINGS: dict = {
         "row_template_placeholder": "选择模板",
         "row_latex_title": "LaTeX 模板",
         "row_latex_desc": "给 LaTeX 用户。（可选）",
-        "row_latex_placeholder": "选择 LaTeX 模板",
+        "row_latex_placeholder": "选择模板",
         "row_questionnaire_title": "格式问卷",
         "row_questionnaire_desc": "页面排版：页边距、字体、字号、行距",
         "btn_questionnaire": "手填问卷",
@@ -499,6 +540,7 @@ STRINGS: dict = {
         "btn_ai_json": "导入",
         "row_paper_title": "论文",
         "row_paper_helper": "上传或选择要体检的文档。",
+        # 同 EN：只写真实支持面（引擎只读 .docx），不照抄整屏稿里做不到的承诺。
         "paper_support": "Word 文档（.docx）",
         "btn_select_doc": "选择文档",
         "adv_label": "高级选项",
@@ -506,8 +548,10 @@ STRINGS: dict = {
         "chip_style_hint": "「Other」= 自定义规范；请配学校模板或格式问卷。",
 
         "st_paper_none": "未选择文档",
-        "st_tpl_none": "未选择（可选）",
-        "st_latex_none": "未选择（可选）",
+        "st_paper_sample": "Thesis_Final.docx",
+        "st_paper_error": "文件类型不支持",
+        "st_tpl_none": "选择模板",
+        "st_latex_none": "选择模板",
         "st_q_none": "未填写",
         "st_q_set": "已填写",
         "st_ai_none": "未导入",
@@ -523,16 +567,47 @@ STRINGS: dict = {
             ("体检", "分析论文的格式问题。"),
             ("修正", "查看结果，一键应用修正。"),
         ],
-        "btn_check": "运行格式体检  →",
+        "btn_check": "运行格式体检 ›",
         "btn_check_busy": "体检中…",
         "btn_fix": "修正问题",
-        "btn_fix_n": "修正 %s 个问题  →",
+        "btn_fix_n": "修正 %s 个问题  ›",
+        "btn_fix_one": "修正 1 个问题  ›",
         "btn_review": "查看改动",
         "trust_title": "值得信赖的学术品质",
         "trust_body": "准确、可靠，为全球研究者与学生而做。",
         "btn_save_report": "保存报告",
         "btn_export_ai": "导出 AI 问卷模板",
         "btn_activate": "激活 / 授权",
+
+        "trial_fix_one": "试用 · 还剩 %s 次检查",
+        "trial_fix_many": "试用 · 还剩 %s 次检查",
+        "trial_none": "试用 · 检查次数已用完",
+        "trial_licensed": "已授权 · 不限次检查",
+        "btn_upgrade": "升级 ›",
+        "up_title": "升级以继续",
+        "up_subtitle": "选择适合你的方案。",
+        "up_plan_onetime": "一次买断",
+        "up_plan_weekly": "周付",
+        "up_plan_monthly": "月付",
+        "up_plan_lifetime": "终身",
+        "up_plan_onetime_sub": "偶尔用一次",
+        "up_plan_weekly_sub": "短期项目",
+        "up_plan_monthly_sub": "适合持续写作",
+        "up_plan_lifetime_sub": "长期高频使用",
+        "up_plan_onetime_desc": "含指定次数的体检",
+        "up_plan_weekly_desc": "一周集中写作期使用",
+        "up_plan_monthly_desc": "适合常规学术写作",
+        "up_plan_lifetime_desc": "一次购买，长期可用",
+        "up_price_tbd": "￥—",
+        "up_choose": "选择方案",
+        "up_note": "方案价格由邮件确认后开通 —— 软件内不需要账号、不自动扣费。",
+        "up_onetime_desc": "一次付费，含指定次数的检查。",
+        "up_group_title": "周付 / 月付 / 终身",
+        "up_group_desc": "化繁为简 —— 在这里对比各方案。",
+        "up_view_plans": "查看方案 ›",
+        "up_have_code": "我已有激活码",
+        "up_close": "关闭",
+        "btn_continue": "继续",
 
         "state_missing_paper": "请先选择论文 —— 这是唯一必填项。",
         "state_issues": "发现 %s 个格式问题。",
@@ -550,8 +625,8 @@ STRINGS: dict = {
         "report_summary_generic": "已完成。点「保存报告」导出完整报告。",
         "report_summary_hint": "完整报告不在界面展开 —— 点「保存报告」即可导出为文件。",
 
-        "bar_left": "海外版论文格式医生 v%s",
-        "bar_idle": "就绪",
+        "bar_left": "Thesis Format Doctor Global v%s",
+        "bar_idle": "就绪 · 文件始终留在你的电脑上",
         "bar_checking": "正在体检格式…",
         "bar_fixing": "正在应用格式修正…",
         "bar_check_done": "体检完成",
@@ -676,6 +751,13 @@ def t(lang: str, key: str, *args) -> str:
     val = STRINGS.get(lang, {}).get(key)
     if val is None:
         val = STRINGS[DEFAULT_LANG].get(key, key)
+    # 复数约定：``*_n`` 词条在第一个参数为 1 时优先用同族 ``*_one`` 文案。
+    # 这样 "Fix %s issues" 在 N=1 时自动变 "Fix 1 issue"，而调用方（与回归测试）
+    # 仍然只需认 ``*_n`` 一个 key，不必在业务代码里分散判断单复数。
+    if args and key.endswith("_n") and args[0] == 1:
+        table = STRINGS.get(lang, {})
+        val = table.get(key[:-2] + "_one",
+                        STRINGS[DEFAULT_LANG].get(key[:-2] + "_one", val))
     if args:
         try:
             return val % args
