@@ -186,7 +186,9 @@ class App:
         return "｜" if self.lang == "zh" else "|"
 
     def _apply_window_icon(self):
-        """设置标题栏/任务栏图标。任何异常都吞掉——图标不该影响启动。
+        """设置标题栏/任务栏图标。**整个函数绝不允许向外抛异常**——图标是锦上添花，
+        绝不能因为一个平台上的路径/Tcl 怪癖就让 App 构造失败（那正是「双击打不开」
+        那一类 P0 后果）。
 
         两路**互相独立**的保险（一路失败绝不牵连另一路）：
 
@@ -197,20 +199,23 @@ class App:
            （Tk 安装不完整），① 会静默失败；此时用仓库自带的 ``assets/icon.ico``
            兜底 —— ``iconbitmap`` 读原生 ico，不依赖 PNG 解码器。
         """
-        png = iconpath.find_icon()
-        if png:
-            try:
-                self._window_icon = tk.PhotoImage(file=png)
-                self.root.iconphoto(True, self._window_icon)
-            except Exception:
-                self._window_icon = None
-        if sys.platform.startswith("win"):
-            ico = iconpath.find_icon_ico()
-            if ico:
+        try:
+            png = iconpath.find_icon()
+            if png:
                 try:
-                    self.root.iconbitmap(default=ico)
+                    self._window_icon = tk.PhotoImage(file=png)
+                    self.root.iconphoto(True, self._window_icon)
                 except Exception:
-                    pass
+                    self._window_icon = None
+            if sys.platform.startswith("win"):
+                ico = iconpath.find_icon_ico()
+                if ico:
+                    try:
+                        self.root.iconbitmap(default=ico)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _on_resize(self, _evt=None):
         try:

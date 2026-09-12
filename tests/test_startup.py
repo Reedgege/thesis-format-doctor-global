@@ -269,6 +269,25 @@ def test_window_icon_reference_is_retained(tk_root, monkeypatch):
     assert applied, "iconphoto 未被调用"
 
 
+def test_window_icon_never_breaks_startup(tk_root, monkeypatch):
+    """确定性回归：图标解析/挂载整个炸掉，也绝不能把启动带崩（P0 级保护）。
+
+    「双击打不开」是本产品最重的 P0 历史事故；图标只是锦上添花，必须保证
+    ``_apply_window_icon`` 在任何异常下静默收场。这里让图标路径解析直接抛异常。
+    """
+    from src.ui import app as ui_app
+    from src.ui import iconpath as ui_iconpath
+
+    def boom(*a, **kw):
+        raise RuntimeError("icon path resolution exploded")
+
+    monkeypatch.setattr(ui_iconpath, "find_icon", boom)
+    monkeypatch.setattr(ui_iconpath, "find_icon_ico", boom)
+
+    ui = ui_app.App(tk_root)                       # 构造过程绝不能抛异常
+    assert getattr(ui, "_window_icon", None) is None
+
+
 # --------------------------------------------------------------- 语言（GUI）
 def _all_widgets(parent):
     """递归收集所有子控件（用于断言界面上到底显示了什么字）。"""
