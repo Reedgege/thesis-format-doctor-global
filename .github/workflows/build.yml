@@ -145,6 +145,13 @@ jobs:
           mkdir -p release
           cd dist && zip -r "../release/thesis-format-doctor-global-linux.zip" "thesis-format-doctor-global"
 
+      # 构建后自检：运行时资源（图标 / AI 问卷模板 / VERSION）必须真的进了产物。
+      # 姊妹项目导师版真栽过 —— build.py 漏数据目录，打包版「二维码不显示、水印图
+      # 丢失」却能一路绿灯发出去（读取方都有 isfile 守卫 → 全程静默）。
+      - name: Verify bundled runtime assets
+        shell: bash
+        run: python tools/verify_bundle.py dist
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
