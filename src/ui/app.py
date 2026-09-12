@@ -19,6 +19,7 @@ GUI 与 CLI 共用同一套 engine，保证逻辑唯一、离线安全。
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 import webbrowser
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -185,22 +186,31 @@ class App:
         return "｜" if self.lang == "zh" else "|"
 
     def _apply_window_icon(self):
-        """设置标题栏/任务栏图标。任何异常都吞掉——图标不该影响启动。"""
-        path = iconpath.find_icon()
-        if not path:
-            return
-        try:
-            # PhotoImage 必须挂在实例上：只作为临时对象传入时一旦被 GC，
-            # 部分 Tk 版本会把图标还原成默认（经典坑）。
-            self._window_icon = tk.PhotoImage(file=path)
-            self.root.iconphoto(True, self._window_icon)
-            return
-        except Exception:
-            pass
-        try:
-            self.root.iconbitmap(default=path)
-        except Exception:
-            pass
+        """设置标题栏/任务栏图标。任何异常都吞掉——图标不该影响启动。
+
+        两路**互相独立**的保险（一路失败绝不牵连另一路）：
+
+        ① PNG + ``iconphoto``：跨平台标准做法。``PhotoImage`` 必须挂到实例属性上
+           保留引用——只作为临时对象传进去时一旦被 GC 回收，部分 Tk 版本会把图标
+           还原成默认（经典坑，v2.0.2 踩过）。
+        ② Windows 的 ``.ico`` + ``iconbitmap``：个别环境的 Tcl 没编进 PNG 解码器
+           （Tk 安装不完整），① 会静默失败；此时用仓库自带的 ``assets/icon.ico``
+           兜底 —— ``iconbitmap`` 读原生 ico，不依赖 PNG 解码器。
+        """
+        png = iconpath.find_icon()
+        if png:
+            try:
+                self._window_icon = tk.PhotoImage(file=png)
+                self.root.iconphoto(True, self._window_icon)
+            except Exception:
+                self._window_icon = None
+        if sys.platform.startswith("win"):
+            ico = iconpath.find_icon_ico()
+            if ico:
+                try:
+                    self.root.iconbitmap(default=ico)
+                except Exception:
+                    pass
 
     def _on_resize(self, _evt=None):
         try:

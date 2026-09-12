@@ -85,3 +85,39 @@ def find_icon() -> "str | None":
         except Exception:
             continue
     return None
+
+
+def ico_candidates() -> list:
+    """按「最可能命中」的顺序返回 Windows 图标（``.ico``）候选路径。
+
+    仅用于 Windows 的 ``iconbitmap`` 兜底：个别环境的 Tcl 没编进 PNG 解码器
+    （Tk 安装不完整），此时「PNG + iconphoto」会失败，而 ``iconbitmap`` 读原生
+    ``.ico`` 仍然可用 —— 窗口图标不会因为一个平台的 Tcl 缺件就整个丢掉。
+    """
+    here = os.path.dirname(_norm(__file__))
+    cands = [
+        os.path.join(here, "..", "..", "assets", "icon.ico"),   # 源码运行：<repo>/assets
+        os.path.join(here, "data", "icon.ico"),
+    ]
+    for base in _runtime_bases():
+        cands += [
+            os.path.join(base, "assets", "icon.ico"),           # build.py 拷到 exe 同级
+            os.path.join(base, "icon.ico"),
+        ]
+    out = []
+    for c in cands:
+        c = _norm(c)
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def find_icon_ico() -> "str | None":
+    """返回第一个真实存在的 ``.ico``；都没有则 None（Windows 兜底用）。"""
+    for path in ico_candidates():
+        try:
+            if os.path.isfile(path):
+                return path
+        except Exception:
+            continue
+    return None

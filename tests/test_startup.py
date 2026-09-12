@@ -232,24 +232,41 @@ def tk_root(_tk_session):
 
 
 def test_window_icon_applies_without_error(tk_root):
-    """真机 GUI 冒烟：起一个 Tk 窗口、套图标（无 tkinter 则跳过）。"""
+    """真机 GUI 冒烟：起一个 Tk 窗口、套图标，构造过程**绝不能抛异常**。
+
+    图标本身是「尽力而为」：个别 runner（Tcl 没编进 PNG 解码器、或没有桌面会话）
+    挂不上图标，属**环境限制**而非产品缺陷 —— 所以这里不断言图标一定生效，免得
+    偶发红灯掩盖真实回归。「引用必须保留（防 GC）」这个真回归点由下面那条
+    **确定性**单测钉住，不依赖本机 Tcl 的解码能力。
+    """
+    from src.ui import app as ui_app
+
+    ui = ui_app.App(tk_root)
+    assert ui is not None
+
+
+def test_window_icon_reference_is_retained(tk_root, monkeypatch):
+    """确定性回归：图标的 PhotoImage 必须保留 Python 引用。
+
+    ``iconphoto(True, img)`` 里只传临时对象时，Image 一旦被 GC 回收，部分 Tk 版本
+    会把窗口图标还原成默认 —— v2.0.2 踩过的坑。这里把 PhotoImage 换成哨兵对象，
+    断言引用真的挂在实例属性上、且 ``iconphoto`` 被调用过。**不依赖本机 Tcl 能否
+    解码 PNG**，所以在任何 runner 上结论都一致。
+    """
     import tkinter as tk
 
     from src.ui import app as ui_app
+    from src.ui import iconpath as ui_iconpath
 
-    icon = iconpath.find_icon()
-    if icon:
-        # 环境探测：个别机器上 Tcl 的 PNG 解码器不可用（Tk 安装不完整），
-        # 这属环境缺陷而非产品问题 —— 跳过并说明，免得偶发红灯干扰真实回归。
-        try:
-            tk.PhotoImage(file=icon)
-        except Exception as e:                 # noqa: BLE001
-            pytest.skip("本机 Tcl 无法解码 PNG：%s" % e)
+    sentinel = object()
+    monkeypatch.setattr(ui_iconpath, "find_icon", lambda: os.path.abspath(__file__))
+    monkeypatch.setattr(ui_app.tk, "PhotoImage", lambda *a, **kw: sentinel)
+    applied = []
+    monkeypatch.setattr(tk_root, "iconphoto", lambda *a, **kw: applied.append(a))
 
-    ui = ui_app.App(tk_root)                   # 构造过程绝不能抛异常
-    # 有图标就应该挂上去（并保留引用，避免被 GC）
-    if icon:
-        assert isinstance(getattr(ui, "_window_icon", None), tk.PhotoImage)
+    ui = ui_app.App(tk_root)
+    assert getattr(ui, "_window_icon", None) is sentinel, "图标引用未保留（会被 GC）"
+    assert applied, "iconphoto 未被调用"
 
 
 # --------------------------------------------------------------- 语言（GUI）
