@@ -8,28 +8,19 @@ reedcode · Thesis Format Doctor Global（海外版）离线发码工具（兜�
   2) 或命令行：reedcode.exe "<客户机器码>"  直接输出离线码。
 把离线码发给客户，他在激活页选「离线激活」粘贴即可。
 自动记入 reedcode_log.txt 台账。
-安全：离线码用对称签名（密钥与 src/license/license.py 共用，明文常量）。
+
+安全：离线码用 **RSA 非对称签名**（私钥只在你本机 private_key.pem，绝不进仓库/安装包；
+公钥嵌进客户端，只能验签不能签名）。详见 src/license/crypto.py。
 """
 import os
 import sys
 import time
-import hmac
-import hashlib
 
+# 让 tools/ 能 import 到 src/（无需在仓库根跑命令）
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
 
-# 与 src/license/license.py 的 _OFFLINE_KEY 完全一致；与国内版密钥不同，防互用。
-_OFFLINE_KEY = b"tfdglobal|kami|offline|2026|sign|v1"
-
-
-def _offline_sign(payload):
-    return hmac.new(_OFFLINE_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
-
-
-def generate_offline_code(machine_code):
-    """machine_code + 时间戳 + 签名 -> 离线码（与主程序 verify 兼容）。"""
-    ts = int(time.time())
-    payload = "%s|%d" % (machine_code, ts)
-    return payload + "|" + _offline_sign(payload)
+from src.license.crypto import generate_offline_code
 
 
 def main():
@@ -42,7 +33,12 @@ def main():
     if not target:
         print("未提供机器码，已退出。")
         sys.exit(1)
-    code = generate_offline_code(target)
+    try:
+        code = generate_offline_code(target)
+    except Exception as e:
+        print("\n生成离线码失败：%s" % e)
+        print("请确认本机存在 private_key.pem（卖家私钥），且未误删。")
+        sys.exit(1)
     print("\n生成的离线备用码（复制发给客户）：")
     print(code)
     try:

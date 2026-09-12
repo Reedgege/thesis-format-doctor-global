@@ -56,6 +56,7 @@ def _nuitka_options():
         "--output-filename=" + APP_NAME + (".exe" if WIN else ""),
         "--remove-output",
         "--show-progress",
+        "--include-package=rsa",
     ]
     if WIN and os.path.isfile(ICON_ICO):
         opt += ["--windows-icon-from-ico=" + ICON_ICO]

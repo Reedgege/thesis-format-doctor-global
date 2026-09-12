@@ -26,6 +26,12 @@ make_test_docx.py
 # CI 发布缓存（由 GitHub Actions 生成，不进仓库）
 release/
 
+# RSA 离线激活密钥对（非对称）—— 私钥只留卖家本机，**永远不入仓、不进安装包**；
+# 公钥已嵌入 src/license/crypto.py 的 PUBLIC_KEY_PEM 常量（编译进客户端，公开无害）。
+# 仓库是 public，私钥一旦入库 = 任何人都能伪造离线码。
+private_key.pem
+public_key.pem
+
 # Codex 审查产出（不构成代码；留本地复盘用）
 tools/codex_review/round*_diff.txt
 tools/codex_review/prompt_*.txt

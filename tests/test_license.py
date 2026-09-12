@@ -18,11 +18,24 @@ import os
 import sys
 
 import pytest
+import rsa
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from src.license import license as lic
+from src.license import crypto as crypto_mod
+
+
+# 离线程测试用临时 RSA 密钥对：真实私钥只在卖家本机，CI/单测都不持有。
+# 这里生成一份临时密钥对——公钥注入 crypto.verify_offline_code 的校验路径，
+# 私钥用于签发测试离线码，闭环完全离线、不依赖任何密钥文件。
+@pytest.fixture
+def offline_keys(monkeypatch):
+    pub, priv = rsa.newkeys(512)  # 512 位足够测试，加速
+    crypto_mod.set_verify_public_key(pub)
+    yield priv
+    crypto_mod.set_verify_public_key(None)
 
 
 @pytest.fixture
@@ -184,31 +197,32 @@ def test_no_network_endpoints_stale():
 
 
 # ---------------------------------------------------------------------------
-# 兜底方案：离线备用码（与 tools/reedcode*.py 共用密钥；与国内版密钥隔离）
+# 兜底方案：离线备用码（RSA 非对称；与 tools/reedcode*.py 共用算法；与导师版密钥隔离）
 # ---------------------------------------------------------------------------
 
-def test_offline_code_roundtrip():
-    """generate -> verify 闭环：本机机器码生成可校验通过。"""
+def test_offline_code_roundtrip(offline_keys):
+    """sign -> verify 闭环：本机机器码生成可校验通过。"""
     mc = lic._machine_fingerprint()
-    code = lic.generate_offline_code(mc)
-    assert code.count("|") == 2, "离线码格式应为 machine|ts|sig"
+    code = crypto_mod.sign_offline(offline_keys, mc)
+    assert code.count(".") == 1, "离线码格式应为 payload.signature"
     assert lic.verify_offline_code(code, mc) is True
 
 
-def test_offline_code_rejects_wrong_machine_and_tamper():
+def test_offline_code_rejects_wrong_machine_and_tamper(offline_keys):
     """离线码绑定机器码：错机器 / 篡改签名均拒。"""
     mc = lic._machine_fingerprint()
-    code = lic.generate_offline_code(mc)
+    code = crypto_mod.sign_offline(offline_keys, mc)
     assert lic.verify_offline_code(code, "WRONG-MACHINE") is False
-    tampered = code[:-1] + ("0" if code[-1] != "0" else "1")
+    payload, _, sig = code.rpartition(".")
+    tampered = payload + "." + ("A" if sig[-1] != "A" else "B")
     assert lic.verify_offline_code(tampered, mc) is False
 
 
-def test_activate_offline_persists(tmp_license):
+def test_activate_offline_persists(tmp_license, offline_keys):
     """离线激活写盘后：状态含 offline=True 且持久化（回归：offline 曾漏进 _default_state
     导致 save/load 被剥离、标志丢失）。"""
     mc = lic._machine_fingerprint()
-    code = lic.generate_offline_code(mc)
+    code = crypto_mod.sign_offline(offline_keys, mc)
     r = lic.activate_offline(code)
     assert r["ok"] is True
     assert r["kind"] == "lifetime"
@@ -219,18 +233,18 @@ def test_activate_offline_persists(tmp_license):
     assert st.get("kind") == "lifetime"
 
 
-def test_activate_offline_rejects_other_machine(tmp_license):
+def test_activate_offline_rejects_other_machine(tmp_license, offline_keys):
     """用别的机器码生成的离线码，在本机激活必须失败。"""
-    code = lic.generate_offline_code("OTHER-MACHINE-CODE")
+    code = crypto_mod.sign_offline(offline_keys, "OTHER-MACHINE-CODE")
     r = lic.activate_offline(code)
     assert r["ok"] is False
     assert "机器码" in r["message"]
 
 
-def test_offline_activation_grants_fix_without_network(tmp_license, monkeypatch):
+def test_offline_activation_grants_fix_without_network(tmp_license, monkeypatch, offline_keys):
     """离线激活后：fix 授权放行，且全程不触网（心跳/试用同步均被拦截）。"""
     mc = lic._machine_fingerprint()
-    code = lic.generate_offline_code(mc)
+    code = crypto_mod.sign_offline(offline_keys, mc)
     assert lic.activate_offline(code)["ok"] is True
     # 即便中台全部不可达，离线授权也应直接放行
     monkeypatch.setattr(lic, "_safe_heartbeat", lambda code, machine: None)
@@ -293,10 +307,10 @@ def _legacy_state(**fields):
     return st
 
 
-def test_legacy_offline_state_migrates_without_network(tmp_license, monkeypatch):
+def test_legacy_offline_state_migrates_without_network(tmp_license, monkeypatch, offline_keys):
     """旧版离线激活用户：升级后自动迁移（本地验签即可，全程不联网）。"""
     mc = lic._machine_fingerprint()
-    code = lic.generate_offline_code(mc)
+    code = crypto_mod.sign_offline(offline_keys, mc)
     tmp_license.write_text(json.dumps(_legacy_state(
         activated=True, code=code, kind="lifetime", offline=True,
         trial_fix_used=True, machine=mc, last_heartbeat=0)), encoding="utf-8")
@@ -404,16 +418,16 @@ def test_offline_branch_requires_valid_code(tmp_license, monkeypatch):
 
 
 
-def test_verify_offline_code_rejects_non_ascii_without_raising():
-    """真 bug 回归：非 ASCII 输入曾让 compare_digest 抛 TypeError。
+def test_verify_offline_code_rejects_non_ascii_without_raising(offline_keys):
+    """真 bug 回归：各种畸形 / 非 ASCII 输入不得让 verify 抛异常。
 
     在 GUI 里回调异常无控制台时完全静默 —— 用户看到「点了没反应」。
     """
     mc = lic._machine_fingerprint()
-    for bad in ["", "|", mc, mc + "|", mc + "|123", mc + "|123|",
-                "机器码|123|签名", mc + "|123|中文签名", None, 12345]:
+    for bad in ["", ".", mc, mc + "|", mc + ".", "机器码.签名",
+                "机器码.中文签名", None, 12345]:
         assert lic.verify_offline_code(bad, mc) is False   # 不得抛异常
-    assert lic.verify_offline_code(lic.generate_offline_code(mc), mc) is True
+    assert lic.verify_offline_code(crypto_mod.sign_offline(offline_keys, mc), mc) is True
 
 
 def test_machine_fingerprint_is_stable_16_hex():

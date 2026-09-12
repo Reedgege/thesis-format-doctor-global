@@ -149,20 +149,25 @@ def _machine_fingerprint() -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-_STATE_KEY = b"tfdglobal|state|seal|2026|v1"
+# 状态文件完整性封印（HMAC-SHA256，24 位 hex）。
+# 封印密钥不再是什么「隐藏的对称秘密」——它直接取**内嵌公钥**的字节。公钥本就该
+# 公开，所以这个封印只是「防小白手改 JSON 白嫖」的低成本护栏，不提供密码学强度
+# （决心逆向者照样能重算）。真正能伪造激活码的**私钥**只在卖家本机（private_key.pem），
+# 不在仓库、不在安装包，因此公开仓库无任何泄露风险。详见 src/license/crypto.py。
+from .crypto import PUBLIC_KEY_PEM as _SEAL_KEY_PEM
 
 
 def _state_sign(payload: dict) -> str:
     """状态文件完整性封印（HMAC-SHA256，24 位 hex）。
 
-    目的**不是**「防死逆向」——密钥在客户端里，能逆向就能伪造；目的是挡住
+    目的**不是**「防死逆向」——公钥在客户端里，能逆向就能重算封印；目的是挡住
     「打开 license.json 把 activated 改成 true」这种**零成本白嫖**：
     手改后封印必然对不上，状态按被篡改处理（fail-closed）。
-    这是「把作弊成本抬到比买码更贵」原则下的性价比方案。
+    真正的激活码伪造被 RSA 私钥挡住（私钥不在客户端），与此封印无关。
     """
     blob = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":")).encode("utf-8")
-    return hmac.new(_STATE_KEY, blob, hashlib.sha256).hexdigest()[:24]
+    return hmac.new(_SEAL_KEY_PEM.encode("utf-8"), blob, hashlib.sha256).hexdigest()[:24]
 
 
 def _default_state() -> dict:
@@ -381,46 +386,13 @@ def activate(code: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 兜底方案：离线备用码（与 tools/reedcode*.py 共用密钥；与国内版密钥隔离，防互用）
+# 兜底方案：离线备用码（RSA 非对称签名，见 src/license/crypto.py）
 # ---------------------------------------------------------------------------
-# 与国内版 reedcode 的算法完全一致（machine_code|时间戳|HMAC 前 24 位），仅密钥不同，
-# 保证国内码无法激活海外版、海外码也无法激活国内版。客户把本机机器码发给卖家，
-# 卖家用 tools/reedcode_gui.py 生成离线码，客户在激活页选「离线激活」粘贴即可。
-_OFFLINE_KEY = b"tfdglobal|kami|offline|2026|sign|v1"
-
-
-def _offline_sign(payload: str) -> str:
-    return hmac.new(_OFFLINE_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
-
-
-def generate_offline_code(machine_code: str) -> str:
-    """卖家发码工具用：machine_code + 时间戳 + 签名 → 离线码（与 verify 兼容）。"""
-    ts = int(time.time())
-    payload = "%s|%d" % (machine_code, ts)
-    return payload + "|" + _offline_sign(payload)
-
-
-def verify_offline_code(code: str, machine_code: str) -> bool:
-    """校验离线备用码：签名正确 且 绑定本机机器码。
-
-    **对任意畸形输入都必须返回 False，绝不抛异常**：本函数在 GUI 回调里被调用，
-    而 Tk 回调抛出的异常在无控制台（打包版）时是**完全静默**的——用户看到的就是
-    「点了按钮什么也没发生」，正是本产品最忌讳的体感。
-    """
-    if not isinstance(code, str) or not isinstance(machine_code, str):
-        return False
-    code = code.strip()
-    if not code or "|" not in code:
-        return False
-    payload, _, sig = code.rpartition("|")
-    if not payload.startswith(machine_code + "|"):
-        return False
-    try:
-        return hmac.compare_digest(_offline_sign(payload), sig)
-    except (TypeError, ValueError):
-        # compare_digest 要求两侧都是 ASCII：用户把机器码那行连同中文一起复制过来，
-        # 或粘贴了带中文的乱码，会抛 TypeError。这里必须吞掉。
-        return False
+# 算法与 tools/reedcode*.py 完全一致（machine_code|时间戳 → RSA 签名）。
+# 与导师版密钥隔离（各自独立 RSA 密钥对），保证跨产品码不互通。客户把本机机器码
+# 发给卖家，卖家用 tools/reedcode_gui.py（持本机私钥）生成离线码，客户在激活页选
+# 「离线激活」粘贴即可。私钥只在卖家本机，公开仓库 / 反编译客户端都拿不到。
+from .crypto import verify_offline_code
 
 
 def activate_offline(code: str) -> dict:

@@ -73,6 +73,7 @@ def _nuitka_options():
     # The whole src package (engine/license/ui + data/*.json) is compiled into the build.
     # src/data/ also carries icon.png, so the GUI can set its window icon at runtime.
     opt += ["--include-package=src",
+            "--include-package=rsa",
             "--include-package-data=src"]
     # Belt and braces: drop assets/ next to the executable as well. The GUI looks for
     # <exe dir>/assets/icon.png, which keeps the window icon working even if the

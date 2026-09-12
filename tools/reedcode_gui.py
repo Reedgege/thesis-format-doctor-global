@@ -4,19 +4,18 @@
 ======================================================================
 仅在「中台跑路 / 宕机 / 客户无法联网」时给客户重激活使用。
 
-用法：双击 reedcode-global.exe（打包后），或 python reedcode_gui.py
+用法：在仓库根目录跑 python tools/reedcode_gui.py（卖家本机使用；不随产品分发）
 1) 让客户在软件激活页点「复制机器码」，把机器码发给你
 2) 粘贴到下方输入框，点「生成离线备用码」
 3) 把生成的码发给客户，他在激活页选「离线激活」粘贴即可
 4) 自动记入 reedcode_log.txt 台账
 
-安全：离线码用对称签名（密钥与 src/license/license.py 共用，明文常量）。
+安全：离线码用 **RSA 非对称签名**（私钥只在你本机 private_key.pem，绝不进仓库/安装包；
+公钥嵌进客户端，只能验签不能签名）。详见 src/license/crypto.py。
 """
 import os
 import sys
 import time
-import hmac
-import hashlib
 
 import tkinter as tk
 from tkinter import messagebox
@@ -30,22 +29,10 @@ else:
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-# ---------------------------------------------------------------------------
-# 离线备用码算法（与 src/license/license.py 共用同一密钥与签名方式，已内联，
-# 打包后不依赖任何外部文件）。与国内版密钥不同，防互用。
-# ---------------------------------------------------------------------------
-_OFFLINE_KEY = b"tfdglobal|kami|offline|2026|sign|v1"
-
-
-def _offline_sign(payload):
-    return hmac.new(_OFFLINE_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
-
-
-def generate_offline_code(machine_code):
-    """machine_code + 时间戳 + 签名 → 离线码（与主程序 verify_offline_code 兼容）。"""
-    ts = int(time.time())
-    payload = "%s|%d" % (machine_code, ts)
-    return payload + "|" + _offline_sign(payload)
+# 卖家私钥只在本机（仓库根 private_key.pem）；本工具用它给客户机器码签名。
+# 公钥嵌在客户端源码，这里不需要、也不能持有公钥之外任何东西。
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
+from src.license.crypto import generate_offline_code
 
 # 学术文艺风配色（与海外版主程序呼应；深绿主调）
 BG = "#1F4E46"        # 深绿底
@@ -114,7 +101,7 @@ def build_ui(root):
         try:
             code = generate_offline_code(target)
         except Exception as e:
-            messagebox.showerror("生成失败", str(e))
+            messagebox.showerror("生成失败", "无法生成离线码：\n%s\n\n请确认本机存在 private_key.pem（卖家私钥）。" % e)
             return
         res_text.configure(state="normal")
         res_text.delete("1.0", "end")
