@@ -1,3 +1,3 @@
 """Thesis Format Doctor Global — offline, privacy-first desktop edition."""
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
