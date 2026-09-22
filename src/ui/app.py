@@ -2297,7 +2297,9 @@ class App:
 
 def main():
     root = tk.Tk()
+    root.withdraw()          # 消掉启动一闪：先隐藏主窗，等 UI 全部建完再显示
     App(root)
+    root.deiconify()         # UI 构建完毕，正式显示
     root.mainloop()
 
 
