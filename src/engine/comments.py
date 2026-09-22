@@ -81,7 +81,7 @@ def add_comment(document, para, text: str) -> int:
     c = OxmlElement("w:comment")
     c.set(qn("w:id"), str(nid))
     c.set(qn("w:author"), COMMENT_AUTHOR)
-    c.set(qn("w:date"), datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"))
+    c.set(qn("w:date"), datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     c.set(qn("w:initials"), "TFD")
     cp = OxmlElement("w:p")
     cr = OxmlElement("w:r")
