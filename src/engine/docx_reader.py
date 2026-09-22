@@ -299,6 +299,15 @@ def is_heading(para) -> bool:
     return _heading_level(para) is not None or is_pseudo_heading(para)
 
 
+def heading_level(para) -> Optional[int]:
+    """公开的标题层级访问器（fixer 套用每级格式规则用）。
+
+    返回 1-based 层级（1=最高级）或 None（非标题 / 伪标题无明确层级）。
+    判定链路：样式名 → 段落级 outlineLvl → 样式级 outlineLvl，兼容自定义标题样式。
+    """
+    return _heading_level(para)
+
+
 def _pf_attr(para, doc_pf, attr):
     """段落格式取值，三级回退：run 所在段落 → 段落样式 → 文档默认(Normal)样式。
 

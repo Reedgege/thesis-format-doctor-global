@@ -13,7 +13,7 @@ Thesis Format Doctor Global —— 海外版规则引擎的规范底本。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Optional
 
 
@@ -57,6 +57,23 @@ class ReferenceRule:
 
 
 @dataclass
+class HeadingLevelFormat:
+    """单级标题的格式规则（直接格式化，绝不写 styleId）。
+
+    值直接落在段落 / run 属性上，故天然幂等，且不会写出文档里不存在的样式 id
+    （国内版坑 1：styleId 孤儿 → 非幂等重标，海外版从根上规避）。
+    """
+
+    alignment: Optional[str] = None      # "left" / "center" / "right"
+    bold: bool = False
+    italic: bool = False
+    run_in: bool = False                 # L4/L5：标题与正文接排（同行）
+    indent: bool = False                 # 缩进式标题（L4/L5 首行缩进）
+    size_pt: Optional[float] = None      # None = 与正文同字号
+    desc: str = ""                       # 给用户的英文批注描述
+
+
+@dataclass
 class StyleSpec:
     """一个完整的引用风格规范。"""
 
@@ -65,6 +82,7 @@ class StyleSpec:
     page: PageLayout
     reference: ReferenceRule
     heading_levels: int = 0       # 0 = 该风格不强制标题层级
+    heading_formats: dict = field(default_factory=dict)  # 每级直接格式化规则（不写 styleId）
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -73,8 +91,9 @@ class StyleSpec:
             "name": self.name,
             "page": asdict(self.page),
             "reference": asdict(self.reference),
-            "heading_levels": self.heading_levels,
-            "notes": self.notes,
+        "heading_levels": self.heading_levels,
+        "heading_formats": {str(k): asdict(v) for k, v in self.heading_formats.items()},
+        "notes": self.notes,
         }
 
 
@@ -83,6 +102,40 @@ class StyleSpec:
 # 注意：IEEE 会议模板常为 2 栏 10pt，学位论文多为 12pt/1.5 倍，这里取论文常用值，
 #       且仅作为「参考」而非对页面排版的硬性要求（页面以学校模板/问卷为准）。
 # ---------------------------------------------------------------------------
+
+# APA 7 五级的精确直接格式化规则（官方手册 §2.26–2.27）。绝不写 styleId。
+APA_HEADING: dict[int, HeadingLevelFormat] = {
+    1: HeadingLevelFormat("center", True, False, False, False, None,
+                          "centered, bold, title case"),
+    2: HeadingLevelFormat("left", True, False, False, False, None,
+                          "flush-left, bold, title case"),
+    3: HeadingLevelFormat("left", True, True, False, False, None,
+                          "flush-left, bold italic, title case"),
+    4: HeadingLevelFormat("left", True, False, True, True, None,
+                          "indented, bold, title case, ending with a period (run-in)"),
+    5: HeadingLevelFormat("left", True, True, True, True, None,
+                          "indented, bold italic, title case, ending with a period (run-in)"),
+}
+
+
+def generic_heading_formats(levels: int) -> dict:
+    """学校自定义标题层级的保守通用方案（仅当规范本身不强制、且用户模板/问卷显式给出 heading_levels 时才用）。
+
+    层级越深视觉权重越低：L1 居中加粗，L2 左对齐加粗，更深一级加斜体。绝不写 styleId。
+    """
+    out: dict = {}
+    for lv in range(1, max(int(levels), 1) + 1):
+        if lv == 1:
+            out[lv] = HeadingLevelFormat("center", True, False, False, False, None,
+                                         "centered, bold")
+        elif lv == 2:
+            out[lv] = HeadingLevelFormat("left", True, False, False, False, None,
+                                         "flush-left, bold")
+        else:
+            out[lv] = HeadingLevelFormat("left", True, True, False, False, None,
+                                         "flush-left, bold italic")
+    return out
+
 
 SPECS: dict[str, StyleSpec] = {
     "APA": StyleSpec(
@@ -98,6 +151,7 @@ SPECS: dict[str, StyleSpec] = {
             checks=("has_year_paren", "author_year_order"),
         ),
         heading_levels=5,
+        heading_formats=APA_HEADING,
         notes="学生论文含标题页；标题层级最多 5 级；参考文献悬挂缩进 0.5 英寸。",
     ),
     "MLA": StyleSpec(
