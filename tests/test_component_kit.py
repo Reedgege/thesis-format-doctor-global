@@ -176,15 +176,15 @@ def test_theme_tokens():
     """验证主题令牌是否与 UI_DESIGN_SPEC 对齐（theme.py 是颜色令牌的唯一来源）。
 
     v2.3.0 的 UI 重做把界面从「老式 Windows 工具」改成「premium 学术生产力软件」：
-    冷调近白纸底 + 学术深蓝主色。本测试锁定这些对外视觉令牌，防止回退到旧的
+    冷调近白纸底 + 青蓝主色。本测试锁定这些对外视觉令牌，防止回退到旧的
     米色 / 浅蓝配色（#F6F3EC / #1F6FAE）。
     """
     assert theme.BG == "#F7F9FB", f"Expected BG #F7F9FB (cool-white), got {theme.BG}"
     assert theme.SURFACE == "#FFFFFF", f"Expected SURFACE #FFFFFF, got {theme.SURFACE}"
     assert theme.SURFACE_SOFT == "#F4F6F8", f"Expected SURFACE_SOFT #F4F6F8 (neutral cool-gray), got {theme.SURFACE_SOFT}"
-    assert theme.PRIMARY == "#15497A", f"Expected PRIMARY #15497A (academic navy — sole saturated blue), got {theme.PRIMARY}"
-    assert theme.PRIMARY_HOVER == "#0F3A60", f"Expected PRIMARY_HOVER #0F3A60, got {theme.PRIMARY_HOVER}"
-    assert theme.PRIMARY_SOFT == "#E8F0F8", f"Expected PRIMARY_SOFT #E8F0F8, got {theme.PRIMARY_SOFT}"
+    assert theme.PRIMARY == "#0E7490", f"Expected PRIMARY #0E7490 (sole saturated teal-cyan), got {theme.PRIMARY}"
+    assert theme.PRIMARY_HOVER == "#0A5C6B", f"Expected PRIMARY_HOVER #0A5C6B, got {theme.PRIMARY_HOVER}"
+    assert theme.PRIMARY_SOFT == "#DCF1F5", f"Expected PRIMARY_SOFT #DCF1F5, got {theme.PRIMARY_SOFT}"
     assert theme.TEXT == "#17324D", f"Expected TEXT #17324D, got {theme.TEXT}"
     assert theme.TEXT_2 == "#64748B", f"Expected TEXT_2 #64748B (neutral slate, no blue), got {theme.TEXT_2}"
     assert theme.BORDER == "#E2E8F0", f"Expected BORDER #E2E8F0 (neutral cool-gray), got {theme.BORDER}"

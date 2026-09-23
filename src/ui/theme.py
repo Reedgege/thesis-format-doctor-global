@@ -2,7 +2,7 @@
 
 来源：`Thesis_Format_Doctor_Global_UI_Agent_Handoff` 的 `UI_DESIGN_SPEC.json`
 （2026-09-12 老板交办）。规格书要求把界面从「老式 Windows 工具」改成
-「premium 学术生产力软件」：冷调近白纸底 + 学术深蓝主色、大量留白、极简边框。
+「premium 学术生产力软件」：冷调近白纸底 + 青蓝主色、大量留白、极简边框。
 
 为什么单独一个模块，而不是把色值散在 `app.py` 里：
 1. 规格书第 8 条明确「不新增功能，只重组呈现」—— 说明视觉层可以整体替换，
@@ -23,9 +23,9 @@ BG = "#F7F9FB"            # 冷调近白（页面背景，与 backdrop 平展区
 SURFACE = "#FFFFFF"       # 卡片面（纯白，在冷白底上更挺括）
 SURFACE_SOFT = "#F4F6F8"  # 柔和面（信息框 / 信任区）—— 去蓝，改中性冷灰
 
-PRIMARY = "#15497A"       # 学术深蓝（全局**唯一**饱和蓝；其余蓝一律收敛成中性灰）
-PRIMARY_HOVER = "#0F3A60"  # 主色 active（更深）
-PRIMARY_SOFT = "#E8F0F8"  # 主色浅底（徽标 / 选中行）
+PRIMARY = "#0E7490"       # 青蓝（全局**唯一**饱和色；其余一律收敛成中性灰）
+PRIMARY_HOVER = "#0A5C6B"  # 主色 active（更深）
+PRIMARY_SOFT = "#DCF1F5"  # 主色浅底（徽标 / 选中行）
 SECONDARY = "#64748B"     # 次要色 —— 由蓝灰 #5E7C99 收敛为中性石板灰（不再偏蓝）
 
 TEXT = "#17324D"          # 主文字（深海军墨；保留一点冷调，不与主蓝混淆）
@@ -34,7 +34,7 @@ TEXT_3 = "#94A3B8"        # 三级文字（页脚 / 极弱提示）—— 由 #8
 
 BORDER = "#E2E8F0"       # 卡片 / 控件边框 —— 由偏蓝 #D8E2EA 转中性冷灰
 HAIRLINE = "#E9EEF2"      # 字段之间的细分隔线
-INFO_BORDER = "#DCE3EA"   # 信息框边框 —— 由偏蓝 #D2E1EF 转中性冷灰
+INFO_BORDER = "#E2E8F0"   # 信息框边框 —— 中性冷灰（与 BORDER 同，彻底去蓝）
 SHADOW = "#E3E8EF"        # 卡片投影（冷调极浅色带，画在背景色上）
 
 GOLD = "#B89A5A"          # 可选点缀（克制使用，不做主色）
@@ -87,7 +87,7 @@ WIN_MIN_H = 720        # 最小高度（实际会按屏幕尺寸再夹一次，�
 # widgets.BrandMark —— 不引第三方库、不新增图片资源。
 MARK_SIZE = 48         # 蓝底方块边长（规格 44~52）
 MARK_RADIUS = 12       # 方块圆角
-MARK_BG = PRIMARY_HOVER   # 方块底色 #174B7A（primary_dark）
+MARK_BG = PRIMARY_HOVER   # 品牌方块底色（取主色深色，青蓝）
 MARK_FG = "#FFFFFF"       # 学士帽剪影
 
 BADGE_SIZE = 26        # 字段行 / 卡片标题前的小圆徽标直径

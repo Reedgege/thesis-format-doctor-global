@@ -768,10 +768,10 @@ def draw_icon(cv, name: str, cx: float, cy: float, size: float,
 
 
 class BrandMark(tk.Canvas):
-    """头部品牌 mark：深蓝圆角方块 + 白色学士帽剪影（规格 GLOBAL_UI_REFERENCE.png）。
+    """头部品牌 mark：青蓝圆角方块 + 白色学士帽剪影（规格 GLOBAL_UI_REFERENCE.png）。
 
     ``GLOBAL_MARK.svg`` 里是线描书本，与设计稿不一致 —— 老板拍板以设计稿的实心学士帽
-    为准，配色取 DESIGN_TOKENS 的深蓝一族（方块 #174B7A，帽体白色）。整个 mark 只用
+    为准，配色取 theme.PRIMARY_HOVER（青蓝方块，帽体白色）。整个 mark 只用
     ``create_polygon`` / ``create_oval`` / ``create_line`` 画，零第三方依赖、零图片资源。
     """
 
