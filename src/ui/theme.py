@@ -21,20 +21,20 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 BG = "#F7F9FB"            # 冷调近白（页面背景，与 backdrop 平展区同色，勿单独改）
 SURFACE = "#FFFFFF"       # 卡片面（纯白，在冷白底上更挺括）
-SURFACE_SOFT = "#F4F8FC"  # 柔和面（信息框 / 信任卡）
+SURFACE_SOFT = "#F4F6F8"  # 柔和面（信息框 / 信任区）—— 去蓝，改中性冷灰
 
-PRIMARY = "#15497A"       # 学术深蓝（国际化：比原 #1F6FAE 更沉、更具「大学 / 期刊」感）
+PRIMARY = "#15497A"       # 学术深蓝（全局**唯一**饱和蓝；其余蓝一律收敛成中性灰）
 PRIMARY_HOVER = "#0F3A60"  # 主色 active（更深）
-PRIMARY_SOFT = "#E7F0F8"  # 主色浅底（徽标 / 选中行）
-SECONDARY = "#5E7C99"     # 次要蓝（helper / 次要文字）
+PRIMARY_SOFT = "#E8F0F8"  # 主色浅底（徽标 / 选中行）
+SECONDARY = "#64748B"     # 次要色 —— 由蓝灰 #5E7C99 收敛为中性石板灰（不再偏蓝）
 
-TEXT = "#17324D"          # 主文字（深海军墨）
-TEXT_2 = "#5E7C99"        # 次要文字（helper / 描述）
-TEXT_3 = "#8A9AAB"        # 三级文字（页脚 / 极弱提示）
+TEXT = "#17324D"          # 主文字（深海军墨；保留一点冷调，不与主蓝混淆）
+TEXT_2 = "#64748B"        # 次要文字（helper / 描述）—— 与 SECONDARY 同上石板灰
+TEXT_3 = "#94A3B8"        # 三级文字（页脚 / 极弱提示）—— 由 #8A9AAB 提亮一档更干净
 
-BORDER = "#D8E2EA"        # 卡片 / 控件边框
+BORDER = "#E2E8F0"       # 卡片 / 控件边框 —— 由偏蓝 #D8E2EA 转中性冷灰
 HAIRLINE = "#E9EEF2"      # 字段之间的细分隔线
-INFO_BORDER = "#D2E1EF"   # 信息框边框（比卡片边框略偏蓝）
+INFO_BORDER = "#DCE3EA"   # 信息框边框 —— 由偏蓝 #D2E1EF 转中性冷灰
 SHADOW = "#E3E8EF"        # 卡片投影（冷调极浅色带，画在背景色上）
 
 GOLD = "#B89A5A"          # 可选点缀（克制使用，不做主色）
@@ -42,9 +42,10 @@ SUCCESS = "#3E7B67"       # 成功 / 已完成
 ERROR = "#A94A43"         # **仅**用于真实错误
 
 # 控件态（按钮 hover 时 ttk 自己处理不了这些，需显式给值）
-BTN_DISABLED_BG = "#D6DEE6"
-BTN_DISABLED_FG = "#FFFFFF"
-FIELD_BORDER = "#CFDAE4"
+# 置灰态走中性灰，不再带任何蓝调（v2.3.2 配色收敛）
+BTN_DISABLED_BG = "#E2E8F0"
+BTN_DISABLED_FG = "#94A3B8"
+FIELD_BORDER = "#CBD5E1"  # 下拉式字段的描边 —— 中性石板灰（去蓝）
 
 # ---------------------------------------------------------------------------
 # 字体族

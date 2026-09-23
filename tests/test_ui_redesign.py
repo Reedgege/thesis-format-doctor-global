@@ -178,7 +178,6 @@ def test_primary_button_state_machine(ui, tmp_path):
         assert ui._check_btn._command == ui._run_fix
     assert ui._step_index == 2
     assert ui._report_text.strip(), "完整报告没留存，导不出来"
-    assert not ui._how_card.winfo_ismapped()
 
     # fixed：模拟落盘完成
     ui._last_output = str(tmp_path / "thesis_fixed.docx")
@@ -187,7 +186,7 @@ def test_primary_button_state_machine(ui, tmp_path):
     ui._sync_ui()
     ui.root.update_idletasks()
     assert ui._check_btn.text == i18n.t(ui.lang, "btn_review")
-    assert [c.state for c in ui._step_circles] == ["done"] * 3
+    assert ui._step_index == 3, "三步应全部完成（进度条满格）"
 
 
 def test_secondary_button_stays_above_aux_row(ui, tmp_path):
@@ -326,11 +325,11 @@ def test_footer_and_statusbar_visible_within_window(ui):
         t = str(w.cget("text"))
         if "hi@reedskill.com" in t:
             found["email"] = w
-        elif "Greater academic success" in t:
-            found["tagline"] = w
+        elif "reedskill.com" in t:
+            found["site"] = w
         elif "Thesis Format Doctor Global" in t:
             found["statusbar"] = w
-    for name in ("email", "tagline", "statusbar"):
+    for name in ("email", "site", "statusbar"):
         assert name in found, "找不到 %s 标签" % name
         y = found[name].winfo_rooty() - top
         assert 0 < y < win_h, "%s 在可视区外（y=%d 窗口高=%d）" % (name, y, win_h)

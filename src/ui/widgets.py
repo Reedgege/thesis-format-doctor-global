@@ -549,55 +549,92 @@ class RoundButton(tk.Frame):
 
 
 # ---------------------------------------------------------------------------
-# 步进圆点
+# 极简进度条
 # ---------------------------------------------------------------------------
-class StepCircle(tk.Canvas):
-    """圆形步骤标记：``todo`` 空心浅蓝 / ``active`` 实心深蓝 / ``done`` 实心绿勾。"""
+class ProgressBar(tk.Canvas):
+    """极简进度条：轨道 + 已完成填充 + 步骤圆点 + 步骤标签。
 
-    SIZE = 34
+    替代旧版的横向 ``StepCircle`` 步进器（用户反馈原界面「太杂乱」）。只画一条细条，
+    不堆大段文字；``set_fraction`` / ``set_step`` 驱动进度，``frac`` 供测试断言。
 
-    def __init__(self, parent, number: int, font=None, size: int = SIZE, **kw):
-        bg = kw.pop("bg", None) or parent.cget("bg")
-        super().__init__(parent, width=size, height=size, bg=bg,
-                         highlightthickness=0, bd=0, **kw)
-        self._n = int(number)
-        self._size = int(size)
+    设计：``steps`` 个步骤圆点均匀分布在轨道上（第 1 个在左端、最后一个在右端），
+    填充比例 ``frac`` 从左向右生长，已越过 / 已完成的圆点刷成主色、其余为轨道灰；
+    每个圆点下方一行小标签（Prepare / Check / Fix 之类），当前及已过步骤用主色。
+    """
+
+    def __init__(self, parent, steps: int = 3, bg: str = None, font=None,
+                 height: int = 34, track: str = None, fill: str = None, **kw):
+        bg = bg or parent.cget("bg")
+        self._steps = max(1, int(steps))
         self._font = font
-        self._state = "todo"
+        self._track = track or theme.HAIRLINE
+        self._fill = fill or theme.PRIMARY
+        self._labels: list = []
+        self.frac = 0.0                     # 公开属性，供测试断言
+        super().__init__(parent, height=height, bg=bg,
+                         highlightthickness=0, bd=0, **kw)
+        self.bind("<Configure>", lambda e: self.draw())
         self.draw()
 
-    def set_state(self, state: str):
-        if state not in ("todo", "active", "done"):
-            state = "todo"
-        if state == self._state:
-            return
-        self._state = state
+    def set_fraction(self, f: float):
+        self.frac = max(0.0, min(1.0, float(f)))
         self.draw()
+        return self.frac
 
-    @property
-    def state(self) -> str:
-        return self._state
+    def set_step(self, index: int):
+        """``index`` = 已完成步骤数（0..steps）。"""
+        self.set_fraction(index / self._steps)
+
+    def set_labels(self, labels):
+        self._labels = list(labels) if labels else []
+        self.draw()
 
     def draw(self):
         try:
             self.delete("all")
+            w = self.winfo_width()
+            h = self.winfo_height()
         except Exception:
             return
-        s = self._size
-        pad = 1.5
-        if self._state == "todo":
-            fill, outline, fg, text = theme.SURFACE, theme.BORDER, theme.TEXT_3, str(self._n)
-        elif self._state == "active":
-            fill, outline, fg, text = theme.PRIMARY, theme.PRIMARY, "#FFFFFF", str(self._n)
-        else:
-            fill, outline, fg, text = theme.SUCCESS, theme.SUCCESS, "#FFFFFF", "✓"
-        try:
-            self.create_oval(pad, pad, s - pad, s - pad, fill=fill, outline=outline,
-                             width=1)
-            self.create_text(s / 2.0, s / 2.0 + 0.5, text=text, fill=fg,
-                             font=self._font)
-        except Exception:
-            pass
+        if w <= 2 or h <= 2:
+            return
+        pad = 14
+        bar_y = 9
+        bar_h = 5
+        radius = bar_h / 2.0
+        n = self._steps
+
+        # 轨道
+        track_pts = rounded_points(pad, bar_y, w - pad, bar_y + bar_h, radius)
+        self.create_polygon(track_pts, fill=self._track, outline=self._track,
+                            tags="bar")
+        # 填充
+        fx = pad + (w - 2 * pad) * self.frac
+        if fx > pad + 0.5:
+            fill_pts = rounded_points(pad, bar_y, fx, bar_y + bar_h, radius)
+            self.create_polygon(fill_pts, fill=self._fill, outline=self._fill,
+                                tags="bar")
+
+        # 步骤圆点 + 标签
+        if n > 1:
+            mid_y = bar_y + bar_h + 13
+            for i in range(n):
+                pos = i / (n - 1)
+                cx = pad + (w - 2 * pad) * pos
+                completed = (i + 1) <= round(self.frac * n)
+                col = self._fill if completed else self._track
+                self.create_oval(cx - 4, bar_y + bar_h / 2 - 4,
+                                 cx + 4, bar_y + bar_h / 2 + 4,
+                                 fill=col, outline=col, tags="bar")
+                if self._labels and self._font and i < len(self._labels):
+                    name = self._labels[i]
+                    try:
+                        tw = tkfont.Font(font=self._font).measure(name)
+                    except Exception:
+                        tw = len(name) * 7
+                    cx = max(tw / 2.0 + 2, min(w - tw / 2.0 - 2, cx))
+                    self.create_text(cx, mid_y, text=name, fill=col,
+                                     font=self._font, anchor="n", tags="bar")
 
 
 # ---------------------------------------------------------------------------

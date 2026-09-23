@@ -11,9 +11,10 @@ v2.2.0 按设计规格书重做视觉层（老板 2026-09-12 交办），**功�
   - ``widgets.py`` —— 圆角卡片 / 圆角按钮 / 步进圆点（tkinter 没有圆角与投影，
     这三个是 Canvas 自绘）
   - 本文件         —— 布局骨架 + 交互状态机
-- 旧版的竖排时间线（3 行带长描述）改成**横排 stepper**；1/3 计数、章节角标
-  （Ⅰ·SELECT / Ⅱ·PROCESS）按规格删除。
-- 问卷 / 配置导入两个常驻行收进 **Advanced options 折叠区**。
+- 三步走（Prepare / Check / Fix）收成**一条极简进度条**（不再是横排步进圆点 / 竖排时间线）；
+  1/3 计数、章节角标（Ⅰ·SELECT / Ⅱ·PROCESS）按规格删除。
+- 高级设置（学校模板 / LaTeX / 问卷 / 配置导入）统一收进 **Advanced options 折叠区**，
+  主界面只留必填的「引用规范 + 上传 Word」，落实渐进式披露。
 - 主按钮改成**上下文相关**：未选论文=置灰、就绪=Check formatting、
   出结果=Fix N issues、改完=Review changes（见 ``_sync_ui``）。
 
@@ -49,8 +50,8 @@ from .. import versioninfo
 from . import i18n, iconpath, theme
 from .fonts import Fonts
 from .modal_shell import ModalShell
-from .widgets import (BrandMark, IconBadge, RoundButton, RoundCard, ScrollArea,
-                      StepCircle, draw_icon)
+from .widgets import (BrandMark, IconBadge, ProgressBar, RoundButton, RoundCard,
+                      ScrollArea, draw_icon)
 
 # ---------------------------------------------------------------------------
 # 配色别名 —— 新令牌在 theme.py，这里保留旧名字是为了**没重写的弹窗**（关于 /
@@ -497,13 +498,14 @@ class App:
         """
         self._build_style()
         self.root.configure(bg=theme.BG)
-        # 嵌套的圆角卡片（Advanced 条 / How it works / 信任面板）要跟着一起重测量，
+        # 嵌套的圆角卡片（Advanced 条 / 信任面板）要跟着一起重测量，
         # 否则父卡按旧高度画圆角矩形、新内容被裁掉（见 _relayout_all）。
         self._extra_cards: list = []
 
         self._build_backdrop()
         self._build_footer()
         self._build_statusbar()
+        self._build_cta_band()
         self._build_header()
 
         # 主体：可滚动区。窗口比内容矮时（1366×768 / 1600×900 笔记本）出滚动条，
@@ -695,27 +697,17 @@ class App:
         F = self.F
         cv = self._backdrop
 
-        # —— 品牌：mark + 两行文字（mark 与文字块垂直居中，左缘 = 页面留白）——
+        # —— 品牌：mark + 标题（单行，左缘 = 页面留白）——
         brand = tk.Frame(cv, bg=theme.BG)
         BrandMark(brand, size=theme.MARK_SIZE, bg=theme.BG).pack(side="left")
-        btxt = tk.Frame(brand, bg=theme.BG)
-        btxt.pack(side="left", padx=(13, 0))
-        tk.Label(btxt, text=self.tr("app_title"), bg=theme.BG, fg=theme.PRIMARY,
-                 font=F["F_BRAND"], anchor="w").pack(anchor="w")
-        tk.Label(btxt, text=self.tr("app_tagline"), bg=theme.BG,
-                 fg=theme.SECONDARY, font=F["F_SUB"], anchor="w").pack(
-                     anchor="w", pady=(2, 0))
+        tk.Label(brand, text=self.tr("app_title"), bg=theme.BG, fg=theme.PRIMARY,
+                 font=F["F_BRAND"], anchor="w").pack(side="left", padx=(13, 0))
 
-        # —— 隐私声明：规格要求从卡片里移到顶栏，且保持「安静」——
+        # —— 隐私声明：单行，保持「安静」（不再压第二行小字）——
         privacy = tk.Frame(cv, bg=theme.BG)
-        prow = tk.Frame(privacy, bg=theme.BG)
-        prow.pack(anchor="w")
-        IconBadge(prow, "shield", size=theme.BADGE_SIZE, bg=theme.BG).pack(side="left")
-        tk.Label(prow, text=self.tr("privacy_line"), bg=theme.BG, fg=theme.PRIMARY,
+        IconBadge(privacy, "shield", size=theme.BADGE_SIZE, bg=theme.BG).pack(side="left")
+        tk.Label(privacy, text=self.tr("privacy_line"), bg=theme.BG, fg=theme.TEXT_2,
                  font=F["F_SMALL_B"]).pack(side="left", padx=(8, 0))
-        tk.Label(privacy, text=self.tr("privacy_sub"), bg=theme.BG,
-                 fg=theme.TEXT_3, font=F["F_HELP"], anchor="w").pack(
-                     anchor="w", padx=(theme.BADGE_SIZE + 8, 0), pady=(3, 0))
 
         # 右侧导航：自右向左 pack
         nav = tk.Frame(cv, bg=theme.BG)
@@ -744,29 +736,24 @@ class App:
                  font=self.F["F_HELP"]).pack(side="right")
 
     def _build_footer(self):
-        """页脚：左邮箱 / 中官网 / 右标语 —— 规格明确「页脚只此三项」。
+        """页脚：左邮箱 / 右官网 —— 简化到两项，保持安静小字。
 
-        右标语前加一根细分隔线（设计稿有），其余保持安静小字。
+        规格明确「页脚只此二项」（品牌口径只留官网与邮箱，不出现微信 / 公众号 /
+        小程序）。去掉了标语行与分隔线，进一步降噪。
         """
         F = self.F
         footer = tk.Frame(self.root, bg=theme.BG)
         footer.pack(side="bottom", fill="x", padx=theme.PAGE_PAD,
                     pady=(0, theme.FOOTER_PAD_Y))
         mail = tk.Label(footer, text="✉  " + self.tr("footer_email"), bg=theme.BG,
-                        fg=theme.SECONDARY, font=F["F_FOOT"], cursor="hand2")
+                        fg=theme.TEXT_2, font=F["F_FOOT"], cursor="hand2")
         mail.pack(side="left")
         mail.bind("<Button-1>",
                   lambda e: webbrowser.open("mailto:" + i18n.BRAND_EMAIL))
-        tag = tk.Label(footer, text=self.tr("footer_tagline"), bg=theme.BG,
-                       fg=theme.TEXT_3, font=F["F_FOOT"])
-        tag.pack(side="right", padx=(10, 0))
-        tk.Frame(footer, bg=theme.BORDER, width=1, height=14).pack(
-            side="right", padx=(0, 2))
         site = tk.Label(footer, text="◎   " + self.tr("footer_site"), bg=theme.BG,
-                        fg=theme.SECONDARY, font=F["F_FOOT"], cursor="hand2")
+                        fg=theme.TEXT_2, font=F["F_FOOT"], cursor="hand2")
+        site.pack(side="right")
         site.bind("<Button-1>", lambda e: webbrowser.open(i18n.BRAND_SITE_URL))
-        # fill="x" + expand：吃掉两侧剩余空间，标签文字自然落在中间
-        site.pack(side="left", fill="x", expand=True)
 
     def _build_statusbar(self):
         F = self.F
@@ -782,6 +769,44 @@ class App:
         self.bar_right = tk.Label(statusbar, text="", bg=theme.BG, fg=theme.TEXT_3,
                                   font=F["F_FOOT"])
         self.bar_right.pack(side="right")
+
+    # ------------------------------------------------------------ 底部 CTA 条
+    def _build_cta_band(self):
+        """底部居中 CTA 条：主操作按钮（Check / Fix / Review）绝对主导，最显眼。
+
+        用户反馈旧界面「太杂乱」、主操作不够突出 —— 这里把主按钮从右卡底部抽出来，
+        单独放在页面**偏下、水平居中**的位置，做成最大最满的主色按钮；次按钮
+        （Fix issues，仅 ready 态）与辅助动作（保存报告 / 导出模板）在其下方安静排列。
+
+        左右两条弹性 spacer 把内容夹到水平居中；内容框固定宽度，主按钮 fill=x 撑满。
+        """
+        F = self.F
+        band = tk.Frame(self.root, bg=theme.BG)
+        band.pack(side="bottom", fill="x", padx=theme.PAGE_PAD, pady=(12, 10))
+        tk.Frame(band, bg=theme.BG).pack(side="left", fill="x", expand=True)
+        content = tk.Frame(band, bg=theme.BG, width=460)
+        content.pack(side="left")
+        tk.Frame(band, bg=theme.BG).pack(side="left", fill="x", expand=True)
+
+        # 主操作按钮（绝对主导：最大、最满、主色）
+        self._check_btn = RoundButton(content, self.tr("btn_check"), self._run,
+                                      style="primary", font=F["F_BTN"],
+                                      height=50, icon="search")
+        self._check_btn.pack(fill="x", pady=(0, 8))
+        # 次按钮（仅 ready 态出现）
+        self._fix_btn = RoundButton(content, self.tr("btn_fix"), self._run_fix,
+                                    style="secondary", font=F["F_BTN_S"],
+                                    height=44, icon="wrench")
+        self._fix_btn.pack(fill="x", pady=(0, 8))
+        # 辅助动作（低调 ghost）
+        aux = tk.Frame(content, bg=theme.BG)
+        aux.pack(fill="x")
+        self._aux_row = aux          # 留引用：回归测试要断言次按钮排在它**上面**
+        for text, cmd in ((self.tr("btn_save_report"), self._save_report),
+                          (self.tr("btn_export_ai"), self._export_template)):
+            ttk.Button(aux, text=text, style="Ghost.TButton",
+                       command=cmd).pack(side="left", padx=(0, 6))
+        self._fix_btn.pack_anchor(aux)
 
     # ------------------------------------------------------------ 左栏
     def _build_left(self, parent):
@@ -844,22 +869,6 @@ class App:
         sub.pack(anchor="w")
         for w in (drop.inner, self._paper_name, sub, srow, cloud, scol):
             w.bind("<Button-1>", lambda e: self._pick_docx())
-
-        self._spacer(parent)
-        self._hairline(parent)
-        # ③ 学校模板（可选）
-        self._field_label(parent, "row_template_title", required=False)
-        self._helper(parent, "row_template_desc")
-        self._tpl_name = self._select_field(parent, "row_template_placeholder",
-                                            self._pick_template)
-
-        self._spacer(parent)
-        self._hairline(parent)
-        # ④ LaTeX 模板（可选）
-        self._field_label(parent, "row_latex_title", required=False)
-        self._helper(parent, "row_latex_desc")
-        self._latex_name = self._select_field(parent, "row_latex_placeholder",
-                                              self._pick_latex)
 
         self._build_advanced(parent)
 
@@ -1021,7 +1030,22 @@ class App:
 
         self._adv_body = tk.Frame(bar.inner, bg=theme.SURFACE)
 
-        # ① 格式问卷
+        # —— 高级格式设置（默认折叠，渐进式披露）——
+        # ① 学校模板（可选）
+        self._field_label(self._adv_body, "row_template_title", required=False)
+        self._helper(self._adv_body, "row_template_desc")
+        self._tpl_name = self._select_field(self._adv_body, "row_template_placeholder",
+                                            self._pick_template)
+        self._spacer(self._adv_body)
+        self._hairline(self._adv_body)
+        # ② LaTeX 模板（可选）
+        self._field_label(self._adv_body, "row_latex_title", required=False)
+        self._helper(self._adv_body, "row_latex_desc")
+        self._latex_name = self._select_field(self._adv_body, "row_latex_placeholder",
+                                              self._pick_latex)
+        self._spacer(self._adv_body)
+        self._hairline(self._adv_body)
+        # ③ 格式问卷
         r1 = tk.Frame(self._adv_body, bg=theme.SURFACE)
         r1.pack(fill="x", pady=(2, 7))
         c1 = tk.Frame(r1, bg=theme.SURFACE)
@@ -1092,7 +1116,6 @@ class App:
         tk.Label(trow, text=self.tr("right_title"), bg=theme.SURFACE,
                  fg=theme.PRIMARY, font=F["F_CARD_HDR"], anchor="w").pack(
                      side="left", padx=(10, 0))
-        self._build_stepper(head)
         desc = tk.Label(parent, text=self.tr("right_desc"), bg=theme.SURFACE,
                         fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
                         justify="left")
@@ -1100,7 +1123,8 @@ class App:
         _auto_wrap(desc, parent, theme.CARD_PAD_X)
 
         self._spacer(parent)
-        self._build_how_card(parent)
+        # 极简进度条（替代旧版横排步进器）：Prepare → Check → Fix
+        self._build_progress(parent)
 
         # 状态行：结果与提示都落这里（旧版状态行保留，位置改到按钮上方）
         status_row = tk.Frame(parent, bg=theme.SURFACE)
@@ -1132,89 +1156,20 @@ class App:
         self.summary_lbl.pack_forget()
         self.summary_hint.pack_forget()
 
-        # 主 CTA（视觉绝对主导）+ 次按钮（只在「就绪」态出现）—— 严格按规范的右栏
-        # 顺序，两个动作按钮**紧跟 How it works**，不被任何 ghost 动作插队。
-        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
-                                      style="primary", font=F["F_BTN"],
-                                      height=46, icon="search")
-        self._check_btn.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
-                                    style="secondary", font=F["F_BTN_S"],
-                                    height=46, icon="wrench")
-        self._fix_btn.pack(fill="x", pady=(6, 0))
-
-        # 辅助动作（技术性功能，低调）排在两个 CTA **之下**，保持安静。
-        # `pack_anchor` 把次按钮 `set_visible(True)` 的重排锚点钉在这行之前 ——
-        # 不钉的话次按钮会掉到 ghost 行下面，破坏"次要动作紧跟主 CTA"的层级
-        # （Codex 2026-09-12 P1-1，回归测试也断言这条）。
-        aux = tk.Frame(parent, bg=theme.SURFACE)
-        aux.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-        self._aux_row = aux          # 留引用：回归测试要断言次按钮排在它**上面**
-        for text, cmd in ((self.tr("btn_save_report"), self._save_report),
-                          (self.tr("btn_export_ai"), self._export_template)):
-            ttk.Button(aux, text=text, style="Ghost.TButton",
-                       command=cmd).pack(side="left", padx=(0, 6))
-        self._fix_btn.pack_anchor(aux)
-
+        # 主 / 次 CTA 与辅助动作已统一抽到页面底部居中 CTA 条（见 _build_cta_band），
+        # 右栏只保留说明与结果，避免「按钮散落在两处」的凌乱感。
         self._spacer(parent)
         self._build_trust_card(parent)
         self._build_commercial(parent)
 
-    def _build_stepper(self, parent):
-        """横排 ① Prepare —— ② Check —— ③ Fix（规格把竖排时间线换成横排）。
-
-        连接线是 1px 的 Frame，用 ``pady`` 顶到圆点圆心高度；状态变化时
-        ``_set_step`` 会把已走过的连线刷成主色（设计稿里走过的那段是深蓝）。
-        """
+    def _build_progress(self, parent):
+        """极简进度条（替代旧版横排步进器）：Prepare → Check → Fix。"""
         F = self.F
-        wrap = tk.Frame(parent, bg=theme.SURFACE)
-        wrap.pack(side="right", padx=(12, 0))
-        self._step_circles: list = []
-        self._step_labels: list = []
-        self._step_links: list = []
-        step = theme.STEP_SIZE
-        for i, key in enumerate(("step1_title", "step2_title", "step3_title")):
-            cell = tk.Frame(wrap, bg=theme.SURFACE)
-            cell.grid(row=0, column=2 * i, sticky="n")
-            circ = StepCircle(cell, i + 1, font=F["F_STEP_N"], size=step,
-                              bg=theme.SURFACE)
-            circ.pack()
-            lbl = tk.Label(cell, text=self.tr(key), bg=theme.SURFACE,
-                           fg=theme.TEXT_3, font=F["F_HELP"])
-            lbl.pack(pady=(2, 0))
-            self._step_circles.append(circ)
-            self._step_labels.append(lbl)
-            if i < 2:
-                link = tk.Frame(wrap, bg=theme.BORDER, height=1, width=1)
-                link.grid(row=0, column=2 * i + 1, sticky="ew",
-                          pady=(step // 2, 0))
-                self._step_links.append(link)
-        for i in range(2):
-            wrap.columnconfigure(2 * i + 1, weight=1, minsize=step)
-
-    def _build_how_card(self, parent):
-        """How it works 引导卡：跑过体检后收起，把版面让给结果。"""
-        F = self.F
-        self._how_card = RoundCard(parent, radius=12, fill=theme.SURFACE_SOFT,
-                                   border=theme.INFO_BORDER, shadow=False,
-                                   padx=14, pady=10)
-        self._extra_cards.append(self._how_card)
-        self._how_card.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-        hrow = tk.Frame(self._how_card.inner, bg=theme.SURFACE_SOFT)
-        hrow.pack(fill="x", pady=(0, 4))
-        IconBadge(hrow, "bulb", size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
-                  fill=theme.PRIMARY_SOFT).pack(side="left")
-        tk.Label(hrow, text=self.tr("how_title"), bg=theme.SURFACE_SOFT,
-                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"],
-                 anchor="w").pack(side="left", padx=(8, 0))
-        for name, text in i18n.t(self.lang, "how_steps"):
-            row = tk.Frame(self._how_card.inner, bg=theme.SURFACE_SOFT)
-            row.pack(fill="x", pady=0)
-            tk.Label(row, text=name, bg=theme.SURFACE_SOFT, fg=theme.PRIMARY,
-                     font=F["F_SMALL_B"], width=8, anchor="w").pack(side="left")
-            tk.Label(row, text="— " + text, bg=theme.SURFACE_SOFT,
-                     fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
-                     justify="left").pack(side="left", fill="x", expand=True)
+        self._progress = ProgressBar(parent, steps=3, bg=theme.SURFACE,
+                                     font=F["F_HELP"], height=34)
+        self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+        self._progress.set_labels([self.tr("step1_title"), self.tr("step2_title"),
+                                   self.tr("step3_title")])
 
     def _build_trust_card(self, parent):
         F = self.F
@@ -1285,37 +1240,28 @@ class App:
             pass
 
     def _set_step(self, index: int):
-        """0=Prepare / 1=Check / 2=Fix / 3=三步全部完成。"""
+        """0=Prepare / 1=Check / 2=Fix / 3=三步全部完成。
+
+        直接驱动底部/右栏的极简进度条：``frac = index / 3``（index=3 → 满格）。
+        """
         self._step_index = max(0, min(int(index), 3))
-        for i, circ in enumerate(self._step_circles):
-            if i < self._step_index:
-                circ.set_state("done")
-                self._step_labels[i].config(fg=theme.SUCCESS)
-            elif i == self._step_index:
-                circ.set_state("active")
-                self._step_labels[i].config(fg=theme.PRIMARY)
-            else:
-                circ.set_state("todo")
-                self._step_labels[i].config(fg=theme.TEXT_3)
-        # 连线：已走过的那段刷成主色（设计稿 stepper 的蓝色连接线）
-        for i, link in enumerate(getattr(self, "_step_links", []) or []):
+        if getattr(self, "_progress", None) is not None:
             try:
-                link.config(bg=theme.PRIMARY if i < self._step_index
-                            else theme.BORDER)
+                self._progress.set_step(self._step_index)
             except Exception:
                 pass
 
     def _sync_ui(self):
         """状态机收口：先算状态，再统一做一次重新测量。
 
-        ``_relayout_all()`` 不能省 —— 这里会 pack/unpack ``_how_card``、显隐 ``_fix_btn``，
-        都是"内容尺寸变了但不触发 <Configure>"的操作（见该方法 docstring）。
+        ``_relayout_all()`` 不能省 —— 这里会显隐 ``_fix_btn``、展开/收起 Advanced、
+        切换结果明细，都是"内容尺寸变了但不触发 <Configure>"的操作（见该方法 docstring）。
         """
         self._sync_ui_state()
         self._relayout_all()
 
     def _sync_ui_state(self):
-        """主/次按钮与步进的状态机（规格 states 段）。
+        """主/次按钮与进度条的状态机（规格 states 段）。
 
         ============  ====================================================
         状态          主按钮
@@ -1327,28 +1273,20 @@ class App:
         fixed         Review changes
         ============  ====================================================
 
-        次按钮「Fix issues」只在 ready 态出现：出了结果时主按钮已经承担修正动作，
-        再摆一个次按钮只会分散注意力（规格第 5 节第 8 条要求主按钮绝对主导）。
+        主按钮已从右卡底部抽到页面底部居中 CTA 条（见 ``_build_cta_band``），这里只
+        管文案/可用态/显隐；次按钮「Fix issues」只在 ready 态出现。
         """
         tr = self.tr
         paper = bool(self.docx_path.get()) and os.path.isfile(self.docx_path.get())
         # fixing 也算"已有结果"：修正过程中不该把引导卡又弹回来（会闪一下）
         results = self._phase in ("results", "fixed", "fixing")
 
-        # How it works 只在还没跑出结果时显示，把版面让给结果
-        try:
-            if results:
-                self._how_card.pack_forget()
-            else:
-                self._how_card.pack(fill="x", pady=(theme.SECTION_GAP, 0),
-                                    before=self._status_row)
-        except Exception:
-            pass
+        # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
         # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
         try:
             if results:
-                self.summary_lbl.pack(fill="x", pady=(3, 0), before=self._aux_row)
-                self.summary_hint.pack(fill="x", before=self._aux_row)
+                self.summary_lbl.pack(fill="x", pady=(3, 0))
+                self.summary_hint.pack(fill="x")
             else:
                 self.summary_lbl.pack_forget()
                 self.summary_hint.pack_forget()

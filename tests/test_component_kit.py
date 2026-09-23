@@ -150,21 +150,26 @@ def test_round_card(host):
     print("✓ Round card style OK")
 
 
-def test_stepper(host):
-    """验证步进圆点：todo/active/done 三态"""
+def test_progress(host):
+    """验证极简进度条：set_fraction / set_step 驱动进度，frac 可被断言。"""
     import tkinter as tk
 
-    F = i18n.resolve_font_spec("en")
-    row = tk.Frame(host, bg=theme.BG)
-    row.pack(padx=40, pady=40)
+    bar = widgets.ProgressBar(host, steps=3, bg=theme.BG)
+    bar.pack(padx=40, pady=40)
 
-    for i, state in enumerate(["todo", "active", "done"]):
-        step = widgets.StepCircle(row, number=i + 1, font=F["F_STEP_N"])
-        step.set_state(state)
-        step.pack(side="left", padx=10)
-
-        assert step.state == state, f"Expected state {state}, got {step.state}"
-    print("✓ Stepper states OK")
+    # 直接设比例
+    assert bar.set_fraction(0.0) == 0.0, f"Expected frac 0.0, got {bar.frac}"
+    assert bar.set_fraction(0.5) == 0.5, f"Expected frac 0.5, got {bar.frac}"
+    # 越界被夹到 [0, 1]
+    assert bar.set_fraction(2.0) == 1.0, f"Expected clamp to 1.0, got {bar.frac}"
+    assert bar.set_fraction(-1.0) == 0.0, f"Expected clamp to 0.0, got {bar.frac}"
+    # 按步设置：3 步，index=2 → 2/3
+    bar.set_step(2)
+    assert abs(bar.frac - 2 / 3) < 1e-6, f"Expected frac 2/3, got {bar.frac}"
+    # index=3（全完成）→ 满格
+    bar.set_step(3)
+    assert bar.frac == 1.0, f"Expected frac 1.0, got {bar.frac}"
+    print("✓ Progress bar OK")
 
 
 def test_theme_tokens():
@@ -176,13 +181,13 @@ def test_theme_tokens():
     """
     assert theme.BG == "#F7F9FB", f"Expected BG #F7F9FB (cool-white), got {theme.BG}"
     assert theme.SURFACE == "#FFFFFF", f"Expected SURFACE #FFFFFF, got {theme.SURFACE}"
-    assert theme.SURFACE_SOFT == "#F4F8FC", f"Expected SURFACE_SOFT #F4F8FC, got {theme.SURFACE_SOFT}"
-    assert theme.PRIMARY == "#15497A", f"Expected PRIMARY #15497A (academic navy), got {theme.PRIMARY}"
+    assert theme.SURFACE_SOFT == "#F4F6F8", f"Expected SURFACE_SOFT #F4F6F8 (neutral cool-gray), got {theme.SURFACE_SOFT}"
+    assert theme.PRIMARY == "#15497A", f"Expected PRIMARY #15497A (academic navy — sole saturated blue), got {theme.PRIMARY}"
     assert theme.PRIMARY_HOVER == "#0F3A60", f"Expected PRIMARY_HOVER #0F3A60, got {theme.PRIMARY_HOVER}"
-    assert theme.PRIMARY_SOFT == "#E7F0F8", f"Expected PRIMARY_SOFT #E7F0F8, got {theme.PRIMARY_SOFT}"
+    assert theme.PRIMARY_SOFT == "#E8F0F8", f"Expected PRIMARY_SOFT #E8F0F8, got {theme.PRIMARY_SOFT}"
     assert theme.TEXT == "#17324D", f"Expected TEXT #17324D, got {theme.TEXT}"
-    assert theme.TEXT_2 == "#5E7C99", f"Expected TEXT_2 #5E7C99, got {theme.TEXT_2}"
-    assert theme.BORDER == "#D8E2EA", f"Expected BORDER #D8E2EA, got {theme.BORDER}"
+    assert theme.TEXT_2 == "#64748B", f"Expected TEXT_2 #64748B (neutral slate, no blue), got {theme.TEXT_2}"
+    assert theme.BORDER == "#E2E8F0", f"Expected BORDER #E2E8F0 (neutral cool-gray), got {theme.BORDER}"
     assert theme.SUCCESS == "#3E7B67", f"Expected SUCCESS #3E7B67, got {theme.SUCCESS}"
     assert theme.ERROR == "#A94A43", f"Expected ERROR #A94A43, got {theme.ERROR}"
     assert theme.CARD_RADIUS == 12, f"Expected CARD_RADIUS 12, got {theme.CARD_RADIUS}"
@@ -198,7 +203,7 @@ if __name__ == "__main__":
     test_theme_tokens()
     root = tk.Tk()
     for fn in (test_button_primary, test_button_secondary, test_badge_required,
-               test_badge_optional, test_round_card, test_stepper):
+               test_badge_optional, test_round_card, test_progress):
         frame = tk.Frame(root, bg=theme.BG)
         frame.pack(fill="both", expand=True)
         fn(frame)
