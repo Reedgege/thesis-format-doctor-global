@@ -576,72 +576,37 @@ class App:
             pass
 
     def _build_backdrop(self):
-        """最底层装饰背景（视觉规格包 2026-09-12 给的独立底图）。
+        """最底层背景：整窗纯色铺满（v2.3.4 起）。
 
-        实现约束（照抄规格 README 的三条硬要求）：
-          * **只作最底层背景**，绝不拿整张 UI 稿当背景、也不许从稿子里裁图当控件；
-          * **等比、不变形** —— 1:1 画，不做缩放（tkinter 只有整数 ``subsample``，
-            缩放会很粗糙）；
-          * 够淡、不干扰阅读 —— 底图最暗处 #CAD8E2（亮度 213/255），本身就极淡。
+        视觉迭代到 v2.3.4：去掉右上角装饰底图（backdrop.png），改为整窗纯色
+        ``theme.BG``。纯色背景更干净、零接缝、零资源依赖，也彻底消除了旧版
+        「天际线横带」「底色与卡片对不上」等渲染问题。
 
-        **定位纪律（v2.3.0 修掉「花屏横带」的关键）**：素材贴**窗口右上角**
-        （``anchor="ne"``）并上移 ``theme.BACKDROP_DY``，让素材里那条 1536 宽的学术
-        天际线（素材 y 65~215）整条落在顶部品牌带里（窗口 y 7~157）。
-        旧写法是「水平居中、贴顶」：窗口一旦宽过 1536px（1440/1920 都超），素材右边缘
-        就切在天际线中间，露出一条被硬切开的图片横带；同时主体容器从顶栏下方起画，
-        又把天际线的下沿拦腰截断 —— 老板看到的「乱码/花屏横带」就是这两处硬边。
-
-        **不许静默降级**（规格 VII.3）：素材缺失或 Tk 解码失败 → 写 stderr 并**抛异常**，
-        让问题立刻可见；打包漏件另由 ``tools/verify_bundle.py`` 在 CI 拦下。
+        这块画布仍必须存在，承担两件事：
+          ① 作为整窗背景层（``place`` 铺满、最先创建 = 最底层）；
+          ② 顶栏/页眉的控件用 ``create_window`` 挂在这块画布上（见 ``_place_header``），
+             所以画布本身要继续保留，只是不再画任何图片。
         """
         self._backdrop = tk.Canvas(self.root, bg=theme.BG,
                                    highlightthickness=0, bd=0, width=1, height=1)
         # place：不参与 pack 的空间分配，纯铺底层；先创建 = 层叠最下。
         self._backdrop.place(x=0, y=0, relwidth=1, relheight=1)
-        self._backdrop_img = None
-        self._backdrop_item = None
-        self._backdrop_loaded = False
-        path = iconpath.find_backdrop()
-        if not path:
-            msg = ("Global background layer missing: backdrop.png "
-                   "(02_BACKGROUND/GLOBAL_BACKGROUND.png)")
-            sys.stderr.write("[TFD] ERROR " + msg + "\n")
-            raise RuntimeError(msg)
-        try:
-            # master 必须显式指向这块画布：进程里存在 >1 个 Tk 解释器时
-            # （测试会话），默认 master 会把图片建到另一个解释器 → create_image 找不到。
-            self._backdrop_img = tk.PhotoImage(master=self._backdrop,
-                                               file=path)   # Tk 8.6 原生读 PNG
-            self._backdrop_item = self._backdrop.create_image(
-                0, 0, image=self._backdrop_img, anchor="ne")
-            self._backdrop_loaded = True
-        except Exception as exc:
-            sys.stderr.write("[TFD] ERROR failed to load background image %s: %s\n"
-                             % (path, exc))
-            raise
-        self._place_backdrop()
 
     def _place_backdrop(self):
-        """底图贴窗口右上角（天际线因此永远跑到窗口右边缘，不会被竖切）。"""
-        if getattr(self, "_backdrop_item", None) is None:
-            return
-        try:
-            w = self.root.winfo_width()
-            if w <= 1:
-                return
-            self._backdrop.coords(self._backdrop_item, w, -theme.BACKDROP_DY)
-        except Exception:
-            pass
+        """纯色背景无需重定位（整窗铺满，relwidth/relheight=1 自动跟随窗口）。
+
+        v2.3.4 之前这里负责把装饰底图重新贴到右上角；改为纯色后留作占位，
+        保持 ``_on_resize`` 调用的兼容性，不再做任何事。
+        """
+        return
 
     def _top_gap(self) -> int:
-        """主体上方该留出的高度。
+        """主体上方该留出的高度：顶栏实际高度 + HEADER_GAP。
 
-        取「顶栏实际高度 + HEADER_GAP」与「天际线下沿」的较大者：顶栏画在背景画布上
-        （不占 pack 空间），这段高度必须显式留出来；同时绝对不能小于天际线的下沿，
-        否则主体容器会把背景里的天际线拦腰切断（老板报的「横带」就是这个）。
+        顶栏画在背景画布上（不占 pack 空间），这段高度必须显式留出来，否则主体
+        容器会压到顶栏上。v2.3.4 去掉装饰底图后，不再需要为「天际线下沿」预留额外高度。
         """
-        header_bottom = theme.HEADER_PAD_Y + self._header_height() + theme.HEADER_GAP
-        return max(header_bottom, theme.SKYLINE_BOTTOM + 4)
+        return theme.HEADER_PAD_Y + self._header_height() + theme.HEADER_GAP
 
     def _header_height(self) -> int:
         try:
@@ -829,7 +794,7 @@ class App:
         htxt = tk.Frame(head, bg=theme.SURFACE)
         htxt.pack(side="left", padx=(10, 0), fill="x", expand=True)
         tk.Label(htxt, text=self.tr("left_title"), bg=theme.SURFACE,
-                 fg=theme.PRIMARY, font=F["F_CARD_HDR"], anchor="w").pack(fill="x")
+                 fg=theme.TEXT, font=F["F_CARD_HDR"], anchor="w").pack(fill="x")
         desc = tk.Label(htxt, text=self.tr("left_desc"), bg=theme.SURFACE,
                         fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
                         justify="left")
@@ -910,8 +875,9 @@ class App:
         tk.Label(row, text=self.tr(key), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_LABEL"]).pack(side="left", padx=(8, 0))
         badge_text = self.tr("mark_required" if required else "mark_optional")
-        badge_color = theme.PRIMARY_SOFT if required else theme.SURFACE_SOFT
-        badge_fg = theme.PRIMARY if required else theme.TEXT_2
+        # 必选/可选徽标走中性灰（v2.3.4 视觉收敛：不再用主色，避免满屏青蓝）
+        badge_color = theme.SURFACE_SOFT
+        badge_fg = theme.TEXT_2 if required else theme.TEXT_3
         tk.Label(row,
                  text="  " + badge_text + "  ",
                  bg=badge_color, fg=badge_fg,
@@ -1114,7 +1080,7 @@ class App:
         IconBadge(trow, "sliders", size=theme.BADGE_SIZE + 8,
                   bg=theme.SURFACE).pack(side="left")
         tk.Label(trow, text=self.tr("right_title"), bg=theme.SURFACE,
-                 fg=theme.PRIMARY, font=F["F_CARD_HDR"], anchor="w").pack(
+                 fg=theme.TEXT, font=F["F_CARD_HDR"], anchor="w").pack(
                      side="left", padx=(10, 0))
         desc = tk.Label(parent, text=self.tr("right_desc"), bg=theme.SURFACE,
                         fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
@@ -1214,7 +1180,7 @@ class App:
         self._trial_lbl.pack(side="left")
         self._upgrade_btn = RoundButton(
             row, text=self.tr("btn_upgrade"), command=self._upgrade_dialog,
-            style="primary", font=F["F_BTN_S"], height=28, padx=12)
+            style="secondary", font=F["F_BTN_S"], height=28, padx=12)
         self._upgrade_btn.pack(side="right")
         self._refresh_commercial()
 
@@ -1281,6 +1247,18 @@ class App:
         # fixing 也算"已有结果"：修正过程中不该把引导卡又弹回来（会闪一下）
         results = self._phase in ("results", "fixed", "fixing")
 
+        results = self._phase in ("results", "fixed", "fixing")
+
+        # 进度条（Prepare → Check → Fix）只在已选论文时出现：空态只摆引导，
+        # 进度条会显得空荡（v2.3.4 视觉收敛）。显隐都走 pack/pack_forget。
+        try:
+            if paper:
+                self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+            else:
+                self._progress.pack_forget()
+        except Exception:
+            pass
+
         # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
         # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
         try:
@@ -1308,7 +1286,9 @@ class App:
         if not paper:
             self._set_step(0)
             self._check_btn.set_text(tr("btn_check"))
-            self._check_btn.set_enabled(False)
+            # 空态也保持主按钮可用：点一下给出友好行内提示（见 _run 的缺稿分支），
+            # 比一上来就置灰更有「引导下一步」的明确感（v2.3.4）。
+            self._check_btn.set_enabled(True)
             self._check_btn.set_action(self._run)
             self._fix_btn.set_visible(False)
             if self._phase in ("idle", "error"):

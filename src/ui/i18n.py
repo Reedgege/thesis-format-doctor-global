@@ -117,7 +117,7 @@ _FONT_SPEC = {
         "F_TITLE":        ("Georgia", 17, "bold"),      # 弹窗主标题
         "F_DIALOG_TITLE": ("Georgia", 14, "bold"),      # 弹窗标题
         "F_HDR":          ("Georgia", 12, "bold"),      # 弹窗章节标题
-        "F_CARD_HDR":     ("Georgia", 14, "bold"),      # 卡片标题
+        "F_CARD_HDR":     ("Segoe UI", 14, "bold"),      # 卡片标题（无衬线，v2.3.4 视觉收敛）
         "F_STAT":         ("Segoe UI", 10),             # 状态行
         "F_ICON":         ("Georgia", 12, "bold"),      # 行首印记
         "F_SUB":          ("Segoe UI", 11),             # 品牌标语
@@ -138,7 +138,7 @@ _FONT_SPEC = {
         "F_TITLE":        ("KaiTi", 15, "bold"),
         "F_DIALOG_TITLE": ("KaiTi", 12, "bold"),
         "F_HDR":          ("KaiTi", 11, "bold"),
-        "F_CARD_HDR":     ("KaiTi", 12, "bold"),
+        "F_CARD_HDR":     ("Microsoft YaHei", 12, "bold"),
         "F_STAT":         ("Microsoft YaHei", 9),
         "F_ICON":         ("KaiTi", 11, "bold"),
         "F_SUB":          ("Microsoft YaHei", 10),

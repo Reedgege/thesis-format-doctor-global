@@ -16,6 +16,9 @@
   * ``src/data/ai_questionnaire_template.json`` CLI ``export-schema`` 与 GUI 导出模板
   * ``VERSION``                                运行时版本号（``src/versioninfo.py``）
 
+  .. note:: v2.3.4 起界面背景改为整窗纯色，不再依赖 ``backdrop.png``，故该资源已从
+           强制清单移除（纯装饰、缺失也不再影响功能）。
+
 按**文件名**匹配（跨平台都成立：Linux 文件夹、Windows 文件夹、macOS ``.app`` 内部布局
 各不相同，写死相对路径反而会误报）。缺任何一个 → 退出码 1，让 CI 红灯。
 """
@@ -34,7 +37,6 @@ REQUIRED_FILES = (
     "icon.ico",
     "icon.png",
     "icon.icns",
-    "backdrop.png",                       # 装饰背景层（assets/ 目录随包，缺失=界面降级，但必须红灯而非静默）
     "ai_questionnaire_template.json",
     "VERSION",
 )

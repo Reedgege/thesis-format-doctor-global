@@ -150,12 +150,14 @@ def test_primary_button_state_machine(ui, tmp_path):
     """initial → ready → results → fixed 四态要走到位，且文案/可用态一致。"""
     from src.ui import i18n
 
-    # initial：必填未满足
-    assert ui._check_btn.enabled is False
+    # initial（空态）：必填未满足，但主按钮仍可用（点一下给友好行内提示，v2.3.4）
+    assert ui._check_btn.enabled is True
     assert ui._check_btn.text == i18n.t(ui.lang, "btn_check")
     assert ui._step_index == 0
     assert ui._fix_btn._visible is False
     assert "only required input" in ui.status_lbl.cget("text")
+    # 空态不摆进度条（视觉收敛：避免右栏空荡时还挂着 Prepare→Check→Fix）
+    assert ui._progress.winfo_manager() == ""
 
     # ready：选了真实存在的论文
     docx = _make_docx(tmp_path / "thesis.docx")
@@ -167,6 +169,8 @@ def test_primary_button_state_machine(ui, tmp_path):
     assert ui._check_btn._command == ui._run
     assert ui._step_index == 1
     assert ui._fix_btn._visible is True
+    # 选了论文后进度条重新出现
+    assert ui._progress.winfo_manager() == "pack"
 
     # results：真跑一次体检
     ui._run()
