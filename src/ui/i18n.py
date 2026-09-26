@@ -280,6 +280,8 @@ STRINGS: dict = {
         # 照着写等于虚假宣传（用户选 PDF 会发现根本选不了），故此处按真实支持面写。
         "row_paper_helper": "Upload or select your document to check.",
         "paper_support": "Word document (.docx)",
+        "drop_hint": "or drag and drop your file here",
+        "drop_active": "Drop your document here",
         "btn_select_doc": "Select a document",
         "adv_label": "Advanced options",
         "adv_hint": "Questionnaire  ·  Import configuration  ·  AI assistance",
@@ -542,6 +544,8 @@ STRINGS: dict = {
         "row_paper_helper": "上传或选择要体检的文档。",
         # 同 EN：只写真实支持面（引擎只读 .docx），不照抄整屏稿里做不到的承诺。
         "paper_support": "Word 文档（.docx）",
+        "drop_hint": "或将文件拖拽到此处",
+        "drop_active": "松开即可上传文档",
         "btn_select_doc": "选择文档",
         "adv_label": "高级选项",
         "adv_hint": "格式问卷  ·  导入配置  ·  AI 辅助",

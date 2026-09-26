@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import sys
+import ctypes
 import tkinter as tk
 import traceback
 import webbrowser
@@ -52,6 +53,53 @@ from .fonts import Fonts
 from .modal_shell import ModalShell
 from .widgets import (BrandMark, IconBadge, ProgressBar, RoundButton, RoundCard,
                       ScrollArea, draw_icon)
+
+# --- 原生拖拽上传（仅 Windows）：把文档拖进窗口即选中 ---------------------------
+if sys.platform == "win32":
+    class _FileDropTarget:
+        """用 ctypes 接管 Tk 顶层窗口的 WM_DROPFILES，实现「拖文件进窗口即选中」。
+
+        非 Windows（macOS / Linux）Tk 没有这套原生 API，降级为「点选」——投放区仍是
+        视觉焦点，只是少了拖拽手势。跨平台拖拽需 tkinterdnd2 这类外部依赖，
+        当前不引入（保持零第三方 GUI 依赖）。
+        """
+        WM_DROPFILES = 0x0233
+        GWL_WNDPROC = -4
+
+        def __init__(self, hwnd, callback):
+            self._user32 = ctypes.windll.user32
+            self._shell32 = ctypes.windll.shell32
+            self._hwnd = hwnd
+            self._callback = callback
+            self._shell32.DragAcceptFiles(hwnd, True)
+            # 子类化窗口过程：自己只拦 WM_DROPFILES，其余消息原样转发给 Tk。
+            # 必须保留引用（self._wndproc / self._old），否则回调被 GC 后崩溃。
+            self._wndproc = wintypes.WNDPROC(self._proc)
+            self._old = self._user32.SetWindowLongPtrW(
+                hwnd, self.GWL_WNDPROC, self._wndproc)
+
+        def _proc(self, hwnd, msg, wparam, lparam):
+            if msg == self.WM_DROPFILES:
+                try:
+                    self._emit(wparam)
+                except Exception:
+                    pass
+                return 0
+            return self._user32.CallWindowProcW(
+                self._old, hwnd, msg, wparam, lparam)
+
+        def _emit(self, hdrop):
+            count = self._shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+            buf = ctypes.create_unicode_buffer(2048)
+            paths = []
+            for i in range(count):
+                self._shell32.DragQueryFileW(hdrop, i, buf, 2048)
+                paths.append(buf.value)
+            self._shell32.DragFinish(hdrop)
+            if paths:
+                self._callback(paths)
+else:
+    _FileDropTarget = None
 
 # ---------------------------------------------------------------------------
 # 配色别名 —— 新令牌在 theme.py，这里保留旧名字是为了**没重写的弹窗**（关于 /
@@ -537,6 +585,7 @@ class App:
                               padx=(theme.CARD_GAP // 2, 0))
         self._build_left(self._left_card.inner)
         self._build_right(self._right_card.inner)
+        self._enable_drag_drop()
 
         # 重建后恢复界面状态（切语言会走这条路）
         if self._report_is_placeholder or not self._report_text:
@@ -737,53 +786,34 @@ class App:
 
     # ------------------------------------------------------------ 底部 CTA 条
     def _build_cta_band(self):
-        """底部居中 CTA 条：主操作按钮（Check / Fix / Review）绝对主导，最显眼。
+        """底部辅助动作条：保存报告 / 导出 AI 模板。
 
-        用户反馈旧界面「太杂乱」、主操作不够突出 —— 这里把主按钮从右卡底部抽出来，
-        单独放在页面**偏下、水平居中**的位置，做成最大最满的主色按钮；次按钮
-        （Fix issues，仅 ready 态）与辅助动作（保存报告 / 导出模板）在其下方安静排列。
-
-        左右两条弹性 spacer 把内容夹到水平居中；内容框固定宽度，主按钮 fill=x 撑满。
+        重设计（2026-09-26）：主/次 CTA 已移到左卡输入区底部（紧贴操作区），
+        底部只保留两个次要的常驻动作，避免主按钮离输入区太远。
         """
         F = self.F
         band = tk.Frame(self.root, bg=theme.BG)
-        band.pack(side="bottom", fill="x", padx=theme.PAGE_PAD, pady=(12, 10))
-        tk.Frame(band, bg=theme.BG).pack(side="left", fill="x", expand=True)
-        content = tk.Frame(band, bg=theme.BG, width=460)
-        content.pack(side="left")
-        tk.Frame(band, bg=theme.BG).pack(side="left", fill="x", expand=True)
-
-        # 主操作按钮（绝对主导：最大、最满、主色）
-        self._check_btn = RoundButton(content, self.tr("btn_check"), self._run,
-                                      style="primary", font=F["F_BTN"],
-                                      height=50, icon="search")
-        self._check_btn.pack(fill="x", pady=(0, 8))
-        # 次按钮（仅 ready 态出现）
-        self._fix_btn = RoundButton(content, self.tr("btn_fix"), self._run_fix,
-                                    style="secondary", font=F["F_BTN_S"],
-                                    height=44, icon="wrench")
-        self._fix_btn.pack(fill="x", pady=(0, 8))
-        # 辅助动作（低调 ghost）
-        aux = tk.Frame(content, bg=theme.BG)
-        aux.pack(fill="x")
-        self._aux_row = aux          # 留引用：回归测试要断言次按钮排在它**上面**
+        band.pack(side="bottom", fill="x", padx=theme.PAGE_PAD, pady=(8, 10))
+        tk.Frame(band, bg=theme.HAIRLINE, height=1).pack(
+            fill="x", pady=(0, 10))
+        self._aux_row = tk.Frame(band, bg=theme.BG)
+        self._aux_row.pack(fill="x")
         for text, cmd in ((self.tr("btn_save_report"), self._save_report),
                           (self.tr("btn_export_ai"), self._export_template)):
-            ttk.Button(aux, text=text, style="Ghost.TButton",
+            ttk.Button(self._aux_row, text=text, style="Ghost.TButton",
                        command=cmd).pack(side="left", padx=(0, 6))
-        self._fix_btn.pack_anchor(aux)
 
     # ------------------------------------------------------------ 左栏
     def _build_left(self, parent):
-        """左卡 Your Documents：4 个字段 + 折叠的 Advanced options。
+        """左卡 Your Documents：以「上传论文」为绝对视觉焦点的任务启动器。
 
-        对照设计稿的关键差别：
-          ① 卡片标题左侧有一枚柔和蓝圆徽标（行首印记），不再只有裸文字；
-          ② 字段之间靠**留白 + 一根极细线**分区，不给每个字段套带边框的小盒子
-             （规格第 5 节第 1 条「去掉过多的嵌套边框」）；
-          ③ 每行是「小图标 + 标签 + Required/Optional」同行，控件另起一行铺满宽度，
-             Citation style 的下拉按设计稿同行右对齐；
-          ④ 每个像素都要省 —— 主视图在 1280×720 必须整屏放得下（老板实测硬伤 #2）。
+        重设计（2026-09-26）：
+          ① 论文投放区放到最上方、面积放大，作为整个页面的视觉锚点；
+          ② 主操作按钮（Check formatting / Fix issues）紧贴输入区底部，
+             不再甩到页面最下方；
+          ③ 引用规范、Advanced options 退居二线，形成「先上传 → 再调设置 → 最后执行」
+             的自然任务流；
+          ④ 投放区支持鼠标悬停反馈（原生文件拖拽需额外依赖，当前保留视觉暗示）。
         """
         F = self.F
 
@@ -802,40 +832,65 @@ class App:
         _auto_wrap(desc, htxt, 0)
 
         self._spacer(parent)
-        # ① 引用规范（必选）
-        self._build_field_spec(parent)
+
+        # ① 论文（必选）—— 页面视觉焦点：大虚线投放区
+        self._field_label(parent, "row_paper_title", required=True)
+        self._helper(parent, "row_paper_helper")
+        drop = RoundCard(parent, radius=14, fill=theme.PRIMARY_SOFT,
+                         border=theme.PRIMARY, shadow=False, dashed=True,
+                         padx=18, pady=26, min_height=132)
+        self._extra_cards.append(drop)
+        drop.pack(fill="x", pady=(4, 0))
+        self._paper_drop = drop
+
+        # 居中内容列
+        vcol = tk.Frame(drop.inner, bg=theme.PRIMARY_SOFT)
+        vcol.pack(expand=True)
+        cloud = tk.Canvas(vcol, width=44, height=40, bg=theme.PRIMARY_SOFT,
+                          highlightthickness=0, bd=0)
+        cloud.pack(pady=(0, 10))
+        draw_icon(cloud, "cloud", 22, 20, 40, theme.PRIMARY, 2)
+
+        self._paper_name = tk.Label(vcol, text=self.tr("btn_select_doc"),
+                                    bg=theme.PRIMARY_SOFT, fg=theme.PRIMARY,
+                                    font=F["F_BODY"], cursor="hand2", anchor="center")
+        self._paper_name.pack(fill="x")
+        self._drop_hint = tk.Label(vcol, text=self.tr("drop_hint"),
+                                   bg=theme.PRIMARY_SOFT, fg=theme.TEXT_2,
+                                   font=F["F_HELP"], cursor="hand2", anchor="center")
+        self._drop_hint.pack(fill="x", pady=(5, 0))
+        self._paper_sub = tk.Label(vcol, text=self.tr("paper_support"),
+                                   bg=theme.PRIMARY_SOFT, fg=theme.TEXT_3,
+                                   font=F["F_HELP"], cursor="hand2", anchor="center")
+        self._paper_sub.pack(fill="x", pady=(3, 0))
+        for w in (drop.inner, vcol, self._paper_name, self._drop_hint,
+                  self._paper_sub, cloud):
+            w.bind("<Button-1>", lambda e: self._pick_docx())
+            w.bind("<Enter>", lambda e: self._set_drop_hover(True))
+            w.bind("<Leave>", lambda e: self._set_drop_hover(False))
+
         self._spacer(parent)
         self._hairline(parent)
 
-        # ② 论文（必选）—— 虚线投放区
-        self._field_label(parent, "row_paper_title", required=True)
-        self._helper(parent, "row_paper_helper")
-        drop = RoundCard(parent, radius=9, fill="#FCFDFF",
-                         border=theme.SECONDARY, shadow=False, dashed=True,
-                         padx=14, pady=6)
-        # 嵌套卡片要登记进 _extra_cards：内容一变就得跟父卡一起重测量（见 _relayout_all）
-        self._extra_cards.append(drop)
-        drop.pack(fill="x", pady=(2, 0))
-        srow = tk.Frame(drop.inner, bg="#FCFDFF")
-        srow.pack()
-        cloud = tk.Canvas(srow, width=26, height=24, bg="#FCFDFF",
-                          highlightthickness=0, bd=0)
-        cloud.pack(side="left", padx=(0, 8))
-        draw_icon(cloud, "cloud", 13, 12, 22, theme.PRIMARY, 2)
-        scol = tk.Frame(srow, bg="#FCFDFF")
-        scol.pack(side="left")
-        self._paper_name = tk.Label(scol, text="", bg="#FCFDFF",
-                                    fg=theme.PRIMARY, font=F["F_SMALL_B"],
-                                    cursor="hand2", anchor="w")
-        self._paper_name.pack(anchor="w")
-        sub = tk.Label(scol, text=self.tr("paper_support"),
-                       bg="#FCFDFF", fg=theme.TEXT_3, font=F["F_HELP"],
-                       cursor="hand2", anchor="w")
-        sub.pack(anchor="w")
-        for w in (drop.inner, self._paper_name, sub, srow, cloud, scol):
-            w.bind("<Button-1>", lambda e: self._pick_docx())
+        # ② 引用规范（必选）—— 上传后的次要设置
+        self._build_field_spec(parent)
 
+        self._spacer(parent)
+        self._hairline(parent)
+
+        # ③ 高级选项折叠区
         self._build_advanced(parent)
+
+        # ④ 主 / 次 CTA 紧贴输入区
+        self._spacer(parent)
+        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
+                                      style="primary", font=F["F_BTN"],
+                                      height=50, icon="search")
+        self._check_btn.pack(fill="x", pady=(0, 8))
+        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
+                                    style="secondary", font=F["F_BTN_S"],
+                                    height=42, icon="wrench")
+        self._fix_btn.pack(fill="x")
 
     def _hairline(self, parent):
         """字段之间的极细分隔线。
@@ -892,6 +947,22 @@ class App:
         lbl.pack(fill="x", pady=(1, theme.ROW_GAP))
         _auto_wrap(lbl, parent, theme.CARD_PAD_X)
         return lbl
+
+    def _set_drop_hover(self, active: bool):
+        """论文投放区悬停反馈：变文案、变光标，暗示可点击/可拖拽。"""
+        if not getattr(self, "_paper_drop", None):
+            return
+        try:
+            if active:
+                self._drop_hint.config(text=self.tr("drop_active"),
+                                         fg=theme.PRIMARY)
+                self._paper_drop.inner.config(cursor="hand2")
+            else:
+                self._drop_hint.config(text=self.tr("drop_hint"),
+                                         fg=theme.TEXT_2)
+                self._paper_drop.inner.config(cursor="")
+        except Exception:
+            pass
 
     def _build_field_spec(self, parent):
         """引用规范（必选）：下拉框 + 一行「Other 用法」轻提示。"""
@@ -1066,11 +1137,10 @@ class App:
 
     # ------------------------------------------------------------ 右栏
     def _build_right(self, parent):
-        """右卡 Review & Fix。严格按规范的顺序：标题 → stepper → How it works →
-        主 CTA（Check formatting）→ 次 CTA（Fix issues）→ 信任小面板 → 商业区紧凑行。
+        """右卡 Review & Fix：空状态显示 1-2-3 步骤引导，有输入后切换为进度条。
 
-        设计稿把 stepper 摆在标题行右侧、把商业区压成一行小字 + 一个小按钮，
-        主页不再铺四张定价卡（规格 COMMERCIAL UI）。
+        重设计（2026-09-26）：解决「右栏空白」问题 —— 未选论文时给出清晰步骤图，
+        选论文后自然过渡到进度条与状态提示；信任卡和商业区始终保留在底部。
         """
         F = self.F
         head = tk.Frame(parent, bg=theme.SURFACE)
@@ -1089,10 +1159,20 @@ class App:
         _auto_wrap(desc, parent, theme.CARD_PAD_X)
 
         self._spacer(parent)
-        # 极简进度条（替代旧版横排步进器）：Prepare → Check → Fix
-        self._build_progress(parent)
 
-        # 状态行：结果与提示都落这里（旧版状态行保留，位置改到按钮上方）
+        # 空状态：1-2-3 步骤引导（未选论文时显示）
+        self._empty_state = tk.Frame(parent, bg=theme.SURFACE)
+        self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+        tk.Label(self._empty_state, text=self.tr("how_title"), bg=theme.SURFACE,
+                 fg=theme.TEXT, font=F["F_LABEL"], anchor="w").pack(fill="x")
+        for i, (title, body) in enumerate(self.tr("how_steps"), 1):
+            self._build_step_row(self._empty_state, i, title, body)
+
+        # 极简进度条：选论文后显示
+        self._build_progress(parent)
+        self._progress.pack_forget()
+
+        # 状态行：结果与提示都落这里
         status_row = tk.Frame(parent, bg=theme.SURFACE)
         status_row.pack(fill="x", pady=(theme.SECTION_GAP, 0))
         self._status_row = status_row
@@ -1116,17 +1196,33 @@ class App:
                                      font=F["F_HELP"], anchor="w", justify="left")
         self.summary_hint.pack(fill="x")
         _auto_wrap(self.summary_hint, parent, theme.CARD_PAD_X)
-        # 空态（还没体检）不摆结果区：设计稿右栏在出结果前只有引导卡 + 两个 CTA，
-        # 结果明细与导出提示一律等真出了报告再出现（否则白占约 72px，1280×720 下
-        # 正好把主视图顶出滚动条）。显隐统一由状态机 _sync_ui_state 管。
         self.summary_lbl.pack_forget()
         self.summary_hint.pack_forget()
 
-        # 主 / 次 CTA 与辅助动作已统一抽到页面底部居中 CTA 条（见 _build_cta_band），
-        # 右栏只保留说明与结果，避免「按钮散落在两处」的凌乱感。
         self._spacer(parent)
         self._build_trust_card(parent)
         self._build_commercial(parent)
+
+    def _build_step_row(self, parent, index, title, body):
+        """空状态步骤行：带序号圆点的 1-2-3 引导。"""
+        F = self.F
+        row = tk.Frame(parent, bg=theme.SURFACE)
+        row.pack(fill="x", pady=(12, 0))
+        num = tk.Canvas(row, width=24, height=24, bg=theme.SURFACE,
+                        highlightthickness=0, bd=0)
+        num.pack(side="left", padx=(0, 10))
+        num.create_oval(1, 1, 23, 23, fill=theme.PRIMARY_SOFT,
+                        outline=theme.PRIMARY, width=1.5)
+        num.create_text(12, 12, text=str(index), fill=theme.PRIMARY,
+                        font=F["F_STEP_N"])
+        col = tk.Frame(row, bg=theme.SURFACE)
+        col.pack(side="left", fill="x", expand=True)
+        tk.Label(col, text=title, bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_LABEL"], anchor="w").pack(fill="x")
+        lbl = tk.Label(col, text=body, bg=theme.SURFACE, fg=theme.TEXT_2,
+                       font=F["F_HELP"], anchor="w", justify="left")
+        lbl.pack(fill="x")
+        _auto_wrap(lbl, col, 0)
 
     def _build_progress(self, parent):
         """极简进度条（替代旧版横排步进器）：Prepare → Check → Fix。"""
@@ -1227,7 +1323,7 @@ class App:
         self._relayout_all()
 
     def _sync_ui_state(self):
-        """主/次按钮与进度条的状态机（规格 states 段）。
+        """主/次按钮、进度条、空状态的状态机（规格 states 段）。
 
         ============  ====================================================
         状态          主按钮
@@ -1239,22 +1335,20 @@ class App:
         fixed         Review changes
         ============  ====================================================
 
-        主按钮已从右卡底部抽到页面底部居中 CTA 条（见 ``_build_cta_band``），这里只
-        管文案/可用态/显隐；次按钮「Fix issues」只在 ready 态出现。
+        主/次按钮已移到左卡输入区底部（紧贴操作区）；右卡空状态与进度条互斥显示。
         """
         tr = self.tr
         paper = bool(self.docx_path.get()) and os.path.isfile(self.docx_path.get())
         # fixing 也算"已有结果"：修正过程中不该把引导卡又弹回来（会闪一下）
         results = self._phase in ("results", "fixed", "fixing")
 
-        results = self._phase in ("results", "fixed", "fixing")
-
-        # 进度条（Prepare → Check → Fix）只在已选论文时出现：空态只摆引导，
-        # 进度条会显得空荡（v2.3.4 视觉收敛）。显隐都走 pack/pack_forget。
+        # 右卡：空状态（未选论文）与进度条（已选论文）互斥显示
         try:
             if paper:
+                self._empty_state.pack_forget()
                 self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0))
             else:
+                self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0))
                 self._progress.pack_forget()
         except Exception:
             pass
@@ -1341,14 +1435,26 @@ class App:
             else:
                 lbl.config(text=tr(none_key), fg=theme.TEXT_3)
 
-        # 投放区主行文案用设计稿的「Select a document」；选了非 .docx（文件对话框的
-        # All files 入口）则显示 05_STATES/ERROR.svg 的「File type not supported」。
-        # 05_STATES/SELECTED.svg 的示例文件名是 "Thesis_Final.docx"，运行时显示真实文件名。
+        # 投放区主行文案：未选时显示「Select a document」，已选时显示文件名 + 大小，
+        # 选了非 .docx 时显示错误提示。
         paper = self.docx_path.get()
         if paper and not paper.lower().endswith(".docx"):
             self._paper_name.config(text=tr("st_paper_error"), fg=theme.ERROR)
+            self._paper_sub.config(text=tr("paper_support"), fg=theme.TEXT_3)
+        elif paper and os.path.isfile(paper):
+            name = os.path.basename(paper)
+            if len(name) > 40:
+                name = name[:18] + " … " + name[-18:]
+            self._paper_name.config(text=name, fg=theme.PRIMARY)
+            try:
+                size = os.path.getsize(paper)
+                size_text = f"{size / 1024 / 1024:.2f} MB" if size > 1024 * 1024 else f"{size / 1024:.0f} KB"
+            except Exception:
+                size_text = tr("paper_support")
+            self._paper_sub.config(text=size_text, fg=theme.TEXT_2)
         else:
-            _sel(self._paper_name, paper, "btn_select_doc")
+            self._paper_name.config(text=tr("btn_select_doc"), fg=theme.PRIMARY)
+            self._paper_sub.config(text=tr("paper_support"), fg=theme.TEXT_3)
         _sel(self._tpl_name, self.school_template.get(), "st_tpl_none")
         _sel(self._latex_name, self.latex_template.get(), "st_latex_none")
         # 问卷的状态来自内存数据（不是文件路径），单独判
@@ -1502,6 +1608,24 @@ class App:
         if p:
             self.docx_path.set(p)
             self._on_input_changed()
+
+    # ------------------------------------------------------------ 拖拽上传
+    def _enable_drag_drop(self):
+        """开启原生拖拽上传（仅 Windows）。失败静默降级为点选。"""
+        if sys.platform != "win32" or _FileDropTarget is None:
+            return
+        try:
+            hwnd = self.root.winfo_id()
+            self._drop_target = _FileDropTarget(hwnd, self._on_dropped_files)
+        except Exception:
+            self._drop_target = None
+
+    def _on_dropped_files(self, paths):
+        """拖进来的文件：取第一个；非 .docx 走错误提示（由 _refresh_rows 呈现）。"""
+        if not paths:
+            return
+        self.docx_path.set(paths[0])
+        self._on_input_changed()
 
     def _pick_template(self):
         p = filedialog.askopenfilename(title=self.tr("row_template_title"),
