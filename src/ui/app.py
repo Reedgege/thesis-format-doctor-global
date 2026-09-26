@@ -635,6 +635,10 @@ class App:
         text = self.tr(spec[0], *(spec[1] or ())) if spec else raw
         if text:
             self._set_status(text, kind, spec=spec)
+        # 全量重建后强制所有圆角卡片（含 Advanced 折叠条）统一重新测量并补全边框：
+        # 首帧量到的可能是 1px 内容高度，圆角矩形会被画成残框/被裁切；等布局落定再
+        # refresh 一次，确保外框完整（见 RoundCard.refresh 的 P0-2 说明）。
+        self.root.after_idle(lambda: self._closing or self._relayout_all())
 
     # ------------------------------------------------------------ 背景 / 顶栏
     def _sync_columns(self, e=None):
@@ -1073,7 +1077,6 @@ class App:
         F = self.F
         self._adv_open = False
         self._spacer(parent)
-        self._hairline(parent)
 
         bar = RoundCard(parent, radius=10, fill=theme.SURFACE,
                         border=theme.BORDER, shadow=False, padx=12, pady=6)
@@ -1618,11 +1621,22 @@ class App:
         self.lang = lang
         self.F.rebuild(lang)
         self._close_popups()
+        # 保存当前窗口几何（含位置）：下面会销毁所有子控件再重建，全量重建后 Tk 会按
+        # 新内容重排窗口、可能把窗口挪位/改尺寸（"界面飘"的真因）；重建后复原几何，
+        # 切换语言时窗口大小与位置保持不变。
+        geo = self.root.geometry()
         for w in self.root.winfo_children():
             w.destroy()
         self._last_scale = None
         self._build()
         self._on_resize()
+        try:
+            self.root.geometry(geo)
+        except Exception:
+            pass
+        # 文案长度随语言变化会改变卡片/滚动区内容高度，必须主动重新测量，否则新文案会
+        # 被旧的圆角矩形裁掉或顶不到位（界面"飘"/错位）。
+        self._relayout_all()
 
     # ------------------------------------------------------------ 选择文件
     def _on_input_changed(self):
