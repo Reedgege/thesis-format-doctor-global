@@ -175,21 +175,21 @@ def test_progress(host):
 def test_theme_tokens():
     """验证主题令牌是否与 UI_DESIGN_SPEC 对齐（theme.py 是颜色令牌的唯一来源）。
 
-    v2.3.0 的 UI 重做把界面从「老式 Windows 工具」改成「premium 学术生产力软件」：
-    冷调近白纸底 + 青蓝主色。本测试锁定这些对外视觉令牌，防止回退到旧的
-    米色 / 浅蓝配色（#F6F3EC / #1F6FAE）。
+    v2.3.5 的 UI 重做把界面从「冷调近白 + 青蓝」改成「蓝绿学术风」：极淡薄荷灰纸底
+    + 深青绿（teal）主色、学术蓝灰次要色。本测试锁定这些对外视觉令牌，防止回退到旧的
+    冷白 / 浅蓝配色（#F7F9FB / #0E7490）。
     """
-    assert theme.BG == "#F7F9FB", f"Expected BG #F7F9FB (cool-white), got {theme.BG}"
+    assert theme.BG == "#F4F8F8", f"Expected BG #F4F8F8 (mint-gray paper), got {theme.BG}"
     assert theme.SURFACE == "#FFFFFF", f"Expected SURFACE #FFFFFF, got {theme.SURFACE}"
-    assert theme.SURFACE_SOFT == "#F4F6F8", f"Expected SURFACE_SOFT #F4F6F8 (neutral cool-gray), got {theme.SURFACE_SOFT}"
-    assert theme.PRIMARY == "#0E7490", f"Expected PRIMARY #0E7490 (sole saturated teal-cyan), got {theme.PRIMARY}"
-    assert theme.PRIMARY_HOVER == "#0A5C6B", f"Expected PRIMARY_HOVER #0A5C6B, got {theme.PRIMARY_HOVER}"
-    assert theme.PRIMARY_SOFT == "#DCF1F5", f"Expected PRIMARY_SOFT #DCF1F5, got {theme.PRIMARY_SOFT}"
-    assert theme.TEXT == "#17324D", f"Expected TEXT #17324D, got {theme.TEXT}"
-    assert theme.TEXT_2 == "#64748B", f"Expected TEXT_2 #64748B (neutral slate, no blue), got {theme.TEXT_2}"
-    assert theme.BORDER == "#E2E8F0", f"Expected BORDER #E2E8F0 (neutral cool-gray), got {theme.BORDER}"
-    assert theme.SUCCESS == "#3E7B67", f"Expected SUCCESS #3E7B67, got {theme.SUCCESS}"
-    assert theme.ERROR == "#A94A43", f"Expected ERROR #A94A43, got {theme.ERROR}"
+    assert theme.SURFACE_SOFT == "#E8F2F2", f"Expected SURFACE_SOFT #E8F2F2 (mint-tinted), got {theme.SURFACE_SOFT}"
+    assert theme.PRIMARY == "#137A75", f"Expected PRIMARY #137A75 (deep teal-green), got {theme.PRIMARY}"
+    assert theme.PRIMARY_HOVER == "#0E605C", f"Expected PRIMARY_HOVER #0E605C, got {theme.PRIMARY_HOVER}"
+    assert theme.PRIMARY_SOFT == "#D0EDEC", f"Expected PRIMARY_SOFT #D0EDEC, got {theme.PRIMARY_SOFT}"
+    assert theme.TEXT == "#1A2E33", f"Expected TEXT #1A2E33 (deep teal-ink), got {theme.TEXT}"
+    assert theme.TEXT_2 == "#4A6570", f"Expected TEXT_2 #4A6570 (slate, no blue), got {theme.TEXT_2}"
+    assert theme.BORDER == "#D2DEDD", f"Expected BORDER #D2DEDD (mint-gray), got {theme.BORDER}"
+    assert theme.SUCCESS == "#2E7D6B", f"Expected SUCCESS #2E7D6B, got {theme.SUCCESS}"
+    assert theme.ERROR == "#A94442", f"Expected ERROR #A94442, got {theme.ERROR}"
     assert theme.CARD_RADIUS == 12, f"Expected CARD_RADIUS 12, got {theme.CARD_RADIUS}"
     assert theme.PAGE_PAD == 32, f"Expected PAGE_PAD 32, got {theme.PAGE_PAD}"
     assert theme.CARD_GAP == 20, f"Expected CARD_GAP 20, got {theme.CARD_GAP}"
