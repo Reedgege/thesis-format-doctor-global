@@ -13,7 +13,7 @@
   * ``src/data/icon.png``                      窗口图标（``src/ui/iconpath.py`` 第一候选）
   * ``assets/icon.ico`` / ``assets/icon.png``  Windows ``iconbitmap`` 兜底 / exe 同级图标
   * ``assets/icon.icns``                       macOS 图标
-  * ``src/data/ai_questionnaire_template.json`` CLI ``export-schema`` 与 GUI 导出模板
+  * ``src/data/ai_questionnaire_template.yaml`` CLI ``export-schema`` 与 GUI 导出模板
   * ``VERSION``                                运行时版本号（``src/versioninfo.py``）
 
   .. note:: v2.3.4 起界面背景改为整窗纯色，不再依赖 ``backdrop.png``，故该资源已从
@@ -37,7 +37,7 @@ REQUIRED_FILES = (
     "icon.ico",
     "icon.png",
     "icon.icns",
-    "ai_questionnaire_template.json",
+    "ai_questionnaire_template.yaml",
     "VERSION",
 )
 

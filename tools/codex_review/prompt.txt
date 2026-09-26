@@ -7,7 +7,7 @@
 - 引擎层：src/engine/specs.py、src/engine/questionnaire.py、src/engine/docx_reader.py、src/engine/checker.py、src/engine/fixer.py、src/engine/latex_template.py、src/engine/report.py
 - 授权层：src/license/license.py
 - 入口层：src/main.py、src/ui/app.py
-- 数据：src/data/ai_questionnaire_template.json
+- 数据：src/data/ai_questionnaire_template.yaml
 - 测试：tests/test_engine.py、tests/test_fixer.py、tests/test_license.py、tests/test_latex_template.py、tests/test_polish.py、tests/smoke_test.py
 - 辅助上下文（了解历史决策，可选）：docs/实施计划_下一轮三块.md、docs/打磨轮_完成记录_2026-09-11.md
 

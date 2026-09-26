@@ -70,7 +70,7 @@ thesis-format-doctor-global/
 │   │   ├── fonts.py            # 跨平台字体兜底
 │   │   └── iconpath.py         # 窗口图标路径解析
 │   └── data/
-│       ├── ai_questionnaire_template.json  # 交给 AI 填表的模板
+│       ├── ai_questionnaire_template.yaml  # 交给 AI 填表的模板
 │       └── icon.png            # 窗口图标（512）
 ├── tools/
 │   ├── make_icon.py            # 源图 → 透明圆角 PNG/ICO/ICNS
@@ -98,10 +98,10 @@ thesis-format-doctor-global/
 .venv/Scripts/python.exe -m src.main check 论文.docx --spec APA --template 学校模板.docx
 
 # 导入 AI 填好的问卷
-.venv/Scripts/python.exe -m src.main check 论文.docx --ai ai填的表单.json
+.venv/Scripts/python.exe -m src.main check 论文.docx --ai ai填的表单.yaml
 
 # 导出 AI 填表模板（交给任意 AI 用）
-.venv/Scripts/python.exe -m src.main export-schema ai_questionnaire_template.json
+.venv/Scripts/python.exe -m src.main export-schema ai_questionnaire_template.yaml
 ```
 
 ### 3. 命令行修正（首次免费，之后需激活码）
@@ -137,10 +137,10 @@ GUI 需本机带 Tk（_tkinter）。**界面默认英文**，右上角可一键�
 
 ## 六、AI 填表工作流（你提的点子）
 
-1. 运行 `export-schema` 导出 `ai_questionnaire_template.json`
+1. 运行 `export-schema` 导出 `ai_questionnaire_template.yaml`
 2. 把该模板 + 你的学校模板/格式要求文档交给任意 AI
-3. AI 按模板 fields 填出一份扁平 JSON（如 `{"margin_left_in":1.5,"font_family":"Times New Roman",...}`）
-4. 在软件里「导入 AI 填表 JSON」即可，软件只负责吃这份 JSON
+3. AI 按模板 fields 填出一份 YAML（如 `margin_left_in: 1.5` / `font_family: Times New Roman` …，也可包在 `filled:` 下）
+4. 在软件里「导入 AI 填表」即可，软件只负责吃这份 YAML（旧版 JSON 也兼容）
 
 ---
 

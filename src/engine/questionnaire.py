@@ -245,7 +245,7 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     if not page and ref_style is None and heading is None:
         raise ValueError(
             "未从输入解析出任何有效格式字段（页边距/字体/参考文献风格/标题层级均为空）。"
-            "请检查 JSON 是否为合法格式，或是否包含 'filled' 等包装字段。"
+            "请检查 YAML/JSON 是否为合法格式，或是否包含 'filled' 等包装字段。"
         )
 
     return TargetProfile(
@@ -260,11 +260,30 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     )
 
 
-def target_from_ai_json(path: str) -> TargetProfile:
-    """导入 AI 填好的 JSON（用户把学校模板交给任意 AI 产出的表单）。"""
+def target_from_ai(path: str) -> TargetProfile:
+    """导入 AI 填好的配置文件（YAML 或旧 JSON）。
+
+    两种结构都支持：① 顶层扁平键值；② 包在 filled/data 等对象里。
+    文件可以是 .yaml/.yml（推荐）或旧版 .json；按内容自动识别，用户无需关心扩展名。
+    """
     import json
+    try:
+        from yaml import safe_load
+    except ImportError:  # pragma: no cover - pyyaml 应随包分发
+        safe_load = None
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        text = f.read()
+    if not text.strip():
+        raise ValueError("AI 配置文件为空。")
+    # JSON 是 YAML 的子集；先按 JSON 试（报错信息更精准），失败再回落 YAML。
+    try:
+        data = json.loads(text)
+    except (ValueError, json.JSONDecodeError):
+        if safe_load is None:
+            raise ValueError("未安装 PyYAML，无法解析 YAML 模板；请改用 JSON 或安装 pyyaml。")
+        data = safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("AI 配置文件顶层必须是对象（键值对），实际为：%s" % type(data).__name__)
     return target_from_dict(data, source="ai_import")
 
 
@@ -388,7 +407,7 @@ def build_target(spec_key: str, template: Optional[str] = None,
     if template:
         built["template"] = ("school", target_from_template_docx(read_docx(template), spec_key))
     if ai:
-        built["ai"] = ("ai_import", target_from_ai_json(ai))
+        built["ai"] = ("ai_import", target_from_ai(ai))
     if questionnaire:
         built["questionnaire"] = ("user", target_from_dict(questionnaire, "user"))
     if latex:

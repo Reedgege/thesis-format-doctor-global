@@ -70,7 +70,7 @@ def _nuitka_options():
         "--remove-output",              # drop the .build workdir after use; keep only .dist/.app
         "--show-progress",
     ]
-    # The whole src package (engine/license/ui + data/*.json) is compiled into the build.
+    # The whole src package (engine/license/ui + data/*.yaml + icon.png) is compiled into the build.
     # src/data/ also carries icon.png, so the GUI can set its window icon at runtime.
     opt += ["--include-package=src",
             "--include-package-data=src"]

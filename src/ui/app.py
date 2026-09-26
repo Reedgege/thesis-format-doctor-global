@@ -123,7 +123,7 @@ ERRC = theme.ERROR            # **仅**真实错误
 _BASE_W = 1180         # 设计基准宽度（与 fonts.BASE_WIDTH 一致）
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_TEMPLATE_PATH = os.path.join(_HERE, "..", "data", "ai_questionnaire_template.json")
+_TEMPLATE_PATH = os.path.join(_HERE, "..", "data", "ai_questionnaire_template.yaml")
 
 _FIELD_RANGE = FIELD_RANGES
 
@@ -1144,8 +1144,8 @@ class App:
         self._ai_name = tk.Label(c2, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                  font=F["F_HELP"], anchor="w")
         self._ai_name.pack(fill="x", pady=(3, 0))
-        ttk.Button(r2, text=self.tr("btn_ai_json"), style="Ghost.TButton",
-                   command=self._pick_ai_json).pack(side="right")
+        ttk.Button(r2, text=self.tr("btn_ai_import"), style="Ghost.TButton",
+                   command=self._pick_ai_config).pack(side="right")
 
         for w in (hdr, self._adv_chev, self._adv_hint):
             w.bind("<Button-1>", lambda e: self._toggle_advanced())
@@ -1688,9 +1688,11 @@ class App:
             self.latex_template.set(p)
             self._on_input_changed()
 
-    def _pick_ai_json(self):
-        p = filedialog.askopenfilename(title=self.tr("btn_ai_json"),
-                                       filetypes=[("JSON", "*.json"), ("All files", "*.*")])
+    def _pick_ai_config(self):
+        p = filedialog.askopenfilename(
+            title=self.tr("btn_ai_import"),
+            filetypes=[("YAML", "*.yaml *.yml"), ("JSON", "*.json"),
+                       ("All files", "*.*")])
         if p:
             self.ai_json.set(p)
             self._on_input_changed()
@@ -2369,8 +2371,9 @@ class App:
     def _export_template(self):
         tr = self.tr
         dst = filedialog.asksaveasfilename(
-            defaultextension=".json", filetypes=[("JSON", "*.json")],
-            initialfile="ai_questionnaire_template.json")
+            defaultextension=".yaml", filetypes=[("YAML", "*.yaml *.yml"),
+                                                 ("All files", "*.*")],
+            initialfile="ai_questionnaire_template.yaml")
         if not dst:
             return
         try:

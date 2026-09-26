@@ -10,7 +10,7 @@
   python -m src.main fix   论文.docx --spec APA [--out 输出.docx] [--preview] [--json]
   python -m src.main activate 激活码
   python -m src.main status                    # 查看授权状态
-  python -m src.main export-schema out.json    # 导出 AI 填表模板
+  python -m src.main export-schema out.yaml    # 导出 AI 填表模板
 
 说明：
 - 检查（check）永远免费、无门禁；
@@ -34,7 +34,7 @@ from .engine.questionnaire import build_target
 from .engine.specs import SPEC_ORDER
 from .versioninfo import app_version
 
-_TEMPLATE = os.path.join(os.path.dirname(__file__), "data", "ai_questionnaire_template.json")
+_TEMPLATE = os.path.join(os.path.dirname(__file__), "data", "ai_questionnaire_template.yaml")
 
 _CONSOLE_READY = False
 
@@ -432,7 +432,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("docx", help="待检 Word 文档路径")
     c.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="引用规范（默认 APA）")
     c.add_argument("--template", help="学校模板 docx（可选，页面以学校为准）")
-    c.add_argument("--ai", help="AI 填好的问卷 JSON（可选）")
+    c.add_argument("--ai", help="AI 填好的问卷配置（YAML/JSON，可选）")
     c.add_argument("--questionnaire", help="手填问卷 JSON（可选）")
     c.add_argument("--latex", help="LaTeX 模板路径（可选，第⑤种来源）")
     c.add_argument("--out", help="报告输出路径（md；配 --json 时为 .json）")
@@ -443,7 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("docx", help="待修正 Word 文档路径")
     f.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="引用规范（默认 APA）")
     f.add_argument("--template", help="学校模板 docx（可选）")
-    f.add_argument("--ai", help="AI 填好的问卷 JSON（可选）")
+    f.add_argument("--ai", help="AI 填好的问卷配置（YAML/JSON，可选）")
     f.add_argument("--questionnaire", help="手填问卷 JSON（可选）")
     f.add_argument("--latex", help="LaTeX 模板路径（可选）")
     f.add_argument("--out", help="输出路径（默认 原名_fixed.docx，已存在时自动加序号不覆盖）")
@@ -461,7 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     e = sub.add_parser("export-schema", help="导出 AI 填表模板")
-    e.add_argument("out", help="输出 JSON 路径")
+    e.add_argument("out", help="输出 YAML 路径")
     e.set_defaults(func=cmd_export_schema)
     return p
 

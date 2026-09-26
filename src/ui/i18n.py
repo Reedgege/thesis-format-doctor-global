@@ -252,7 +252,7 @@ STRINGS: dict = {
         # —— 左栏：文档选择 ——
         # 规格书第 4 节：Files → "Your Documents"、Choose Material → "Select your documents"、
         # Paper to Check → "Paper"、School Template → "University template"、
-        # AI-filled JSON → "Import configuration"。
+        # AI-filled 配置（YAML/JSON）→ "Import configuration"。
         "left_title": "Your Documents",
         "left_desc": "Select your document and formatting requirements. You can change these settings anytime before checking.",
         "mark_required": "Required",
@@ -270,7 +270,7 @@ STRINGS: dict = {
         "btn_questionnaire": "Fill in",
         "row_ai_title": "Import configuration",
         "row_ai_desc": "Let any AI fill the questionnaire template for you",
-        "btn_ai_json": "Import",
+        "btn_ai_import": "Import",
         "row_paper_title": "Paper",
         # ⚠️ 对外能力声明必须与实际一致（上架铁律）。引擎只读 .docx：
         #   src/engine/docx_reader.py 用 python-docx，打开文件的对话框也只收 *.docx；
@@ -479,7 +479,7 @@ STRINGS: dict = {
              "APA, MLA, Chicago, IEEE or Harvard. Choose Other if your school uses something else."),
             ("Add your school's rules (optional but recommended)",
              "Upload the Word template your school handed out, fill in the questionnaire, import a "
-             "JSON an AI filled for you, or hand over a LaTeX template. Page layout comes from here."),
+             "YAML config an AI filled for you, or hand over a LaTeX template. Page layout comes from here."),
             ("Choose the paper",
              "Your .docx file. Nothing is uploaded — the file is read and written on this computer only."),
             ("Run the format check",
@@ -539,7 +539,7 @@ STRINGS: dict = {
         "btn_questionnaire": "手填问卷",
         "row_ai_title": "导入配置",
         "row_ai_desc": "把问卷模板交给任意 AI，让它按学校要求填好",
-        "btn_ai_json": "导入",
+        "btn_ai_import": "导入",
         "row_paper_title": "论文",
         "row_paper_helper": "上传或选择要体检的文档。",
         # 同 EN：只写真实支持面（引擎只读 .docx），不照抄整屏稿里做不到的承诺。
@@ -717,7 +717,7 @@ STRINGS: dict = {
             ("1. 选择引用规范",
              "APA、MLA、Chicago、IEEE 或 Harvard。学校用别的，就选 Other。"),
             ("2. 告诉它学校的格式要求（可选，但强烈建议）",
-             "上传学校下发的 Word 模板、手填问卷、导入 AI 填好的 JSON，或给一份 LaTeX 模板。"
+             "上传学校下发的 Word 模板、手填问卷、导入 AI 填好的配置（YAML），或给一份 LaTeX 模板。"
              "页面排版以这里为准。"),
             ("3. 选择论文",
              "你的 .docx 文件。全程不上传 —— 文件的读写都只在这台电脑上完成。"),

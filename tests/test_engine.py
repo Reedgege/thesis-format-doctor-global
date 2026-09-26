@@ -27,7 +27,7 @@ sys.path.insert(0, ROOT)
 from src.engine import checker, report as report_mod
 from src.engine.docx_reader import read_docx, DocxReadError
 from src.engine.questionnaire import (
-    target_from_spec, target_from_dict, target_from_ai_json,
+    target_from_spec, target_from_dict, target_from_ai,
     target_from_template_docx, merge_school, build_target,
 )
 
@@ -98,7 +98,7 @@ def test_ai_filled_wrapper_imported(tmp_path):
     jpath.write_text(json.dumps({"filled": {
         "margin_left_in": 1.5, "font_family": "Arial", "reference_style": "IEEE",
     }}), encoding="utf-8")
-    t = target_from_ai_json(str(jpath))
+    t = target_from_ai(str(jpath))
     assert t.page.get("margin_left_in") == 1.5, "filled 包装的页边距应被读取"
     assert t.page.get("font_family") == "Arial"
     assert t.reference_style == "IEEE"
@@ -108,10 +108,36 @@ def test_ai_empty_raises(tmp_path):
     jpath = tmp_path / "empty.json"
     jpath.write_text(json.dumps({"foo": "bar"}), encoding="utf-8")
     try:
-        target_from_ai_json(str(jpath))
+        target_from_ai(str(jpath))
         assert False, "空 JSON 应抛出 ValueError"
     except ValueError:
         pass
+
+
+def test_ai_filled_yaml_imported(tmp_path):
+    ypath = tmp_path / "ai.yaml"
+    ypath.write_text(
+        "filled:\n"
+        "  margin_left_in: 1.5\n"
+        "  font_family: Arial\n"
+        "  reference_style: IEEE\n",
+        encoding="utf-8")
+    t = target_from_ai(str(ypath))
+    assert t.page.get("margin_left_in") == 1.5, "YAML filled 包装的页边距应被读取"
+    assert t.page.get("font_family") == "Arial"
+    assert t.reference_style == "IEEE"
+
+
+def test_ai_yaml_flat_imported(tmp_path):
+    ypath = tmp_path / "ai_flat.yaml"
+    ypath.write_text(
+        "margin_left_in: 1.5\n"
+        "font_family: Arial\n"
+        "reference_style: IEEE\n",
+        encoding="utf-8")
+    t = target_from_ai(str(ypath))
+    assert t.page.get("margin_left_in") == 1.5
+    assert t.reference_style == "IEEE"
 
 
 # ---------------------------------------------------------------------------
