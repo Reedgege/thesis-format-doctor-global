@@ -200,7 +200,10 @@ def test_secondary_button_stays_above_aux_row(ui, tmp_path):
     ui._refresh_rows()
     ui.root.update_idletasks()
     assert ui._fix_btn._visible is True
-    assert ui._fix_btn.winfo_y() < ui._aux_row.winfo_y()
+    # winfo_rooty() 是绝对屏幕 Y：重设计把 _fix_btn 挪进了左卡、_aux_row 留在底部
+    # CTA 条，两者父级不同，winfo_y()（父级相对）跨父比较没有意义；用绝对坐标才能
+    # 正确断言"次按钮在辅助按钮行上方"。
+    assert ui._fix_btn.winfo_rooty() < ui._aux_row.winfo_rooty()
 
 
 # ---------------------------------------------------- P0-1 忙态必须能解除
@@ -353,8 +356,16 @@ def test_two_cards_equal_width_and_height(ui):
 
 # ------------------------------------------------------------------ 滚动区
 def test_scroll_area_shows_bar_only_when_needed(_tk_session):
-    """滚动条只在内容超出时出现，且真的能滚、能回顶。"""
+    """滚动条只在内容超出时出现，且真的能滚、能回顶。
+
+    无桌面会话拿不到真实几何 → 这条自动跳过（本机 GUI 冒烟覆盖）；与同文件另两条
+    几何测试（页脚可见性、两栏等高）保持一致，避免 headless/CI 上 Toplevel 无法
+    真实映射而误报失败。
+    """
     import tkinter as tk
+
+    if not _mapped(_tk_session):
+        pytest.skip("窗口未映射，拿不到真实几何")
 
     from src.ui import theme
     from src.ui.widgets import ScrollArea
