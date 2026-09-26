@@ -869,7 +869,7 @@ class App:
         self._field_label(parent, "row_paper_title", required=True)
         self._helper(parent, "row_paper_helper")
         drop = RoundCard(parent, radius=14, fill=theme.PRIMARY_SOFT,
-                         border=theme.PRIMARY, shadow=False, dashed=False,
+                         border=theme.BORDER, shadow=False, dashed=False,
                          padx=18, pady=18, min_height=108)
         self._extra_cards.append(drop)
         drop.pack(fill="x", pady=(4, 0))
