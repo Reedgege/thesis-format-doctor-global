@@ -1624,15 +1624,12 @@ class App:
         self.lang = lang
         self.F.rebuild(lang)
         self._close_popups()
-        # 冻结窗口几何：下面会销毁所有子控件再重建，全量重建后 WM 会按新内容重排窗口、
-        # 把窗口挪位或改尺寸（"界面飘"的真因），所以切语言前先抓真实屏幕坐标与尺寸，
-        # 重建后精确还原。
-        # 必须用 winfo_rootx/rooty（帧外左上角的屏幕坐标），不能用 geometry() 返回的
-        # 字符串——后者在 Windows 上取的是**客户区**坐标，而 geometry("+X+Y") 设置用的
-        # 是**帧**坐标，两者差一个标题栏高度；每切一次就偏移一点、反复累积成肉眼可见的
-        # 漂移（这正是上一版"修了还是飘"的根因）。
+        # 冻结窗口几何：切语言前先抓真实屏幕坐标与尺寸，重建后钉死还原。
+        # 坐标约定（与 _fit_modal 一致）：用 winfo_x/winfo_y（窗口外框屏幕坐标），
+        # 不用 winfo_rootx/rooty —— 后者含标题栏/边框偏移（dy = rooty - y），喂回
+        # geometry 会越跑越偏。主窗是 Tk 根窗两者本应相等，这里统一走可靠约定。
         try:
-            _gx, _gy = self.root.winfo_rootx(), self.root.winfo_rooty()
+            _gx, _gy = self.root.winfo_x(), self.root.winfo_y()
             _gw, _gh = self.root.winfo_width(), self.root.winfo_height()
             _geo = "%dx%d+%d+%d" % (_gw, _gh, _gx, _gy)
         except Exception:
@@ -1642,21 +1639,39 @@ class App:
         self._last_scale = None
         self._build()
         self._on_resize()
+        # 文案长度随语言变化会改变卡片/滚动区内容高度，必须主动重新测量，否则新文案会
+        # 被旧的圆角矩形裁掉或顶不到位（界面"飘"/错位）。这一步也会触发一批 <Configure>。
+        self._relayout_all()
+        # 先把重建带来的所有待处理布局 flush 掉，再把几何钉死成"最后一句"：
+        # 重建触发的 WM 重排可能在上面的同步还原之后才被处理，把窗口又挪了位。
+        # update_idletasks 让内容尺寸落定 → geometry(_geo) 钉死 → after_idle 再补钉一刀，
+        # 覆盖任何真正滞后的 WM 重排，确保切语言后窗口纹丝不动。
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
         if _geo:
             try:
                 self.root.geometry(_geo)
+                self._on_resize()
             except Exception:
                 pass
-        # 尺寸已还原，再按真实宽度重算一次缩放/背景/顶栏，避免字体或背景错位
-        # （首遍 _on_resize 跑在几何还原之前，用的是重建瞬间的临时宽度）。
-        try:
-            self.root.update_idletasks()
-            self._on_resize()
-        except Exception:
-            pass
-        # 文案长度随语言变化会改变卡片/滚动区内容高度，必须主动重新测量，否则新文案会
-        # 被旧的圆角矩形裁掉或顶不到位（界面"飘"/错位）。
-        self._relayout_all()
+
+            def _restate():
+                try:
+                    self.root.geometry(_geo)
+                    self._on_resize()
+                except Exception:
+                    pass
+            try:
+                self.root.after_idle(_restate)
+            except Exception:
+                pass
+        else:
+            try:
+                self._on_resize()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ 选择文件
     def _on_input_changed(self):
