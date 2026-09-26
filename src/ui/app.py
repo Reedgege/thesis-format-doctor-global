@@ -865,12 +865,12 @@ class App:
 
         self._spacer(parent)
 
-        # ① 论文（必选）—— 页面视觉焦点：大虚线投放区
+        # ① 论文（必选）—— 页面视觉焦点：实线投放区
         self._field_label(parent, "row_paper_title", required=True)
         self._helper(parent, "row_paper_helper")
         drop = RoundCard(parent, radius=14, fill=theme.PRIMARY_SOFT,
-                         border=theme.PRIMARY, shadow=False, dashed=True,
-                         padx=18, pady=26, min_height=132)
+                         border=theme.PRIMARY, shadow=False, dashed=False,
+                         padx=18, pady=18, min_height=108)
         self._extra_cards.append(drop)
         drop.pack(fill="x", pady=(4, 0))
         self._paper_drop = drop
@@ -880,7 +880,7 @@ class App:
         vcol.pack(expand=True)
         cloud = tk.Canvas(vcol, width=44, height=40, bg=theme.PRIMARY_SOFT,
                           highlightthickness=0, bd=0)
-        cloud.pack(pady=(0, 10))
+        cloud.pack(pady=(0, 6))
         draw_icon(cloud, "cloud", 22, 20, 40, theme.PRIMARY, 2)
 
         self._paper_name = tk.Label(vcol, text=self.tr("btn_select_doc"),
