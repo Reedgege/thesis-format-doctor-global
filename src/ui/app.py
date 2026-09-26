@@ -532,7 +532,39 @@ class App:
                   background=[("active", theme.PRIMARY_SOFT),
                               ("disabled", theme.SURFACE)],
                   foreground=[("disabled", theme.TEXT_3)])
-        style.configure("TCombobox", font=F["F_BODY"], padding=4)
+        # 下拉框（选择框）：静止薄荷灰描边 + 主色箭头，聚焦时描边转主色
+        style.configure("TCombobox", font=F["F_BODY"], padding=4,
+                        background=theme.SURFACE,
+                        fieldbackground=theme.SURFACE,
+                        foreground=theme.TEXT,
+                        bordercolor=theme.SELECT_BORDER,
+                        arrowcolor=theme.SELECT_ARROW)
+        style.map("TCombobox",
+                  bordercolor=[("focus", theme.SELECT_BORDER_FOCUS),
+                               ("active", theme.SELECT_BORDER_FOCUS)],
+                  fieldbackground=[("focus", theme.SURFACE),
+                                   ("active", theme.SURFACE_SOFT)])
+        # 滚动条：青绿点缀（clam 主题改色生效）；装得下时滚动条本就隐藏，
+        # 这里只定色，是否显示由 ScrollArea._set_bar 控制。
+        style.configure("TScrollbar",
+                        background=theme.SCROLLBAR_THUMB,
+                        troughcolor=theme.SCROLLBAR_TROUGH,
+                        bordercolor=theme.SCROLLBAR_TROUGH,
+                        arrowcolor=theme.SCROLLBAR_ARROW,
+                        lightcolor=theme.SCROLLBAR_THUMB,
+                        darkcolor=theme.SCROLLBAR_THUMB,
+                        gripcount=0)
+        style.map("TScrollbar",
+                  background=[("active", theme.SCROLLBAR_THUMB_HOVER),
+                              ("pressed", theme.SCROLLBAR_THUMB_HOVER)])
+        # 下拉弹出的列表：白底深字，选中行主色高亮（option_add 全局生效，一次即可；
+        # 语言切换时 _rebuild 处的同名 option_add 会再兜底）。
+        self.root.option_add("*TCombobox*Listbox.background", theme.SURFACE)
+        self.root.option_add("*TCombobox*Listbox.foreground", theme.TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground",
+                             theme.SELECT_LIST_SEL_BG)
+        self.root.option_add("*TCombobox*Listbox.selectForeground",
+                             theme.SELECT_LIST_SEL_FG)
 
     # ------------------------------------------------------------ 整体布局
     def _build(self):

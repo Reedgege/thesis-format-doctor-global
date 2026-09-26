@@ -193,6 +193,16 @@ def test_theme_tokens():
     assert theme.CARD_RADIUS == 12, f"Expected CARD_RADIUS 12, got {theme.CARD_RADIUS}"
     assert theme.PAGE_PAD == 32, f"Expected PAGE_PAD 32, got {theme.PAGE_PAD}"
     assert theme.CARD_GAP == 20, f"Expected CARD_GAP 20, got {theme.CARD_GAP}"
+    # v2.3.6 青绿点缀：滚动条 / 下拉框令牌（从主色系派生，不引入杂色）
+    assert theme.SCROLLBAR_THUMB == "#5BA39D", f"Expected SCROLLBAR_THUMB #5BA39D, got {theme.SCROLLBAR_THUMB}"
+    assert theme.SCROLLBAR_THUMB_HOVER == "#2E7D76", f"Expected SCROLLBAR_THUMB_HOVER #2E7D76, got {theme.SCROLLBAR_THUMB_HOVER}"
+    assert theme.SCROLLBAR_TROUGH == theme.BG, f"Expected SCROLLBAR_TROUGH == BG, got {theme.SCROLLBAR_TROUGH}"
+    assert theme.SCROLLBAR_ARROW == "#FFFFFF", f"Expected SCROLLBAR_ARROW #FFFFFF, got {theme.SCROLLBAR_ARROW}"
+    assert theme.SELECT_BORDER == theme.FIELD_BORDER, f"Expected SELECT_BORDER == FIELD_BORDER, got {theme.SELECT_BORDER}"
+    assert theme.SELECT_BORDER_FOCUS == theme.PRIMARY, f"Expected SELECT_BORDER_FOCUS == PRIMARY, got {theme.SELECT_BORDER_FOCUS}"
+    assert theme.SELECT_ARROW == theme.PRIMARY, f"Expected SELECT_ARROW == PRIMARY, got {theme.SELECT_ARROW}"
+    assert theme.SELECT_LIST_SEL_BG == theme.PRIMARY, f"Expected SELECT_LIST_SEL_BG == PRIMARY, got {theme.SELECT_LIST_SEL_BG}"
+    assert theme.SELECT_LIST_SEL_FG == "#FFFFFF", f"Expected SELECT_LIST_SEL_FG #FFFFFF, got {theme.SELECT_LIST_SEL_FG}"
     print("✓ Theme tokens OK")
 
 
