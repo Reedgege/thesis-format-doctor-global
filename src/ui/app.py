@@ -446,6 +446,16 @@ class App:
             return
         factor = self.F.scale_for_width(w)
         if self._last_scale is not None and abs(factor - self._last_scale) < 0.02:
+            # scale 没变也要把主体顶留白重设成当前 _top_gap()：顶栏高度在重建/切语言
+            # 后的首帧常尚未测量（winfo_reqheight 返回 1），旧代码只在 scale 变化时
+            # 才重设 pady，于是内容一直压在顶栏底下、错位到必须来一次真正 resize 才
+            # 纠正——这正是用户反馈的「切语言界面飘、最大化再还原就好」的根因
+            # （最大化→还原改了窗口宽度 → scale 变 → 此分支才被触发 → 留白才纠正）。
+            # 切语言后窗口宽度不变、scale 不变，所以必须在早退前补这一刀（v2.3.8）。
+            try:
+                self._main_scroll.pack_configure(pady=(self._top_gap(), 0))
+            except Exception:
+                pass
             return
         self._last_scale = factor
         self.F.apply_scale(factor)

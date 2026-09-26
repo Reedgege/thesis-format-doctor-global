@@ -373,6 +373,61 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     ui._toggle_advanced()  # 还原，避免影响后续用例
 
 
+# -------------------------------------------------- 切语言界面飘（v2.3.8 根治）
+def test_main_top_gap_follows_header_even_when_scale_unchanged(ui):
+    """切语言后窗口宽度不变 → scale 不变 → _on_resize 早退分支不得让主体顶留白
+    停留在首帧的错误值（v2.3.7 切语言界面"飘"、最大化再还原才好的根因，v2.3.8 修）。
+
+    机制：_top_gap() 依赖顶栏实测高度，重建/切语言首帧顶栏尚未测量（winfo_reqheight
+    返回 1），旧代码只在 scale 变化时重设 pady，于是内容一直压在顶栏底下错位；只有
+    真正的 resize 改了宽度才会纠正。修复后每次 _on_resize 都重设 pady。
+    """
+    if not _mapped(ui.root):
+        pytest.skip("窗口未映射，拿不到真实几何")
+    root = ui.root
+    root.update_idletasks()
+
+    def _top_pad():
+        info = ui._main_scroll.pack_info().get("pady")
+        return info[0] if isinstance(info, tuple) else info
+
+    # 正常态：留白必须 == _top_gap()
+    assert _top_pad() == ui._top_gap(), \
+        "初始主体顶留白不对：%r != %r" % (_top_pad(), ui._top_gap())
+
+    # 模拟切语言的早退场景：把 _last_scale 钉成与当前宽度一致，再触发一次 _on_resize
+    ui._last_scale = ui.F.scale_for_width(root.winfo_width())
+    ui._on_resize()
+    root.update_idletasks()
+    assert _top_pad() == ui._top_gap(), \
+        "scale 不变时主体顶留白未被重设（早退 bug 回归）：%r != %r" \
+        % (_top_pad(), ui._top_gap())
+
+    # 顶栏底边必须落在主体顶部之上，不能重叠（切语言后内容不应压到顶栏下）
+    hdr_bottom = (ui._hdr_brand.winfo_rooty() + ui._hdr_brand.winfo_height()
+                  - root.winfo_rooty())
+    assert hdr_bottom <= _top_pad() + 1, \
+        "顶栏与主体重叠：hdr_bottom=%r top_pad=%r" % (hdr_bottom, _top_pad())
+
+
+def test_set_lang_keeps_content_below_header(ui):
+    """完整切语言路径：中↔英切换后内容顶留白仍跟随顶栏、不飘到顶栏下（v2.3.8）。"""
+    if not _mapped(ui.root):
+        pytest.skip("窗口未映射，拿不到真实几何")
+    root = ui.root
+    other = "zh" if ui.lang != "zh" else "en"
+    ui._set_lang(other)
+    root.update_idletasks()
+    info = ui._main_scroll.pack_info().get("pady")
+    top_pad = info[0] if isinstance(info, tuple) else info
+    assert top_pad == ui._top_gap(), \
+        "切语言后主体顶留白未跟随顶栏：%r != %r" % (top_pad, ui._top_gap())
+    hdr_bottom = (ui._hdr_brand.winfo_rooty() + ui._hdr_brand.winfo_height()
+                  - root.winfo_rooty())
+    assert hdr_bottom <= top_pad + 1, \
+        "切语言后顶栏与主体重叠：hdr_bottom=%r top_pad=%r" % (hdr_bottom, top_pad)
+
+
 # ------------------------------------------------------------------ 滚动区
 def test_scroll_area_shows_bar_only_when_needed(_tk_session):
     """滚动条只在内容超出时出现，且真的能滚、能回顶。"""
