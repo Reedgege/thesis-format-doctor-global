@@ -607,13 +607,16 @@ class App:
         main.bind("<Configure>", self._sync_columns, add="+")
 
         # 两栏等宽；grid 两边各给半个 CARD_GAP，合计正好一个卡片间距
+        # sticky="new"（上+左右、不向下拉伸）：左卡展开 Advanced 时自身会涨高，
+        # 右卡只按自己的自然高度停在顶部，绝不被左卡"拽"下去（老板 2026-09-26 反馈
+        # 右卡跟着左卡下拉很难看）。两卡都不再撑满整窗高度，避免空出一大块死板卡片。
         self._left_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                     pady=theme.CARD_PAD_Y)
-        self._left_card.grid(row=0, column=0, sticky="nsew",
+        self._left_card.grid(row=0, column=0, sticky="new",
                              padx=(0, theme.CARD_GAP // 2))
         self._right_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                      pady=theme.CARD_PAD_Y)
-        self._right_card.grid(row=0, column=1, sticky="nsew",
+        self._right_card.grid(row=0, column=1, sticky="new",
                               padx=(theme.CARD_GAP // 2, 0))
         self._build_left(self._left_card.inner)
         self._build_right(self._right_card.inner)
@@ -869,12 +872,12 @@ class App:
 
         self._spacer(parent)
 
-        # ① 论文（必选）—— 页面视觉焦点：实线投放区
+        # ① 论文（必选）—— 页面视觉焦点：实线投放区（压扁版，老板 2026-09-26 嫌太高）
         self._field_label(parent, "row_paper_title", required=True)
         self._helper(parent, "row_paper_helper")
         drop = RoundCard(parent, radius=14, fill=theme.PRIMARY_SOFT,
                          border=theme.BORDER, shadow=False, dashed=False,
-                         padx=18, pady=18, min_height=108)
+                         padx=16, pady=10, min_height=78)
         self._extra_cards.append(drop)
         drop.pack(fill="x", pady=(4, 0))
         self._paper_drop = drop
@@ -882,10 +885,10 @@ class App:
         # 居中内容列
         vcol = tk.Frame(drop.inner, bg=theme.PRIMARY_SOFT)
         vcol.pack(expand=True)
-        cloud = tk.Canvas(vcol, width=44, height=40, bg=theme.PRIMARY_SOFT,
+        cloud = tk.Canvas(vcol, width=34, height=26, bg=theme.PRIMARY_SOFT,
                           highlightthickness=0, bd=0)
-        cloud.pack(pady=(0, 6))
-        draw_icon(cloud, "cloud", 22, 20, 40, theme.PRIMARY, 2)
+        cloud.pack(pady=(0, 3))
+        draw_icon(cloud, "cloud", 17, 13, 26, theme.PRIMARY, 2)
 
         self._paper_name = tk.Label(vcol, text=self.tr("btn_select_doc"),
                                     bg=theme.PRIMARY_SOFT, fg=theme.PRIMARY,
@@ -894,11 +897,11 @@ class App:
         self._drop_hint = tk.Label(vcol, text=self.tr("drop_hint"),
                                    bg=theme.PRIMARY_SOFT, fg=theme.TEXT_2,
                                    font=F["F_HELP"], cursor="hand2", anchor="center")
-        self._drop_hint.pack(fill="x", pady=(5, 0))
+        self._drop_hint.pack(fill="x", pady=(2, 0))
         self._paper_sub = tk.Label(vcol, text=self.tr("paper_support"),
                                    bg=theme.PRIMARY_SOFT, fg=theme.TEXT_3,
                                    font=F["F_HELP"], cursor="hand2", anchor="center")
-        self._paper_sub.pack(fill="x", pady=(3, 0))
+        self._paper_sub.pack(fill="x", pady=(1, 0))
         for w in (drop.inner, vcol, self._paper_name, self._drop_hint,
                   self._paper_sub, cloud):
             w.bind("<Button-1>", lambda e: self._pick_docx())
@@ -1621,17 +1624,34 @@ class App:
         self.lang = lang
         self.F.rebuild(lang)
         self._close_popups()
-        # 保存当前窗口几何（含位置）：下面会销毁所有子控件再重建，全量重建后 Tk 会按
-        # 新内容重排窗口、可能把窗口挪位/改尺寸（"界面飘"的真因）；重建后复原几何，
-        # 切换语言时窗口大小与位置保持不变。
-        geo = self.root.geometry()
+        # 冻结窗口几何：下面会销毁所有子控件再重建，全量重建后 WM 会按新内容重排窗口、
+        # 把窗口挪位或改尺寸（"界面飘"的真因），所以切语言前先抓真实屏幕坐标与尺寸，
+        # 重建后精确还原。
+        # 必须用 winfo_rootx/rooty（帧外左上角的屏幕坐标），不能用 geometry() 返回的
+        # 字符串——后者在 Windows 上取的是**客户区**坐标，而 geometry("+X+Y") 设置用的
+        # 是**帧**坐标，两者差一个标题栏高度；每切一次就偏移一点、反复累积成肉眼可见的
+        # 漂移（这正是上一版"修了还是飘"的根因）。
+        try:
+            _gx, _gy = self.root.winfo_rootx(), self.root.winfo_rooty()
+            _gw, _gh = self.root.winfo_width(), self.root.winfo_height()
+            _geo = "%dx%d+%d+%d" % (_gw, _gh, _gx, _gy)
+        except Exception:
+            _geo = None
         for w in self.root.winfo_children():
             w.destroy()
         self._last_scale = None
         self._build()
         self._on_resize()
+        if _geo:
+            try:
+                self.root.geometry(_geo)
+            except Exception:
+                pass
+        # 尺寸已还原，再按真实宽度重算一次缩放/背景/顶栏，避免字体或背景错位
+        # （首遍 _on_resize 跑在几何还原之前，用的是重建瞬间的临时宽度）。
         try:
-            self.root.geometry(geo)
+            self.root.update_idletasks()
+            self._on_resize()
         except Exception:
             pass
         # 文案长度随语言变化会改变卡片/滚动区内容高度，必须主动重新测量，否则新文案会
