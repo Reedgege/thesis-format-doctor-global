@@ -39,8 +39,8 @@ def _tk_session():
 
     同进程第二次 ``tk.Tk()`` 在本机系统 Python 上会因 Tcl 库加载失败抛 TclError
     （环境问题，非产品缺陷），共享 root 就绕开了，也让 GUI 回归能在 pytest 里跑。
-    **这里刻意不 withdraw**：本文件要断言真实几何（页脚在可视区内、两栏等高），
-    隐藏窗口拿不到这些；无法建窗的环境直接 skip。
+    **这里刻意不 withdraw**：本文件要断言真实几何（页脚在可视区内、两栏等宽、
+    右栏不随左栏展开被拽高），隐藏窗口拿不到这些；无法建窗的环境直接 skip。
     """
     if importlib.util.find_spec("tkinter") is None:
         pytest.skip("本机 Python 无 tkinter（GUI 回归需带 tkinter 的解释器）")
@@ -342,16 +342,35 @@ def test_footer_and_statusbar_visible_within_window(ui):
         assert 0 < y < win_h, "%s 在可视区外（y=%d 窗口高=%d）" % (name, y, win_h)
 
 
-def test_two_cards_equal_width_and_height(ui):
-    """规格 "Keep left/right cards visually balanced"：两栏等宽等高。"""
+def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
+    """两栏等宽；右栏按自身自然高度、贴顶，不随左栏展开 Advanced 被拽高。
+
+    旧版强制两栏等高（sticky="nsew" + 行权重），左栏展开高级选项涨高时右栏也被
+    拉下去（老板 2026-09-26 反馈"很难看"）。改为两卡 sticky="new" 后，右栏只取
+    自身自然高度、不再被左栏拽高。这里钉死这条回归线。
+    """
     if not _mapped(ui.root):
         pytest.skip("窗口未映射，拿不到真实几何")
     ui.root.update_idletasks()
     lw, lh = ui._left_card._cv.winfo_width(), ui._left_card._cv.winfo_height()
     rw, rh = ui._right_card._cv.winfo_width(), ui._right_card._cv.winfo_height()
-    assert lw > 100 and lh > 100
+    assert lw > 100 and lh > 100 and rh > 100
+    # 等宽仍成立（列宽由窗口决定，与 sticky 无关）
     assert abs(lw - rw) <= 3, "两栏宽度不等：%d vs %d" % (lw, rw)
-    assert abs(lh - rh) <= 3, "两栏高度不等：%d vs %d" % (lh, rh)
+    # 右栏不再被强拉到与左栏等高：允许天然比左栏矮，但绝不能比左栏还高
+    assert rh <= lh + 3, "右栏竟比左栏还高：%d vs %d" % (rh, lh)
+    # 关键回归点：展开左栏 Advanced，右栏高度必须稳定（不跟着涨）
+    right_before = ui._right_card._cv.winfo_height()
+    left_before = ui._left_card._cv.winfo_height()
+    ui._toggle_advanced()
+    ui.root.update_idletasks()
+    right_after = ui._right_card._cv.winfo_height()
+    left_after = ui._left_card._cv.winfo_height()
+    assert left_after > left_before + 20, \
+        "展开 Advanced 后左栏没涨高：%d -> %d" % (left_before, left_after)
+    assert abs(right_after - right_before) <= 3, \
+        "展开 Advanced 后右栏被拽高：%d -> %d" % (right_before, right_after)
+    ui._toggle_advanced()  # 还原，避免影响后续用例
 
 
 # ------------------------------------------------------------------ 滚动区
