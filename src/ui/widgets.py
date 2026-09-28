@@ -768,11 +768,10 @@ def draw_icon(cv, name: str, cx: float, cy: float, size: float,
 
 
 class BrandMark(tk.Canvas):
-    """头部品牌 mark：青蓝圆角方块 + 白色学士帽剪影（规格 GLOBAL_UI_REFERENCE.png）。
+    """头部品牌 mark：显示 PaperFormat Pro 新版圆形徽章 PNG（羽毛笔 + 青圆底）。
 
-    ``GLOBAL_MARK.svg`` 里是线描书本，与设计稿不一致 —— 老板拍板以设计稿的实心学士帽
-    为准，配色取 theme.PRIMARY_HOVER（青蓝方块，帽体白色）。整个 mark 只用
-    ``create_polygon`` / ``create_oval`` / ``create_line`` 画，零第三方依赖、零图片资源。
+    图片取自 ``iconpath.find_icon()``，与窗口/任务栏图标同一源图，保证桌面端
+    所有品牌触点一致。零自绘形状，只加载 PNG。
     """
 
     def __init__(self, parent, size: int = theme.MARK_SIZE, bg: str = None, **kw):
@@ -781,6 +780,7 @@ class BrandMark(tk.Canvas):
         super().__init__(parent, width=size, height=size, bg=bg,
                          highlightthickness=0, bd=0, **kw)
         self._size = size
+        self._img = None
         self.draw()
 
     def draw(self):
@@ -788,23 +788,19 @@ class BrandMark(tk.Canvas):
             self.delete("all")
         except Exception:
             return
-        s = self._size
-        pts = rounded_points(0.5, 0.5, s - 0.5, s - 0.5, theme.MARK_RADIUS)
-        self.create_polygon(pts, fill=theme.MARK_BG, outline=theme.MARK_BG,
-                            width=1, tags="mark")
-        k = s / 48.0
-        # 学士帽（48 网格）：帽板菱形 → 帽体梯形 → 右侧帽穗
-        self.create_polygon(17 * k, 22.2 * k, 31 * k, 22.2 * k,
-                            29.2 * k, 29.6 * k, 18.8 * k, 29.6 * k,
-                            fill=theme.MARK_FG, outline="", tags="mark")
-        self.create_polygon(24 * k, 12.6 * k, 37.4 * k, 19 * k,
-                            24 * k, 25.4 * k, 10.6 * k, 19 * k,
-                            fill=theme.MARK_FG, outline="", tags="mark")
-        self.create_line(36.6 * k, 19.8 * k, 36.6 * k, 27.2 * k,
-                         fill=theme.MARK_FG, width=max(1, int(round(1.6 * k))),
-                         capstyle="round", tags="mark")
-        self.create_oval(34.9 * k, 26.6 * k, 38.3 * k, 30 * k,
-                         fill=theme.MARK_FG, outline="", tags="mark")
+        try:
+            from . import iconpath
+            from PIL import Image, ImageTk, ImageOps
+            path = iconpath.find_icon()
+            if not path:
+                return
+            img = Image.open(path).convert("RGBA")
+            fit = int(self._size * 0.94)
+            img = ImageOps.contain(img, (fit, fit), Image.LANCZOS)
+            self._img = ImageTk.PhotoImage(img)   # 必须挂实例属性，否则被 GC 回收
+            self.create_image(self._size // 2, self._size // 2, image=self._img)
+        except Exception:
+            return
 
 
 class IconBadge(tk.Canvas):

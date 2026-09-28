@@ -754,7 +754,8 @@ class App:
           ① 顶栏仍画在背景画布上（``create_window``，不占 pack 空间）—— 背景素材的
              天际线正好压在顶栏这条带上，整条不透明框架盖住就等于白放了一张图；
           ② **删掉顶栏下的通栏细线**：参考稿里没有这条线，留着会横穿天际线；
-          ③ 按设计稿补上**品牌 mark**（蓝底圆角方块 + 白色学士帽，``widgets.BrandMark``）
+          ③ 按设计稿补上**品牌 mark**（``widgets.BrandMark`` 加载 ``iconpath.find_icon()``
+             取到的 PaperFormat Pro 新版圆形徽章 PNG，与窗口/任务栏图标同源）
              与隐私声明前的盾牌小徽标；语言选择器改成「当前语言 ▾」。
         """
         F = self.F
