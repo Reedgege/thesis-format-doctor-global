@@ -1,4 +1,4 @@
-"""Thesis Format Doctor Global —— tkinter 桌面 GUI（离线，论文不出本机）。
+"""PaperFormat Pro —— tkinter 桌面 GUI（离线，论文不出本机）。
 
 界面：象牙白纸底 + 青蓝主色。顶栏（品牌 / 标语 / 隐私声明 / 语言·关于·帮助）
 → 两栏卡片（左「Your Documents」/ 右「Review & Fix」）→ 页脚（邮箱 / 官网 / 标语）
@@ -311,7 +311,7 @@ class App:
 
         _sw = root.winfo_screenwidth()
         _sh = root.winfo_screenheight()
-        root.title("Thesis Format Doctor Global")
+        root.title("PaperFormat Pro")
         root.geometry("%dx%d" % (min(_BASE_W, int(_sw * 0.88)), min(1020, int(_sh * 0.94))))
         # minsize 必须**按屏幕夹一次**：写死 1100×720 的话，在 1280×720 这类小屏
         # （或 1366×768 / 150% 缩放）上 WM 会把窗口强行撑到比可用区域还高，

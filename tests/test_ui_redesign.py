@@ -334,7 +334,7 @@ def test_footer_and_statusbar_visible_within_window(ui):
             found["email"] = w
         elif "reedskill.com" in t:
             found["site"] = w
-        elif "Thesis Format Doctor Global" in t:
+        elif "PaperFormat Pro" in t:
             found["statusbar"] = w
     for name in ("email", "site", "statusbar"):
         assert name in found, "找不到 %s 标签" % name

@@ -1,11 +1,11 @@
-# AI 填表模板 —— Thesis Format Doctor Global
+# AI 填表模板 —— PaperFormat Pro
 # 把本文件交给任意 AI，让它按下方 fields 把学校的格式要求填成具体数值，
 # 再用软件的「导入 AI 填表」吃进去即可。模板本身也兼容旧版 JSON。
 
 _purpose: |-
   把本文件交给任意 AI（GPT / Gemini / Claude 等），连同你的学校模板或格式要求文档，
   让 AI 按下方 fields 把格式要求填成具体数值，输出一份同样结构的 YAML（旧版 JSON 也兼容），
-  再用 Thesis Format Doctor Global 的「导入 AI 填表」吃进去即可。
+  再用 PaperFormat Pro 的「导入 AI 填表」吃进去即可。
 
 _how_to_fill: |-
   AI 请把格式要求填成具体数值，两种结构软件都支持：

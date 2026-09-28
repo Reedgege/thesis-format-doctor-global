@@ -1,6 +1,6 @@
 """格式问卷（Format Questionnaire）—— 四输入统一的「中间层」。
 
-Thesis Format Doctor Global 的三种目标来源，全部收敛到同一个 TargetProfile：
+PaperFormat Pro 的三种目标来源，全部收敛到同一个 TargetProfile：
   A) 选中的内置规范（spec）
   B) 用户手填的格式问卷（questionnaire / user）
   C) 用户把学校模板丢给任意 AI，让 AI 按本 schema 填出的 JSON（ai_import）

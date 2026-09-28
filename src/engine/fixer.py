@@ -1,6 +1,6 @@
 """一键修正引擎：纯格式修正，绝不改动正文内容。
 
-Thesis Format Doctor Global —— 海外版「一键修正」核心。
+PaperFormat Pro —— 海外版「一键修正」核心。
 
 设计铁律（与产品「只改格式、不改内容」原则一致）：
 - 只改格式层：页边距 / 正文字体 / 字号 / 行距 / 正文对齐 / 首行缩进 / 段后间距 /
@@ -501,7 +501,7 @@ def _build_summary_text(target: TargetProfile, applied: dict, spec, ref_info) ->
     if not bits:
         return ""
     name = spec.name.split("(")[0].strip()
-    return f"Thesis Format Doctor ({name}): " + "; ".join(bits) + "."
+    return f"PaperFormat Pro ({name}): " + "; ".join(bits) + "."
 
 
 # ---------------------------------------------------------------------------

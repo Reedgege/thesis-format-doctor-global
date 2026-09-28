@@ -1,4 +1,4 @@
-"""Thesis Format Doctor Global - packaging entry point.
+"""PaperFormat Pro - packaging entry point.
 
 Nuitka compiles this file into the executable stub; the real logic lives in
 `src.main`. Keeping a thin root launcher lets `src` stay a normal package so
@@ -29,7 +29,7 @@ def _fatal(msg: str) -> None:
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(0, msg, "Thesis Format Doctor Global", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, msg, "PaperFormat Pro", 0x10)
         return
     except Exception:
         pass

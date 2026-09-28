@@ -1,4 +1,4 @@
-"""Thesis Format Doctor Global —— 命令行入口（离线）。
+"""PaperFormat Pro —— 命令行入口（离线）。
 
 用法：
   python -m src.main gui                       # 启动桌面 GUI
@@ -48,7 +48,7 @@ def _fatal_dialog(msg: str):
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(0, msg, "Thesis Format Doctor Global", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, msg, "PaperFormat Pro", 0x10)
         return
     except Exception:
         pass
@@ -418,11 +418,11 @@ def cmd_status(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Thesis Format Doctor Global — offline thesis format checker & fixer")
+    p = argparse.ArgumentParser(description="PaperFormat Pro — offline thesis format checker & fixer")
     # --version 用 argparse 内置 action：解析到就打印并 SystemExit(0)，
     # 不进入任何子命令 —— 版本号读 VERSION 文件（打包时随产物一起带出）。
     p.add_argument("-V", "--version", action="version",
-                   version="Thesis Format Doctor Global %s" % app_version())
+                   version="PaperFormat Pro %s" % app_version())
     sub = p.add_subparsers(dest="cmd")
 
     g = sub.add_parser("gui", help="启动桌面 GUI")

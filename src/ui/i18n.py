@@ -243,7 +243,7 @@ STRINGS: dict = {
         "link_help": "Help",
         "link_about": "About",
         "lang_button": "English ▾",
-        "app_title": "Thesis Format Doctor",
+        "app_title": "PaperFormat Pro",
         "app_tagline": "Academic formatting, made simple.",
         # 注：不用 🔒 之类的非 BMP emoji —— Tk 在 Windows 上常渲染成方框（tofu）。
         "privacy_line": "Your documents stay on your computer",
@@ -377,7 +377,7 @@ STRINGS: dict = {
                                 "to export it as a file."),
 
         # —— 状态栏 ——
-        "bar_left": "Thesis Format Doctor Global v%s",
+        "bar_left": "PaperFormat Pro v%s",
         "bar_idle": "Ready · Your files stay on your computer",
         "bar_checking": "Checking formatting…",
         "bar_fixing": "Applying format fixes…",
@@ -629,7 +629,7 @@ STRINGS: dict = {
         "report_summary_generic": "已完成。点「保存报告」导出完整报告。",
         "report_summary_hint": "完整报告不在界面展开 —— 点「保存报告」即可导出为文件。",
 
-        "bar_left": "Thesis Format Doctor Global v%s",
+        "bar_left": "PaperFormat Pro v%s",
         "bar_idle": "就绪 · 文件始终留在你的电脑上",
         "bar_checking": "正在体检格式…",
         "bar_fixing": "正在应用格式修正…",

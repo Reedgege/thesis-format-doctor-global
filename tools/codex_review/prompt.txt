@@ -1,4 +1,4 @@
-你是一名资深 Python 代码审查专家。请对当前工作目录 D:\AgentSpace\thesis-format-doctor-global 下的「海外版论文格式医生（Thesis Format Doctor Global）v2」代码做一次性、只读的代码审查（绝对不要修改任何文件、不要执行任何写操作），并输出一份结构化审查报告。
+你是一名资深 Python 代码审查专家。请对当前工作目录 D:\AgentSpace\thesis-format-doctor-global 下的「海外版论文格式医生（PaperFormat Pro）v2」代码做一次性、只读的代码审查（绝对不要修改任何文件、不要执行任何写操作），并输出一份结构化审查报告。
 
 【第一步】先完整阅读规格文档：docs/需求规格与功能说明.md
 它是本次审查的**唯一评判基准**。请以上面的功能需求（FR1–FR8）、非功能需求（NFR1–NFR6）、数据模型、以及第 8 节「已知边界」为准来评判代码，不要用你自己的偏好替代需求。

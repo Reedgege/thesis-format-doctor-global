@@ -330,7 +330,7 @@ def test_gui_defaults_to_english(tmp_path, monkeypatch, tk_root):
     ui = ui_app.App(tk_root)
     assert ui.lang == "en"
     texts = _label_texts(tk_root)
-    assert "Thesis Format Doctor" in texts
+    assert "PaperFormat Pro" in texts
     # v2.2.0 按设计规格改了卡片标题：Files → Your Documents、Workflow → Review & Fix
     assert "Your Documents" in texts and "Review & Fix" in texts
     # 除语言切换按钮外，英文界面不应出现中文（那个按钮按设计显示目标语言名"中文"）

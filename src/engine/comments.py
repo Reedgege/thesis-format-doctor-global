@@ -1,6 +1,6 @@
 """Word 批注（comments.xml）模块 —— 海外版「一键修正」的改动说明层。
 
-Thesis Format Doctor Global —— 用 python-docx 的 Part 模型在文档里写入批注，
+PaperFormat Pro —— 用 python-docx 的 Part 模型在文档里写入批注，
 让用户知道「哪段被改了、按什么规则改的、该怎么手动调」。
 
 设计铁律（移植自国内版踩坑记录）：
@@ -27,7 +27,7 @@ from docx.opc.part import Part
 from lxml import etree
 
 # 本工具批注的统一作者标记；strip_our_comments 据此识别并清除本工具产物。
-COMMENT_AUTHOR = "Thesis Format Doctor"
+COMMENT_AUTHOR = "PaperFormat Pro"
 
 _W_COMMENTS_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _COMMENT_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"

@@ -150,7 +150,7 @@ def build_report(docx_path: str, target: TargetProfile,
 
     # —— Markdown ——
     lines: list = []
-    lines.append("# Thesis Format Doctor Global · 格式体检报告")
+    lines.append("# PaperFormat Pro · 格式体检报告")
     lines.append("")
     lines.append(f"- 文档：`{docx_path}`")
     lines.append(f"- 规范：{rep.meta['spec_key']}　来源：{rep.meta['source']}")

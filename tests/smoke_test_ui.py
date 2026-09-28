@@ -24,7 +24,7 @@ def smoke_test():
     print("=" * 60)
     print()
     print("预期：")
-    print("  1. 窗口正常弹出（标题：Thesis Format Doctor）")
+    print("  1. 窗口正常弹出（标题：PaperFormat Pro）")
     print("  2. 背景正确（#F6F3EC 象牙纸）")
     print("  3. 两栏卡片显示（Your Documents / Review & Fix）")
     print("  4. 顶栏显示品牌和导航（语言·About·Help）")

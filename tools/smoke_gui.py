@@ -118,7 +118,7 @@ def main() -> int:
         if ui.lang != "en":
             _fail("默认语言不是英文：%s" % ui.lang)
         texts = _labels(root)
-        if "Thesis Format Doctor" not in texts:
+        if "PaperFormat Pro" not in texts:
             _fail("英文标题缺失：%s" % texts[:6])
         allowed = {ui.tr("lang_button")}
         stray = _has_cjk([t for t in texts if t not in allowed])

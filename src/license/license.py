@@ -1,4 +1,4 @@
-"""授权门禁（海外版 Thesis Format Doctor Global，隔离模块，不抄国内版源码）。
+"""授权门禁（海外版 PaperFormat Pro，隔离模块，不抄国内版源码）。
 
 复用现有 tfd-auth 中台（Cloudflare Workers + D1 `tfd_auth`），海外版用独立
 `product = "global"`（中台 `ensureProduct` 会自动建产品行），后台生成码时渠道选 `global`。

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Cross-platform build script (Nuitka) - Thesis Format Doctor Global.
+"""Cross-platform build script (Nuitka) - PaperFormat Pro.
 
 Compiles the overseas edition into a native "folder" build; on Windows we then
 wrap it with NSIS into a single installer exe. This avoids the PyInstaller
@@ -46,7 +46,7 @@ ICON_ICO = os.path.join(HERE, "assets", "icon.ico")
 ICON_ICNS = os.path.join(HERE, "assets", "icon.icns")
 ICON_PNG = os.path.join(HERE, "assets", "icon.png")
 
-PRODUCT_NAME = "Thesis Format Doctor Global"
+PRODUCT_NAME = "PaperFormat Pro"
 COMPANY_NAME = "ReedSkill"
 
 
