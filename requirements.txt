@@ -1,2 +1,7 @@
 python-docx>=1.1.0
 pyyaml>=6.0
+# 应用运行时用 PIL 生成/加载图标（src/ui/widgets.py 的 BrandMark 从圆形徽章 PNG 加载，
+# 以及 src/ui/iconpath 取图标）。CI 构建机只装 requirements.txt，此前漏列会导致 Nuitka
+# 编译期 import PIL 解析不到而构建失败。macOS 步骤虽单独 pip install pillow，但
+# Windows/Linux 完全依赖本文件，故此处显式声明。
+pillow>=10.0.0
