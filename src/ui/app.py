@@ -620,12 +620,15 @@ class App:
         # sticky="new"（上+左右、不向下拉伸）：左卡展开 Advanced 时自身会涨高，
         # 右卡只按自己的自然高度停在顶部，绝不被左卡"拽"下去（老板 2026-09-26 反馈
         # 右卡跟着左卡下拉很难看）。两卡都不再撑满整窗高度，避免空出一大块死板卡片。
+        # 主卡片去投影、留干净的 1px 边框（v2.3.10：老板反馈投影几乎看不见、
+        # 反而显得边框"缺了点什么"）。边框色统一用 theme.BORDER（#D2DEDD），
+        # 和卡片内字段细线之外的所有分区分隔保持一致。
         self._left_card = RoundCard(main, padx=theme.CARD_PAD_X,
-                                    pady=theme.CARD_PAD_Y)
+                                    pady=theme.CARD_PAD_Y, shadow=False)
         self._left_card.grid(row=0, column=0, sticky="new",
                              padx=(0, theme.CARD_GAP // 2))
         self._right_card = RoundCard(main, padx=theme.CARD_PAD_X,
-                                     pady=theme.CARD_PAD_Y)
+                                     pady=theme.CARD_PAD_Y, shadow=False)
         self._right_card.grid(row=0, column=1, sticky="new",
                               padx=(theme.CARD_GAP // 2, 0))
         self._build_left(self._left_card.inner)
@@ -1143,8 +1146,13 @@ class App:
         self._q_name = tk.Label(c1, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                 font=F["F_HELP"], anchor="w")
         self._q_name.pack(fill="x", pady=(3, 0))
-        ttk.Button(r1, text=self.tr("btn_questionnaire"), style="Ghost.TButton",
-                   command=self._open_questionnaire).pack(side="right")
+        # v2.3.10：原 ttk Ghost.TButton 是系统灰方块，和主 CTA「Check formatting」
+        # 的圆角自绘风格割裂。改成 RoundButton(secondary)——白底/青绿字/蓝灰边，
+        # 圆角和 Check formatting 一致、但颜色更轻，不抢主 CTA 注意力；尺寸
+        # 与卡片底部 Upgrade 按钮对齐（height=28 / padx=12 / F_BTN_S）。
+        RoundButton(r1, text=self.tr("btn_questionnaire"),
+                     command=self._open_questionnaire, style="secondary",
+                     font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
 
         # ② 导入配置（AI 填表 JSON）
         r2 = tk.Frame(self._adv_body, bg=theme.SURFACE)
@@ -1158,8 +1166,10 @@ class App:
         self._ai_name = tk.Label(c2, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                  font=F["F_HELP"], anchor="w")
         self._ai_name.pack(fill="x", pady=(3, 0))
-        ttk.Button(r2, text=self.tr("btn_ai_import"), style="Ghost.TButton",
-                   command=self._pick_ai_config).pack(side="right")
+        # v2.3.10：同上，Import 按钮改为 RoundButton(secondary)，与 Fill in 对齐。
+        RoundButton(r2, text=self.tr("btn_ai_import"),
+                     command=self._pick_ai_config, style="secondary",
+                     font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
 
         for w in (hdr, self._adv_chev, self._adv_hint):
             w.bind("<Button-1>", lambda e: self._toggle_advanced())

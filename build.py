@@ -5,9 +5,9 @@ Compiles the overseas edition into a native "folder" build; on Windows we then
 wrap it with NSIS into a single installer exe. This avoids the PyInstaller
 onefile self-extracting-dropper fingerprint that trips antivirus heuristics.
 
-  Windows -> dist/thesis-format-doctor-global/  + installer.nsi -> thesis-format-doctor-global-setup.exe
-  macOS   -> dist/thesis-format-doctor-global.app
-  Linux   -> dist/thesis-format-doctor-global/
+  Windows -> dist/paperformatpro/  + installer.nsi -> paperformatpro-setup.exe
+  macOS   -> dist/paperformatpro.app
+  Linux   -> dist/paperformatpro/
 
 Nuitka turns Python into C -> native machine code. The product in Windows
 Defender's eyes is just a normal C++ program (very low false-positive rate),
@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = sys.platform.startswith("win")
 DARWIN = sys.platform == "darwin"
 
-APP_NAME = "thesis-format-doctor-global"
+APP_NAME = "paperformatpro"
 # All ASCII on purpose: the Windows CI runner console is cp1252, and non-ASCII
 # file/dir names blow up in Compress-Archive / NSIS / log prints. English product
 # name is also the natural choice for an overseas audience.

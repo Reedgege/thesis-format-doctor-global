@@ -1,6 +1,6 @@
 ; PaperFormat Pro - Windows installer (NSIS)
 ; Wrap the Nuitka standalone folder into a single exe installer.
-; Run at repo root: `makensis installer.nsi` (dist/thesis-format-doctor-global/ must exist)
+; Run at repo root: `makensis installer.nsi` (dist/paperformatpro/ must exist)
 ; Version can be overridden: `makensis /DVERSION=2.0.0 installer.nsi`.
 ; ASCII-only on purpose: NSIS 3 reads the script as system ANSI (cp1252 on the
 ; English CI runner) unless a UTF-8 BOM is present; keeping the script ASCII
@@ -11,12 +11,12 @@ Unicode true
 !endif
 
 !define APPNAME "PaperFormat Pro"
-!define APPDIR  "ThesisFormatDoctorGlobal"
-!define EXE     "thesis-format-doctor-global.exe"
-!define DIST    "dist\thesis-format-doctor-global"
+!define APPDIR  "PaperFormatPro"
+!define EXE     "paperformatpro.exe"
+!define DIST    "dist\paperformatpro"
 
 Name "${APPNAME}"
-OutFile "thesis-format-doctor-global-setup.exe"
+OutFile "paperformatpro-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\${APPDIR}"
 RequestExecutionLevel user          ; per-user install, no UAC prompt
 

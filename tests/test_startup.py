@@ -44,7 +44,7 @@ def test_root_launcher_no_args_injects_gui(monkeypatch):
         return 0
 
     monkeypatch.setattr(srcmain, "main", fake_cli_main)
-    monkeypatch.setattr(sys, "argv", ["thesis-format-doctor-global.exe"])
+    monkeypatch.setattr(sys, "argv", ["paperformatpro.exe"])
 
     assert launcher.main([]) == 0
     assert seen["argv"] == ["gui"], "无参数启动没有进入 GUI —— 这就是「双击打不开」的根因"
@@ -170,8 +170,8 @@ def test_icon_candidates_cover_frozen_layout(monkeypatch, tmp_path):
 
     # 模拟冻结布局：__file__ 指向一个不存在的包路径（包内 data/ 探不到）
     monkeypatch.setattr(iconpath, "__file__", str(tmp_path / "pkg" / "ui" / "iconpath.py"))
-    monkeypatch.setattr(sys, "argv", [str(exe_dir / "thesis-format-doctor-global.exe")])
-    monkeypatch.setattr(sys, "executable", str(exe_dir / "thesis-format-doctor-global.exe"))
+    monkeypatch.setattr(sys, "argv", [str(exe_dir / "paperformatpro.exe")])
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "paperformatpro.exe"))
     monkeypatch.chdir(tmp_path)
 
     cands = [os.path.normpath(c) for c in iconpath.icon_candidates()]

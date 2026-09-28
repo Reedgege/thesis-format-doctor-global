@@ -44,6 +44,7 @@ import hmac
 import json
 import os
 import platform
+import shutil
 import socket
 import sys
 import time
@@ -65,16 +66,31 @@ _P_TRIAL = "/api/trial"
 # 优先级：环境变量 TFD_LICENSE_FILE > 模块常量 LICENSE_FILE > 用户家目录下默认。
 # Windows 下 Path.home() 不识别 HOME 环境变量，所以必须显式支持 TFD_LICENSE_FILE
 # 才能在测试 / CI 中隔离。
-LICENSE_FILE = Path.home() / ".thesis-format-doctor-global" / "license.json"
+LICENSE_FILE = Path.home() / ".paperformatpro" / "license.json"
 
-_USER_AGENT = "Mozilla/5.0 ThesisFormatDoctorGlobal/2.0"
+# v2.3.10 重命名：旧隐藏目录 .thesis-format-doctor-global 仍在已装用户的机器上，
+# 一次性迁移回退——读不到新路径时尝试旧路径，避免老用户升级后激活/试用状态丢失。
+LICENSE_FILE_LEGACY = Path.home() / ".thesis-format-doctor-global" / "license.json"
+
+_USER_AGENT = "Mozilla/5.0 PaperFormatPro/2.0"
 
 
 def _license_file() -> Path:
-    """实际状态文件路径（每次读 env，便于运行时切换）。"""
+    """实际状态文件路径（每次读 env，便于运行时切换）。
+
+    v2.3.10 重命名：新目录 ``.paperformatpro`` 不存在但旧目录
+    ``.thesis-format-doctor-global`` 的 license.json 还在时，一次性复制到新路径，
+    后续读写都走新路径 —— 老用户升级后激活 / 试用状态不丢。
+    """
     env = os.environ.get("TFD_LICENSE_FILE")
     if env:
         return Path(env)
+    if not LICENSE_FILE.exists() and LICENSE_FILE_LEGACY.exists():
+        try:
+            LICENSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(LICENSE_FILE_LEGACY, LICENSE_FILE)
+        except Exception:
+            return LICENSE_FILE_LEGACY
     return LICENSE_FILE
 
 

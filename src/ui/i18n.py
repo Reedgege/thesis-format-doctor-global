@@ -10,7 +10,7 @@
   **绝不出现微信 / 公众号 / 小程序**（海外用户不用这些，老板 2026-09-11 明确要求）；
    国内版遗留的第三方联系入口（二维码 / 客服号）在搬布局时一并剔除。
 
-语言偏好落盘在 ``~/.thesis-format-doctor-global/settings.json``（与 license.json 同目录），
+语言偏好落盘在 ``~/.paperformatpro/settings.json``（与 license.json 同目录），
 可用环境变量 ``TFD_SETTINGS_FILE`` 覆盖 —— 与授权状态文件同样的隔离策略，便于测试。
 """
 
@@ -19,12 +19,16 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 from pathlib import Path
 
 LANGS = ("en", "zh")
 DEFAULT_LANG = "en"          # 海外版默认英文（老板 2026-09-11 定）
 
-SETTINGS_FILE = Path.home() / ".thesis-format-doctor-global" / "settings.json"
+SETTINGS_FILE = Path.home() / ".paperformatpro" / "settings.json"
+
+# v2.3.10 重命名：旧隐藏目录 .thesis-format-doctor-global 一次性迁移回退（见 license.py）。
+SETTINGS_FILE_LEGACY = Path.home() / ".thesis-format-doctor-global" / "settings.json"
 
 BRAND_EMAIL = "hi@reedskill.com"
 BRAND_SITE = "reedskill.com"
@@ -33,10 +37,21 @@ BRAND_NAME = "ReedSkill"
 
 
 def settings_file() -> Path:
-    """实际设置文件路径（每次读 env，便于运行时切换 / 测试隔离）。"""
+    """实际设置文件路径（每次读 env，便于运行时切换 / 测试隔离）。
+
+    v2.3.10 重命名：新目录 ``.paperformatpro`` 不存在但旧目录
+    ``.thesis-format-doctor-global`` 的 settings.json 还在时，一次性复制到新路径，
+    后续读写都走新路径 —— 老用户升级后语言偏好不丢。
+    """
     env = os.environ.get("TFD_SETTINGS_FILE")
     if env:
         return Path(env)
+    if not SETTINGS_FILE.exists() and SETTINGS_FILE_LEGACY.exists():
+        try:
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SETTINGS_FILE_LEGACY, SETTINGS_FILE)
+        except Exception:
+            return SETTINGS_FILE_LEGACY
     return SETTINGS_FILE
 
 

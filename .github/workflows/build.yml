@@ -120,7 +120,7 @@ jobs:
           $MAKENSIS = "C:\Program Files (x86)\NSIS\makensis.exe"
           if (-not (Test-Path $MAKENSIS)) { $MAKENSIS = "makensis" }
           & $MAKENSIS /DVERSION=$VER /DVERNUM=$VERNUM installer.nsi
-          ls thesis-format-doctor-global-setup.exe
+          ls paperformatpro-setup.exe
 
       # Windows: dual distribution - the zip (portable, green) is the primary download;
       # the setup.exe is the alternative for users who want an installer.
@@ -129,7 +129,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Compress-Archive -Path "dist\thesis-format-doctor-global" -DestinationPath "release\thesis-format-doctor-global-windows.zip" -Force
+          Compress-Archive -Path "dist\paperformatpro" -DestinationPath "release\paperformatpro-windows.zip" -Force
           ls release
 
       - name: Package (macOS)
@@ -137,14 +137,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
-          ditto -c -k -v "dist/thesis-format-doctor-global.app" "release/thesis-format-doctor-global-macos.zip"
+          ditto -c -k -v "dist/paperformatpro.app" "release/paperformatpro-macos.zip"
 
       - name: Package (Linux)
         if: matrix.os == 'linux'
         shell: bash
         run: |
           mkdir -p release
-          cd dist && zip -r "../release/thesis-format-doctor-global-linux.zip" "thesis-format-doctor-global"
+          cd dist && zip -r "../release/paperformatpro-linux.zip" "paperformatpro"
 
       # 构建后自检：运行时资源（图标 / AI 问卷模板 / VERSION）必须真的进了产物。
       # 姊妹项目导师版真栽过 —— build.py 漏数据目录，打包版「二维码不显示、水印图
@@ -156,12 +156,12 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: thesis-format-doctor-global-${{ matrix.os }}
+          name: paperformatpro-${{ matrix.os }}
           path: |
-            thesis-format-doctor-global-setup.exe
-            release/thesis-format-doctor-global-windows.zip
-            release/thesis-format-doctor-global-macos.zip
-            release/thesis-format-doctor-global-linux.zip
+            paperformatpro-setup.exe
+            release/paperformatpro-windows.zip
+            release/paperformatpro-macos.zip
+            release/paperformatpro-linux.zip
           if-no-files-found: ignore
           retention-days: 1
 
@@ -194,17 +194,17 @@ jobs:
           mkdir -p release
           # 主程序三平台（reedcode 已下线，见上方注释）
           for plat in windows macos linux; do
-            find "artifacts/thesis-format-doctor-global-$plat" -type f 2>/dev/null | while read f; do
+            find "artifacts/paperformatpro-$plat" -type f 2>/dev/null | while read f; do
               cp "$f" "release/$(basename "$f")"
             done
           done
           ls -la release
           # 产物清单校验：缺任何一个都直接失败，避免发出「少东西」的 Release。
           # 期望 4 个：windows.zip / setup.exe / macos.zip / linux.zip
-          EXPECTED="thesis-format-doctor-global-windows.zip
-          thesis-format-doctor-global-setup.exe
-          thesis-format-doctor-global-macos.zip
-          thesis-format-doctor-global-linux.zip"
+          EXPECTED="paperformatpro-windows.zip
+          paperformatpro-setup.exe
+          paperformatpro-macos.zip
+          paperformatpro-linux.zip"
           missing=""
           for f in $EXPECTED; do
             if [ ! -f "release/$f" ]; then missing="$missing $f"; fi

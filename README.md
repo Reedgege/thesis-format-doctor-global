@@ -42,7 +42,7 @@ E) LaTeX 模板 (.tex)                 ← 从 geometry / setlength 等命令推
 ## 三、目录结构
 
 ```
-thesis-format-doctor-global/
+paperformatpro/
 ├── requirements.txt
 ├── README.md
 ├── VERSION                     # 版本号单一来源（运行时与 exe 属性都读它）
@@ -168,7 +168,7 @@ GUI 需本机带 Tk（_tkinter）。**界面默认英文**，右上角可一键�
 
 - **依赖**：仅 `python-docx`（见 `requirements.txt`）；GUI 用标准库 `tkinter`；
   离线激活验签为纯标准库 Ed25519（`src/license/ed25519_verify.py`），**无第三方加密依赖**。
-- **构建**：`python build.py` 调用 Nuitka 把整个 `src` 包编译成原生「文件夹版」（Windows/Linux 为 `dist/thesis-format-doctor-global/`，macOS 为 `.app`）。
+- **构建**：`python build.py` 调用 Nuitka 把整个 `src` 包编译成原生「文件夹版」（Windows/Linux 为 `dist/paperformatpro/`，macOS 为 `.app`）。
   - Windows 额外用 NSIS 打安装包：`makensis /DVERSION=x.y.z installer.nsi`（需先装 NSIS；界面全英文）。
   - 卖家发码器：统一发码器 `reedcode_unified.py` 仅存卖家本机（`_signing_keys/`），
     **不参与 CI、不随产品分发**（私钥绝不入库）。
