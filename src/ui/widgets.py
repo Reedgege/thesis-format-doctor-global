@@ -176,20 +176,30 @@ class RoundCard(tk.Frame):
         r = self._radius
         if self._shadow:
             # 投影：同一圆角矩形下移 2px，用比背景略深的色画在卡片下面一层。
-            # 只露底部 2px + 两侧极窄，观感上就是一层轻投影。
+            # 只露底部 2px + 两侧极窄，观感上就是一层轻投影。x 方向与主体对齐（1, w-1）。
             sh = rounded_points(1, 3, w - 1, h - 1 + 2, r)
             cv.create_polygon(sh, fill=theme.SHADOW, outline=theme.SHADOW,
                               tags="card")
-        pts = rounded_points(0.5, 0.5, w - 0.5, h - 0.5, r)
+        # v2.3.11：边框/填充改用「mat 填充几何」画法。
+        # tkinter Canvas 的 1px polygon outline 在高分屏/窗口缩放后呈现「断断续续」
+        # 的折线感（用户实测：最大化后卡片顶边、按钮边框均出现虚线）。原因是：
+        # ① 圆角由大量短折线逼近，描边=沿折线画 1px 线，接缝处易露底；
+        # ② 描边中心压在画布边界 0.5px 处，顶/左边会被画布边缘裁掉半像素。
+        # 解法：先画一块边框色的整圆角矩形，再叠一块内缩 1px 的填充色圆角矩形，
+        # 两者之间的 1px 环就是连续实心的边框；整体从 (1,1) 开始，边线不被裁。
         if self._dashed:
-            # 虚线圈：填充走多边形，描边走一条**首尾闭合**的虚线折线
-            # （tkinter 的 polygon 不支持 dash，所以拆成两笔画）
+            # 虚线投放区保持原视觉（虚线 intentionally 是断续的），也内缩 1px。
+            pts = rounded_points(1.5, 1.5, w - 1.5, h - 1.5, r)
             cv.create_polygon(pts, fill=self._fill, outline="", tags="card")
             cv.create_line(*(list(pts) + pts[:2]), fill=self._border,
                            dash=(5, 4), width=1, tags="card")
         else:
-            cv.create_polygon(pts, fill=self._fill, outline=self._border,
-                              width=1, tags="card")
+            outer = rounded_points(1, 1, w - 1, h - 1, r)
+            cv.create_polygon(outer, fill=self._border, tags="card")
+            inner = rounded_points(
+                2, 2, max(w - 2, 3), max(h - 2, 3), max(r - 1, 1)
+            )
+            cv.create_polygon(inner, fill=self._fill, tags="card")
         cv.tag_lower("card")
 
     # ---------------------------------------------------------------- 对外
@@ -245,6 +255,11 @@ class ScrollArea(tk.Frame):
         self._vsb = ttk.Scrollbar(self, orient="vertical", command=self._cv.yview)
         self._cv.configure(yscrollcommand=self._on_scroll)
         self._cv.pack(side="left", fill="both", expand=True)
+        # v2.3.11：ScrollArea 自己不要根据内部内容要高度。内部内容可能很高，
+        # 若向上传播，主区会要求一个超大高度，把底部页脚/状态栏挤到窗口外——
+        # 这就是"不最大化看不到页脚、最大化才看得到"的根因。关闭传播后，主区
+        # 只拿 pack 分配到的剩余空间，内容再高也只走滚动条。
+        self.pack_propagate(False)
         self.inner = tk.Frame(self._cv, bg=bg)
         self._win = self._cv.create_window(0, 0, window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", self._sync_region)
@@ -367,7 +382,11 @@ class RoundButton(tk.Frame):
     STYLES = {
         # style: (底色, 文字色, 边框色, hover底色)
         "primary": (theme.PRIMARY, "#FFFFFF", theme.PRIMARY, theme.PRIMARY_HOVER),
-        "secondary": (theme.SURFACE, theme.PRIMARY, theme.SECONDARY, theme.PRIMARY_SOFT),
+        # v2.3.11：secondary 改为实心浅底色按钮，不再依赖 1px outline 描边
+        # 来勾边（高分屏下 outline 会呈断断续续的虚线）。fill=PRIMARY_SOFT 是浅薄荷
+        # 底色，border=PRIMARY_SOFT 让 outline 与底色融为一体（只画实心填充几何）；
+        # hover 用更浅的 SURFACE_SOFT 做轻微反馈。
+        "secondary": (theme.PRIMARY_SOFT, theme.PRIMARY, theme.PRIMARY_SOFT, theme.SURFACE_SOFT),
         "ghost": (None, theme.PRIMARY, None, theme.PRIMARY_SOFT),
     }
 
