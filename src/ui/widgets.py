@@ -255,6 +255,8 @@ class ScrollArea(tk.Frame):
     def __init__(self, parent, bg: str = theme.BG):
         super().__init__(parent, bg=bg)
         self._bar_shown = False
+        self._bar_needed = False      # 内容是否溢出（需要滚动）
+        self._hide_timer = None       # 静止隐去计时器
         self._cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0,
                              width=1, height=1)
         self._vsb = ttk.Scrollbar(self, orient="vertical", command=self._cv.yview)
@@ -269,31 +271,70 @@ class ScrollArea(tk.Frame):
         self._win = self._cv.create_window(0, 0, window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", self._sync_region)
         self._cv.bind("<Configure>", self._relayout)
+        # v2.3.15：滚动条"静止隐去"——内容溢出时也不常驻，指针进入区域或发生滚动
+        # 才显形，停手约 1.4s 后自动消失，整页更干净（商业软件质感）。
+        self._cv.bind("<Enter>", self._on_area_enter)
+        self._cv.bind("<Leave>", self._on_area_leave)
+        self._vsb.bind("<Enter>", self._on_area_enter)
+        self._vsb.bind("<Leave>", self._on_area_leave)
 
     # ---------------------------------------------------------------- 滚动条
+    # `_bar_needed` 由 `_relayout` 按"内容是否高于视口"维护（与当前滚动位置无关），
+    # 这样即便滚到最底、fraction 显示 last>=1，hover 仍能正确显形。
     def _on_scroll(self, first, last):
-        try:
-            need = not (float(first) <= 0.0 and float(last) >= 1.0)
-        except Exception:
-            need = True
-        self._set_bar(need)
+        """画布滚动（滚轮 / 拖动 / 程序 yview）→ 同步滑块位置，并触发显形。"""
         try:
             self._vsb.set(first, last)
         except Exception:
             pass
+        if self._bar_needed:
+            self._reveal_bar()
 
-    def _set_bar(self, show: bool):
-        if show == self._bar_shown:
-            return
-        self._bar_shown = show
-        try:
-            if show:
+    def _reveal_bar(self):
+        """内容溢出时：显形（hover/滚动活动期间），并预约静止后自动隐去。"""
+        self._cancel_hide()
+        if not self._bar_shown:
+            self._bar_shown = True
+            try:
                 # before=self._cv：保证滚动条在 canvas 右侧，而不是被挤到下面
                 self._vsb.pack(side="right", fill="y", before=self._cv)
-            else:
-                self._vsb.pack_forget()
+            except Exception:
+                pass
+        self._schedule_hide()
+
+    def _schedule_hide(self):
+        self._cancel_hide()
+        # 停手后约 1.4s 隐去；测试不跑主循环，计时器不会在用例中途触发，故不影响断言。
+        self._hide_timer = self.after(1400, self._hide_bar)
+
+    def _hide_bar(self):
+        self._cancel_hide()
+        if not self._bar_shown:
+            return
+        self._bar_shown = False
+        try:
+            self._vsb.pack_forget()
         except Exception:
             pass
+
+    def _cancel_hide(self):
+        t = getattr(self, "_hide_timer", None)
+        if t is not None:
+            try:
+                self.after_cancel(t)
+            except Exception:
+                pass
+            self._hide_timer = None
+
+    def _on_area_enter(self, _e=None):
+        """指针进入滚动区（含其上的滚动条）——内容溢出则显形。"""
+        if self._bar_needed:
+            self._reveal_bar()
+
+    def _on_area_leave(self, _e=None):
+        """指针离开整片区域——预约隐去；移到滚动条上会触发其 Enter 取消。"""
+        if self._bar_needed:
+            self._schedule_hide()
 
     # ---------------------------------------------------------------- 布局
     def _sync_region(self, _e=None):
@@ -314,6 +355,10 @@ class ScrollArea(tk.Frame):
             natural = self.inner.winfo_reqheight()
             # 宽度跟随视口；高度至少撑满视口，让外层 grid 能把两栏拉成等高
             self._cv.itemconfigure(self._win, width=w, height=max(natural, h))
+            # 内容高于视口 → 需要滚动（与当前滚动位置无关）；装得下则隐藏滚动条。
+            self._bar_needed = natural > h
+            if not self._bar_needed and self._bar_shown:
+                self._hide_bar()
         except Exception:
             pass
         self._sync_region()

@@ -330,13 +330,11 @@ def test_footer_and_statusbar_visible_within_window(ui):
         if not isinstance(w, tk.Label):
             continue
         t = str(w.cget("text"))
-        if "hi@reedskill.com" in t:
-            found["email"] = w
-        elif "reedskill.com" in t:
+        if "paperformatpro.com" in t:
             found["site"] = w
         elif "PaperFormat Pro" in t:
             found["statusbar"] = w
-    for name in ("email", "site", "statusbar"):
+    for name in ("site", "statusbar"):
         assert name in found, "找不到 %s 标签" % name
         y = found[name].winfo_rooty() - top
         assert 0 < y < win_h, "%s 在可视区外（y=%d 窗口高=%d）" % (name, y, win_h)
@@ -357,8 +355,10 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     assert lw > 100 and lh > 100 and rh > 100
     # 等宽仍成立（列宽由窗口决定，与 sticky 无关）
     assert abs(lw - rw) <= 3, "两栏宽度不等：%d vs %d" % (lw, rw)
-    # 右栏不再被强拉到与左栏等高：允许天然比左栏矮，但绝不能比左栏还高
-    assert rh <= lh + 3, "右栏竟比左栏还高：%d vs %d" % (rh, lh)
+    # 右栏按自身自然高度、贴顶，不随左栏展开被拽高。允许右栏天然比左栏略高/略矮
+    # （两卡内容不同，且 v2.3.15 删掉了 Advanced 折叠区的提示行后左卡略矮），
+    # 真正要钉死的是"展开左栏时右栏不被拉高"（见下方 toggle 断言）。
+    assert rh <= lh + 30, "右栏异常高于左栏：%d vs %d" % (rh, lh)
     # 关键回归点：展开左栏 Advanced，右栏高度必须稳定（不跟着涨）
     right_before = ui._right_card._cv.winfo_height()
     left_before = ui._left_card._cv.winfo_height()
@@ -430,7 +430,12 @@ def test_set_lang_keeps_content_below_header(ui):
 
 # ------------------------------------------------------------------ 滚动区
 def test_scroll_area_shows_bar_only_when_needed(_tk_session):
-    """滚动条只在内容超出时出现，且真的能滚、能回顶。"""
+    """滚动条只在内容超出时出现，且真的能滚、能回顶。
+
+    v2.3.15 起滚动条"静止隐去"：内容溢出时默认隐藏，hover/滚动才显形，停手后
+    自动消失。本用例断言：① 内容超高 → ``_bar_needed`` 为真；② 模拟 hover
+    （``_on_area_enter``）→ 滚动条显形；③ 仍真能滚、能回顶。
+    """
     import tkinter as tk
 
     from src.ui import theme
@@ -445,7 +450,11 @@ def test_scroll_area_shows_bar_only_when_needed(_tk_session):
             tk.Label(sa.inner, text="line %02d" % i, bg=theme.BG).pack(anchor="w")
         win.update_idletasks()
         win.update()
-        assert sa._bar_shown is True, "内容超高却没出滚动条"
+        # 内容溢出 → 需要滚动；静止时滚动条隐去，hover 才显形
+        assert sa._bar_needed is True, "内容超高却标记为无需滚动"
+        sa._on_area_enter()                      # 模拟指针进入滚动区
+        assert sa._bar_shown is True, "hover 后仍无滚动条"
+        sa._on_area_leave()                      # 离开后进入静止隐去（计时器仅主循环触发）
 
         before = sa._cv.yview()[0]
         sa._cv.yview_scroll(3, "units")

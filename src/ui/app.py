@@ -554,8 +554,9 @@ class App:
                                ("active", theme.SELECT_BORDER_FOCUS)],
                   fieldbackground=[("focus", theme.SURFACE),
                                    ("active", theme.SURFACE_SOFT)])
-        # 滚动条：青绿点缀（clam 主题改色生效）；装得下时滚动条本就隐藏，
-        # 这里只定色，是否显示由 ScrollArea._set_bar 控制。
+        # 滚动条：极细、浅灰、无上下三角箭头；装得下时本就隐藏，溢出时由
+        # ScrollArea 在 hover/滚动时才显形（静止隐去）。clam 主题下 width 与去箭头
+        # 布局才生效。
         style.configure("TScrollbar",
                         background=theme.SCROLLBAR_THUMB,
                         troughcolor=theme.SCROLLBAR_TROUGH,
@@ -567,6 +568,11 @@ class App:
         style.map("TScrollbar",
                   background=[("active", theme.SCROLLBAR_THUMB_HOVER),
                               ("pressed", theme.SCROLLBAR_THUMB_HOVER)])
+        # v2.3.15：竖向滚动条专门定宽 + 去掉箭头元素，避免"老式 Windows 滑块"。
+        style.configure("Vertical.TScrollbar", width=8)
+        style.layout("Vertical.TScrollbar",
+                     [("Scrollbar.trough",
+                       {"children": [("Scrollbar.thumb", {"expand": 1})]})])
         # 下拉弹出的列表：白底深字，选中行主色高亮（option_add 全局生效，一次即可；
         # 语言切换时 _rebuild 处的同名 option_add 会再兜底）。
         self.root.option_add("*TCombobox*Listbox.background", theme.SURFACE)
@@ -803,22 +809,18 @@ class App:
                  font=self.F["F_HELP"]).pack(side="right")
 
     def _build_footer(self):
-        """页脚：左邮箱 / 右官网 —— 简化到两项，保持安静小字。
+        """页脚：极简，最底部只留官网 —— 邮箱已收进 Help / About。
 
-        规格明确「页脚只此二项」（品牌口径只留官网与邮箱，不出现微信 / 公众号 /
-        小程序）。去掉了标语行与分隔线，进一步降噪。
+        v2.3.15：状态栏左侧已是「PaperFormat Pro · 版本」、右侧是就绪隐私提示，
+        页脚进一步收敛为"只剩官网"一行小字，整页更有商业成品感（不再像开发工具）。
+        品牌口径铁律：只出现官网与邮箱，绝不出现微信 / 公众号 / 小程序。
         """
         F = self.F
         footer = tk.Frame(self.root, bg=theme.BG)
         footer.pack(side="bottom", fill="x", padx=theme.PAGE_PAD,
                     pady=(0, theme.FOOTER_PAD_Y))
-        mail = tk.Label(footer, text="✉  " + self.tr("footer_email"), bg=theme.BG,
-                        fg=theme.TEXT_2, font=F["F_FOOT"], cursor="hand2")
-        mail.pack(side="left")
-        mail.bind("<Button-1>",
-                  lambda e: webbrowser.open("mailto:" + i18n.BRAND_EMAIL))
-        site = tk.Label(footer, text="◎   " + self.tr("footer_site"), bg=theme.BG,
-                        fg=theme.TEXT_2, font=F["F_FOOT"], cursor="hand2")
+        site = tk.Label(footer, text=self.tr("footer_site"), bg=theme.BG,
+                        fg=theme.TEXT_3, font=F["F_FOOT"], cursor="hand2")
         site.pack(side="right")
         site.bind("<Button-1>", lambda e: webbrowser.open(i18n.BRAND_SITE_URL))
 
@@ -1095,7 +1097,7 @@ class App:
         self._adv_open = False
         self._spacer(parent)
 
-        bar = RoundCard(parent, radius=10, fill=theme.SURFACE,
+        bar = RoundCard(parent, radius=theme.CARD_RADIUS, fill=theme.SURFACE,
                         border=theme.BORDER, shadow=False, padx=12, pady=6)
         bar.pack(fill="x", pady=(theme.FIELD_GAP, 0))
         self._adv_card = bar
@@ -1111,11 +1113,6 @@ class App:
                   bg=theme.SURFACE).pack(side="left")
         tk.Label(hdr, text=self.tr("adv_label"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_LABEL"], cursor="hand2").pack(side="left", padx=(8, 0))
-
-        self._adv_hint = tk.Label(bar.inner, text=self.tr("adv_hint"),
-                                  bg=theme.SURFACE, fg=theme.TEXT_3,
-                                  font=F["F_HELP"], anchor="w", cursor="hand2")
-        self._adv_hint.pack(fill="x", padx=(theme.BADGE_SIZE + 8, 0), pady=(2, 0))
 
         self._adv_body = tk.Frame(bar.inner, bg=theme.SURFACE)
 
@@ -1171,7 +1168,7 @@ class App:
                      command=self._pick_ai_config, style="secondary",
                      font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
 
-        for w in (hdr, self._adv_chev, self._adv_hint):
+        for w in (hdr, self._adv_chev):
             w.bind("<Button-1>", lambda e: self._toggle_advanced())
 
     def _toggle_advanced(self):
@@ -1181,12 +1178,9 @@ class App:
             if self._adv_open:
                 self._adv_body.pack(fill="x", pady=(theme.SECTION_GAP, 0))
                 self._adv_chev.config(text="▾")
-                self._adv_hint.pack_forget()
             else:
                 self._adv_body.pack_forget()
                 self._adv_chev.config(text="▸")
-                self._adv_hint.pack(fill="x", padx=(theme.BADGE_SIZE + 8, 0),
-                                    pady=(2, 0))
         except Exception:
             pass
         # 展开/收起改变了左卡内容高度 —— 必须主动重新测量，
@@ -1306,7 +1300,7 @@ class App:
         IconBadge(row, "shield", size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
                   fill=theme.PRIMARY_SOFT).pack(side="left")
         tk.Label(row, text=self.tr("trust_title"), bg=theme.SURFACE_SOFT,
-                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"],
+                 fg=theme.TEXT_2, font=F["F_LABEL"],
                  anchor="w").pack(side="left", padx=(8, 0))
         cap = tk.Canvas(trust.inner, width=30, height=26, bg=theme.SURFACE_SOFT,
                         highlightthickness=0, bd=0)

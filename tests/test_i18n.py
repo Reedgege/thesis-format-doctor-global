@@ -4,7 +4,7 @@
 1. 海外版**默认英文**，语言偏好可持久化、可切换，非法值回退英文；
 2. 中英词条必须**一一对应**（少一条就会在界面上露出 key 或英文串）；
 3. **品牌口径铁律**：界面文案里不得出现微信 / 公众号 / 小程序（海外用户不用），
-   只允许官网 reedskill.com 与邮箱 hi@reedskill.com。
+   只允许官网 paperformatpro.com 与邮箱 hi@paperformatpro.com。
 """
 
 from __future__ import annotations
@@ -131,14 +131,12 @@ def test_no_wechat_or_miniapp_anywhere():
 
 
 def test_brand_contact_is_site_and_email_only():
-    assert i18n.BRAND_EMAIL == "hi@reedskill.com"
-    assert i18n.BRAND_SITE == "reedskill.com"
-    # v2.2.0：页脚按设计规格只留三项（邮箱 / 官网 / 标语），原来的 footer_line1/2 已移除
+    assert i18n.BRAND_EMAIL == "hi@paperformatpro.com"
+    assert i18n.BRAND_SITE == "paperformatpro.com"
+    assert i18n.BRAND_SITE_URL == "https://paperformatpro.com"
+    # 官网（footer_site）是唯一留在主窗口底部的内容；邮箱只出现在 Help / About。
     for lang in i18n.LANGS:
-        footer = (i18n.t(lang, "footer_email") + i18n.t(lang, "footer_site")
-                  + i18n.t(lang, "footer_tagline"))
-        assert "hi@reedskill.com" in footer
-        assert "reedskill.com" in footer
+        assert i18n.BRAND_SITE in i18n.t(lang, "footer_site")
 
 
 # ------------------------------------------------------------------ 问卷显示层

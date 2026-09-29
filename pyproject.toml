@@ -10,7 +10,7 @@ keywords = ["docx", "thesis", "format-checker", "APA", "MLA", "Chicago", "IEEE",
 dependencies = ["python-docx>=1.1.0"]
 
 [project.urls]
-Homepage = "https://reedskill.com"
+Homepage = "https://paperformatpro.com"
 Repository = "https://github.com/Reedgege/thesis-format-doctor-global"
 
 [build-system]

@@ -6,7 +6,7 @@
   （tkinter 只在 ``fonts.py`` 里用于构造真正的 Font 对象）。
 - 所有面向用户的字符串集中在本模块，GUI 只按 key 取词 —— 禁止在界面代码里散落硬编码，
   否则加一种语言就要满仓库找字符串。
-- **品牌口径（海外版铁律）**：只出现官网 ``reedskill.com`` 与邮箱 ``hi@reedskill.com``。
+- **品牌口径（海外版铁律）**：只出现官网 ``paperformatpro.com`` 与邮箱 ``hi@paperformatpro.com``。
   **绝不出现微信 / 公众号 / 小程序**（海外用户不用这些，老板 2026-09-11 明确要求）；
    国内版遗留的第三方联系入口（二维码 / 客服号）在搬布局时一并剔除。
 
@@ -30,9 +30,9 @@ SETTINGS_FILE = Path.home() / ".paperformatpro" / "settings.json"
 # v2.3.10 重命名：旧隐藏目录 .thesis-format-doctor-global 一次性迁移回退（见 license.py）。
 SETTINGS_FILE_LEGACY = Path.home() / ".thesis-format-doctor-global" / "settings.json"
 
-BRAND_EMAIL = "hi@reedskill.com"
-BRAND_SITE = "reedskill.com"
-BRAND_SITE_URL = "https://reedskill.com"
+BRAND_EMAIL = "hi@paperformatpro.com"
+BRAND_SITE = "paperformatpro.com"
+BRAND_SITE_URL = "https://paperformatpro.com"
 BRAND_NAME = "ReedSkill"
 
 
@@ -332,8 +332,8 @@ STRINGS: dict = {
         "btn_fix_n": "Fix %s issues  ›",
         "btn_fix_one": "Fix 1 issue  ›",
         "btn_review": "Review changes",
-        "trust_title": "Academic quality you can trust",
-        "trust_body": ("Accurate, reliable, and built for researchers and students worldwide."),
+        "trust_title": "Built for academic work",
+        "trust_body": ("Formatting rules are applied locally and reviewed before changes are made."),
         "btn_save_report": "Save report",
         "btn_export_ai": "Export AI template",
         "btn_activate": "Activation",
@@ -342,9 +342,9 @@ STRINGS: dict = {
         #     点开才展示定价弹窗；定价/权益逻辑本身在 license 层，UI 只做呈现） ——
         "trial_fix_one": "Trial · %s check left",
         "trial_fix_many": "Trial · %s checks left",
-        "trial_none": "Trial · no checks left",
+        "trial_none": "Your trial is complete",
         "trial_licensed": "Licensed · unlimited checks",
-        "btn_upgrade": "Upgrade ›",
+        "btn_upgrade": "Upgrade to continue →",
         "up_title": "Upgrade to continue",
         "up_subtitle": "Choose the plan that fits your workflow.",
         "up_plan_onetime": "One-time",
@@ -392,7 +392,7 @@ STRINGS: dict = {
                                 "to export it as a file."),
 
         # —— 状态栏 ——
-        "bar_left": "PaperFormat Pro v%s",
+        "bar_left": "PaperFormat Pro · v%s",
         "bar_idle": "Ready · Your thesis never leaves your computer",
         "bar_checking": "Checking formatting…",
         "bar_fixing": "Applying format fixes…",
@@ -592,18 +592,18 @@ STRINGS: dict = {
         "btn_fix_n": "修正 %s 个问题  ›",
         "btn_fix_one": "修正 1 个问题  ›",
         "btn_review": "查看改动",
-        "trust_title": "值得信赖的学术品质",
-        "trust_body": "准确、可靠，为全球研究者与学生而做。",
+        "trust_title": "为学术写作而做",
+        "trust_body": "格式规则在本机应用，改动前均经过复核。",
         "btn_save_report": "保存报告",
         "btn_export_ai": "导出 AI 问卷模板",
         "btn_activate": "激活 / 授权",
 
         "trial_fix_one": "试用 · 还剩 %s 次检查",
         "trial_fix_many": "试用 · 还剩 %s 次检查",
-        "trial_none": "试用 · 检查次数已用完",
+        "trial_none": "试用已结束",
         "trial_licensed": "已授权 · 不限次检查",
-        "btn_upgrade": "升级 ›",
-        "up_title": "升级以继续",
+        "btn_upgrade": "升级以继续使用 →",
+        "up_title": "升级以继续使用",
         "up_subtitle": "选择适合你的方案。",
         "up_plan_onetime": "一次买断",
         "up_plan_weekly": "周付",
@@ -644,7 +644,7 @@ STRINGS: dict = {
         "report_summary_generic": "已完成。点「保存报告」导出完整报告。",
         "report_summary_hint": "完整报告不在界面展开 —— 点「保存报告」即可导出为文件。",
 
-        "bar_left": "PaperFormat Pro v%s",
+        "bar_left": "PaperFormat Pro · v%s",
         "bar_idle": "就绪 · 论文始终留在你的电脑上",
         "bar_checking": "正在体检格式…",
         "bar_fixing": "正在应用格式修正…",

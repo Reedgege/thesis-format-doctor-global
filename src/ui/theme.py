@@ -32,10 +32,10 @@ TEXT = "#1A2E33"          # 主文字：深青墨，去蓝，更中性沉稳
 TEXT_2 = "#4A6570"        # 次要文字（helper / 描述）—— 青灰调，与整体调和
 TEXT_3 = "#8CA3A8"        # 三级文字（页脚 / 极弱提示）—— 薄荷灰，弱化但不发蓝
 
-BORDER = "#D2DEDD"       # 卡片 / 控件边框 —— 薄荷灰边框，比旧边框略实、更整齐
-HAIRLINE = "#E0EBEA"      # 字段之间的细分隔线
-INFO_BORDER = "#D2DEDD"   # 信息框边框 —— 与 BORDER 统一
-SHADOW = "#D9E4E3"        # 卡片投影（薄荷调浅灰，轻而不蓝）
+BORDER = "#E5ECEB"       # 卡片 / 控件边框 —— 极浅薄荷灰，近无框的轻层次（v2.3.15 统一调浅）
+HAIRLINE = "#EEF3F2"      # 字段之间的细分隔线（比 BORDER 更浅）
+INFO_BORDER = "#E5ECEB"   # 信息框边框 —— 与 BORDER 统一
+SHADOW = "#E3EBEA"        # 卡片投影（薄荷调浅灰，轻而不蓝）
 
 GOLD = "#A88D4A"          # 可选点缀（克制使用，不做主色）
 SUCCESS = "#2E7D6B"       # 成功 / 已完成 —— 与主色同系青绿
@@ -52,10 +52,10 @@ FIELD_BORDER = "#B8C9C9"  # 下拉式字段的描边 —— 薄荷灰（与整�
 # 仅当 ttk 主题为 clam 时改色生效（app.py 已 theme_use("clam")）。
 # 令牌从主色系派生，不引入杂色，保持学术青绿调统一。
 # ---------------------------------------------------------------------------
-SCROLLBAR_THUMB = "#5BA39D"        # 滑块：主色系中调青绿，纸底上清晰不抢眼
-SCROLLBAR_THUMB_HOVER = "#2E7D76"  # 滑块 hover/按压：再深一档
-SCROLLBAR_TROUGH = BG              # 槽：与纸底同色，滑块浮起
-SCROLLBAR_ARROW = "#FFFFFF"        # 滑块箭头：白，深绿滑块上清晰
+SCROLLBAR_THUMB = "#C2CFCE"        # 滑块：浅灰，纸底上安静不抢眼（极细 / 无箭头 / 静止隐去）
+SCROLLBAR_THUMB_HOVER = "#A6B7B6"  # 滑块 hover/按压：再深一档
+SCROLLBAR_TROUGH = BG              # 槽：与纸底同色，滑块浮起（静止时整体隐形）
+SCROLLBAR_ARROW = BG               # 箭头布局已去除，设同底防露白
 SELECT_BORDER = FIELD_BORDER      # 下拉框静止描边：薄荷灰
 SELECT_BORDER_FOCUS = PRIMARY     # 聚焦描边：主色
 SELECT_ARROW = PRIMARY            # 下拉箭头：主色点缀
