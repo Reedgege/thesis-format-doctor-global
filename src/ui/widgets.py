@@ -194,10 +194,15 @@ class RoundCard(tk.Frame):
             cv.create_line(*(list(pts) + pts[:2]), fill=self._border,
                            dash=(5, 4), width=1, tags="card")
         else:
+            # v2.3.13：边框环由 1px 加粗到 2px。1px 环在缩放屏（125%/150% DPI）下，
+            # 圆角斜段会被系统位图缩放打成虚线/发灰（老板实测左右大卡圆角处仍
+            # 「断断续续」）。2px 环即便被亚像素抗锯齿吃掉半边，仍留 ≥1px 实色，
+            # 圆角连续不再断裂。outer 仍从 (1,1) 起避免顶/左边裁半像素；inner 内缩
+            # 2px、半径 r-2，与 outer 同心，环宽恒为 2px（含圆角）。
             outer = rounded_points(1, 1, w - 1, h - 1, r)
             cv.create_polygon(outer, fill=self._border, tags="card")
             inner = rounded_points(
-                2, 2, max(w - 2, 3), max(h - 2, 3), max(r - 1, 1)
+                3, 3, max(w - 3, 4), max(h - 3, 4), max(r - 2, 1)
             )
             cv.create_polygon(inner, fill=self._fill, tags="card")
         cv.tag_lower("card")

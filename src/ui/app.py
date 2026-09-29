@@ -610,14 +610,7 @@ class App:
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1, uniform="half", minsize=380)
         main.columnconfigure(1, weight=1, uniform="half", minsize=380)
-        # v2.3.12：用一行通栏细线把两张主卡的顶边「接起来」，消除最大化后顶部出现
-        # 「两个断开的小灰杠」的观感（老板 2026-09-28 反馈：要么全贯通、要么没有，
-        # 断断续续最难受）。row0 = 1px 顶线（跨两列、横跨 CARD_GAP），row1 = 两卡；
-        # 顶线用 theme.BORDER，与卡片 1px 边框同色，连成一条连续顶边。
-        main.rowconfigure(0, weight=0, minsize=1)
-        main.rowconfigure(1, weight=1)
-        self._top_line = tk.Frame(main, bg=theme.BORDER, height=1)
-        self._top_line.grid(row=0, column=0, columnspan=2, sticky="ew")
+        main.rowconfigure(0, weight=1)
         self._main_frame = main
         # 两栏宽度只由窗口决定（见 _sync_columns），否则卡片里的自动换行会和 grid
         # 的列宽分配互相追着跑。
