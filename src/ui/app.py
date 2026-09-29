@@ -603,7 +603,6 @@ class App:
         self._build_backdrop()
         self._build_footer()
         self._build_statusbar()
-        self._build_cta_band()
         self._build_header()
 
         # 主体：可滚动区。窗口比内容矮时（1366×768 / 1600×900 笔记本）出滚动条，
@@ -846,25 +845,6 @@ class App:
                                   font=F["F_FOOT"])
         self.bar_right.pack(side="right")
 
-    # ------------------------------------------------------------ 底部 CTA 条
-    def _build_cta_band(self):
-        """底部辅助动作条：保存报告 / 导出 AI 模板。
-
-        重设计（2026-09-26）：主/次 CTA 已移到左卡输入区底部（紧贴操作区），
-        底部只保留两个次要的常驻动作，避免主按钮离输入区太远。
-        """
-        F = self.F
-        band = tk.Frame(self.root, bg=theme.BG)
-        band.pack(side="bottom", fill="x", padx=theme.PAGE_PAD, pady=(8, 10))
-        tk.Frame(band, bg=theme.HAIRLINE, height=1).pack(
-            fill="x", pady=(0, 10))
-        self._aux_row = tk.Frame(band, bg=theme.BG)
-        self._aux_row.pack(fill="x")
-        for text, cmd in ((self.tr("btn_save_report"), self._save_report),
-                          (self.tr("btn_export_ai"), self._export_template)):
-            ttk.Button(self._aux_row, text=text, style="Ghost.TButton",
-                       command=cmd).pack(side="left", padx=(0, 6))
-
     # ------------------------------------------------------------ 左栏
     def _build_left(self, parent):
         """左卡 Your Documents：以「上传论文」为绝对视觉焦点的任务启动器。
@@ -925,6 +905,15 @@ class App:
                                    bg=theme.PRIMARY_SOFT, fg=theme.TEXT_3,
                                    font=F["F_HELP"], cursor="hand2", anchor="center")
         self._paper_sub.pack(fill="x", pady=(1, 0))
+        # v2.3.19：论文投放区的「✕」清除按钮（默认隐藏，选中论文后显示，置于卡片右上角）。
+        # 用 place 固定右上角，不影响 vcol 居中布局；返回 "break" 阻止冒泡到整卡（避免同时触发选文件）。
+        self._paper_clear = tk.Label(drop.inner, text="✕", bg=theme.PRIMARY_SOFT,
+                                     fg=theme.TEXT_3, font=F["F_LABEL"], cursor="hand2")
+        self._paper_clear.place(relx=1.0, rely=0.0, x=-10, y=8, anchor="ne")
+        self._paper_clear.bind("<Button-1>",
+                               lambda e: (self._clear_input("paper"), "break")[-1])
+        self._paper_clear.bind("<Enter>", lambda e: self._paper_clear.config(fg=theme.ERROR))
+        self._paper_clear.bind("<Leave>", lambda e: self._paper_clear.config(fg=theme.TEXT_3))
         for w in (drop.inner, vcol, self._paper_name, self._drop_hint,
                   self._paper_sub, cloud):
             w.bind("<Button-1>", lambda e: self._pick_docx())
@@ -943,16 +932,13 @@ class App:
         # ③ 高级选项折叠区
         self._build_advanced(parent)
 
-        # ④ 主 / 次 CTA 紧贴输入区
+        # ④ 导出 AI 模板：属于「导入配置」的一部分，放在配置区下方（v2.3.19 按钮重组：
+        # 左卡=输入/配置，右卡=操作/结果）。它不是主操作，用次级按钮，不抢视觉主角。
         self._spacer(parent)
-        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
-                                      style="primary", font=F["F_BTN"],
-                                      height=50, icon="search")
-        self._check_btn.pack(fill="x", pady=(0, 8))
-        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
-                                    style="secondary", font=F["F_BTN_S"],
-                                    height=42, icon="wrench")
-        self._fix_btn.pack(fill="x")
+        self._export_btn = RoundButton(parent, self.tr("btn_export_ai"),
+                                       self._export_template, style="secondary",
+                                       font=F["F_BTN_S"], height=42)
+        self._export_btn.pack(fill="x")
 
     def _hairline(self, parent):
         """字段之间的极细分隔线。
@@ -987,7 +973,11 @@ class App:
         row = tk.Frame(parent, bg=theme.SURFACE)
         row.pack(fill="x", pady=(theme.FIELD_GAP, 0))
         if _FIELD_ICONS.get(key):
-            IconBadge(row, _FIELD_ICONS[key], size=theme.BADGE_SIZE,
+            # v2.3.19：Citation style 的引号图标视觉偏重，单独缩小一点，
+            # 让它跟其它字段行图标（paper/bank/code/gear）更协调。
+            badge_size = (theme.BADGE_SIZE - 4
+                          if key == "row_spec_title" else theme.BADGE_SIZE)
+            IconBadge(row, _FIELD_ICONS[key], size=badge_size,
                       bg=theme.SURFACE).pack(side="left")
         tk.Label(row, text=self.tr(key), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_LABEL"]).pack(side="left", padx=(8, 0))
@@ -1063,11 +1053,15 @@ class App:
                 self.spec_key.set(k)
                 return
 
-    def _select_field(self, parent, placeholder_key: str, cmd):
+    def _select_field(self, parent, placeholder_key: str, cmd, on_clear=None):
         """「下拉框外观 + 打开文件行为」的控件。
 
         规格画的是 ``Choose a template ▾`` 这样的下拉；我们的真实动作是打开文件
         对话框（本机离线读模板），所以外观照规格做、行为照实际来：整行可点。
+        v2.3.19：新增 on_clear 回调——传入则在行尾渲染一个小「✕」清除按钮
+        （默认隐藏，选中文件后由 ``_refresh_rows`` 显示）。点 ✕ 即清除该项选择，
+        导入错了不必重开软件，点叉号即可重新导入。返回 ``(lbl, clear_btn)``，
+        clear_btn 未启用时为 ``None``。
         """
         F = self.F
         box = tk.Frame(parent, bg=theme.BG, highlightthickness=1,
@@ -1080,6 +1074,17 @@ class App:
                        fg=theme.TEXT_3, font=F["F_BODY"], anchor="w",
                        cursor="hand2")
         lbl.pack(side="left", fill="x", expand=True)
+        # v2.3.19：小「✕」清除按钮（右侧，默认隐藏；选中后由 _refresh_rows 显示）
+        clear_btn = None
+        if on_clear:
+            clear_btn = tk.Label(inner, text="✕", bg=theme.SURFACE, fg=theme.TEXT_3,
+                                 font=F["F_HELP"], cursor="hand2")
+            clear_btn.pack(side="right", padx=(4, 0))
+            clear_btn.pack_forget()
+            # 返回 "break" 阻止事件冒泡到整行（否则会同时触发「打开文件」）
+            clear_btn.bind("<Button-1>", lambda e: (on_clear(), "break")[-1])
+            clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=theme.ERROR))
+            clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=theme.TEXT_3))
         tk.Label(inner, text="⌄", bg=theme.SURFACE, fg=theme.SECONDARY,
                  font=F["F_BODY"], cursor="hand2").pack(side="right")
 
@@ -1088,7 +1093,7 @@ class App:
 
         for w in (box, inner, lbl):
             w.bind("<Button-1>", _click)
-        return lbl
+        return lbl, clear_btn
 
     def _build_advanced(self, parent):
         """Advanced options 折叠区（默认收起）：问卷 / 导入配置 / AI 辅助。
@@ -1127,15 +1132,17 @@ class App:
         # ① 学校模板（可选）
         self._field_label(self._adv_body, "row_template_title", required=False)
         self._helper(self._adv_body, "row_template_desc")
-        self._tpl_name = self._select_field(self._adv_body, "row_template_placeholder",
-                                            self._pick_template)
+        self._tpl_name, self._tpl_clear = self._select_field(
+            self._adv_body, "row_template_placeholder", self._pick_template,
+            on_clear=lambda: self._clear_input("template"))
         self._spacer(self._adv_body)
         self._hairline(self._adv_body)
         # ② LaTeX 模板（可选）
         self._field_label(self._adv_body, "row_latex_title", required=False)
         self._helper(self._adv_body, "row_latex_desc")
-        self._latex_name = self._select_field(self._adv_body, "row_latex_placeholder",
-                                              self._pick_latex)
+        self._latex_name, self._latex_clear = self._select_field(
+            self._adv_body, "row_latex_placeholder", self._pick_latex,
+            on_clear=lambda: self._clear_input("latex"))
         self._spacer(self._adv_body)
         self._hairline(self._adv_body)
         # ③ 格式问卷
@@ -1180,6 +1187,14 @@ class App:
         self._ai_name = tk.Label(c2, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                  font=F["F_HELP"], anchor="w")
         self._ai_name.pack(fill="x", pady=(3, 0))
+        # v2.3.19：AI 配置行的「✕」清除按钮（默认隐藏，选中后显示，置于 Import 左侧）
+        self._ai_clear = tk.Label(r2, text="✕", bg=theme.SURFACE, fg=theme.TEXT_3,
+                                  font=F["F_HELP"], cursor="hand2")
+        self._ai_clear.pack(side="right", padx=(0, 8))
+        self._ai_clear.pack_forget()
+        self._ai_clear.bind("<Button-1>", lambda e: (self._clear_input("ai"), "break")[-1])
+        self._ai_clear.bind("<Enter>", lambda e: self._ai_clear.config(fg=theme.ERROR))
+        self._ai_clear.bind("<Leave>", lambda e: self._ai_clear.config(fg=theme.TEXT_3))
         # v2.3.10：同上，Import 按钮改为 RoundButton(secondary)，与 Fill in 对齐。
         RoundButton(r2, text=self.tr("btn_ai_import"),
                      command=self._pick_ai_config, style="secondary",
@@ -1276,6 +1291,23 @@ class App:
         _auto_wrap(self.summary_hint, parent, theme.CARD_PAD_X)
         self.summary_lbl.pack_forget()
         self.summary_hint.pack_forget()
+
+        # v2.3.19 按钮重组：操作按钮组（Check / Fix / Save）放在右卡偏下位置。
+        # 理由：用户点击时视线落在按钮「上方」的内容（结果/状态）上，按钮在下方才符合
+        # 「先看结果 → 再操作」的动线；左卡=输入/配置，右卡=操作/结果。
+        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
+                                      style="primary", font=F["F_BTN"],
+                                      height=50, icon="search")
+        self._check_btn.pack(fill="x", pady=(0, 8))
+        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
+                                    style="secondary", font=F["F_BTN_S"],
+                                    height=42, icon="wrench")
+        self._fix_btn.pack(fill="x", pady=(0, 8))
+        self._fix_btn.set_visible(False)
+        self._save_btn = RoundButton(parent, self.tr("btn_save_report"),
+                                     self._save_report, style="secondary",
+                                     font=F["F_BTN_S"], height=42)
+        self._save_btn.pack_forget()
 
         self._spacer(parent)
         self._build_trust_card(parent)
@@ -1412,7 +1444,8 @@ class App:
         fixed         Review changes
         ============  ====================================================
 
-        主/次按钮已移到左卡输入区底部（紧贴操作区）；右卡空状态与进度条互斥显示。
+        主/次按钮已移到右卡操作区底部（Check 在上、Fix 在 results 态显现）；
+        右卡空状态与进度条互斥显示，结果与保存报告同条件显隐。
         """
         tr = self.tr
         paper = bool(self.docx_path.get()) and os.path.isfile(self.docx_path.get())
@@ -1430,15 +1463,17 @@ class App:
         except Exception:
             pass
 
-        # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
-        # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）
+        # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）。
+        # v2.3.19：保存报告按钮与结果同显隐（同属「操作产出」，放在右卡）。
         try:
             if results:
                 self.summary_lbl.pack(fill="x", pady=(3, 0))
                 self.summary_hint.pack(fill="x")
+                self._save_btn.pack(fill="x", pady=(8, 0))
             else:
                 self.summary_lbl.pack_forget()
                 self.summary_hint.pack_forget()
+                self._save_btn.pack_forget()
         except Exception:
             pass
 
@@ -1592,6 +1627,11 @@ class App:
         chosen = bool(cur) and os.path.isfile(cur)
         if chosen and self._phase in ("idle", "error"):
             self._phase = "ready"
+        # v2.3.19：各输入行的「✕」清除按钮——选中才显示，未选隐藏
+        self._set_clear_visible(self._paper_clear, bool(self.docx_path.get()))
+        self._set_clear_visible(self._tpl_clear, bool(self.school_template.get()))
+        self._set_clear_visible(self._latex_clear, bool(self.latex_template.get()))
+        self._set_clear_visible(self._ai_clear, bool(self.ai_json.get()))
         self._sync_ui()
 
     def _invalidate_results(self):
@@ -1769,6 +1809,46 @@ class App:
         if self._checked_path:
             self._invalidate_results()
         self._refresh_rows()
+
+    # ------------------------------------------------------------ ✕ 清除按钮（v2.3.19）
+    def _clear_input(self, which):
+        """论文 / 模板 / LaTeX / AI 配置行的小「✕」清除——导入错了点叉号即清除、可重新导入。
+
+        · 只清掉被点的那一项，保留其它输入；
+        · 但已做的检查/修正结论随对应源消失而失效，故一并作废、回到 ready/初始态
+          （避免「文件已删、结果还显示」的脏状态）；
+        · 全量重来仍走论文空态引导（选论文即回 ready）。
+        """
+        if getattr(self, "_busy", False):
+            return
+        if which == "paper":
+            self.docx_path.set("")
+        elif which == "template":
+            self.school_template.set("")
+        elif which == "latex":
+            self.latex_template.set("")
+        elif which == "ai":
+            self.ai_json.set("")
+        else:
+            return
+        if self._phase in ("results", "fixed"):
+            self._invalidate_results()
+        self._refresh_rows()
+
+    def _set_clear_visible(self, btn, show):
+        """显隐某个「✕」清除按钮（论文用 place 固定右上角，其余用 pack 行尾）。"""
+        if btn is None:
+            return
+        if btn is self._paper_clear:
+            if show:
+                btn.place(relx=1.0, rely=0.0, x=-10, y=8, anchor="ne")
+            else:
+                btn.place_forget()
+        else:
+            if show and btn.winfo_manager() != "pack":
+                btn.pack(side="right", padx=(4, 0))
+            elif not show and btn.winfo_manager() == "pack":
+                btn.pack_forget()
 
     def _pick_docx(self):
         p = filedialog.askopenfilename(title=self.tr("row_paper_title"),

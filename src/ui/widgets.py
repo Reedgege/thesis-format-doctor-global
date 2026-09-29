@@ -221,27 +221,40 @@ class RoundCard(tk.Frame):
 
         先 ``update_idletasks`` 让刚 pack 的子控件把请求尺寸算出来，再测量。
         """
-        try:
-            self.inner.update_idletasks()
-        except Exception:
-            pass
-        try:
-            self._sync_request()
-        except Exception:
-            pass
-        # v2.3.18：``_sync_request`` 刚 ``configure(width=w, height=h)`` 完，画布几何
-        # 可能还没被 Tk 真正落定，紧接着的 ``_relayout`` 用 ``winfo_height()`` 读到的
-        # 仍是旧高度 —— 于是圆角矩形按旧高画、底边框切在新内容（如导入论文后右卡底部
-        # 的信任卡/商业行）上。"再 update_idletasks 一脚"把几何刷出来，保证重画时下沿
-        # 跟着内容长到正确位置。
-        try:
-            self._cv.update_idletasks()
-        except Exception:
-            pass
-        try:
-            self._relayout()
-        except Exception:
-            pass
+        # v2.3.19：某些标签（如 _auto_wrap 管理的信任卡正文）在 refresh 过程中才会
+        # 根据新宽度换行，导致第一次量到的 inner 高度是旧值；只刷新一次的话，圆角矩形
+        # 会按旧高度画，底边框正好切在换行后的新内容上。这里最多迭代 3 次，直到
+        # inner 请求高度稳定，确保卡片下沿真正包住所有内容。
+        last_h = None
+        for _ in range(3):
+            try:
+                self.inner.update_idletasks()
+            except Exception:
+                pass
+            try:
+                cur_h = self.inner.winfo_reqheight()
+            except Exception:
+                cur_h = None
+            try:
+                self._sync_request()
+            except Exception:
+                pass
+            # v2.3.18：``_sync_request`` 刚 ``configure(width=w, height=h)`` 完，画布几何
+            # 可能还没被 Tk 真正落定，紧接着的 ``_relayout`` 用 ``winfo_height()`` 读到的
+            # 仍是旧高度 —— 于是圆角矩形按旧高画、底边框切在新内容（如导入论文后右卡底部
+            # 的信任卡/商业行）上。"再 update_idletasks 一脚"把几何刷出来，保证重画时下沿
+            # 跟着内容长到正确位置。
+            try:
+                self._cv.update_idletasks()
+            except Exception:
+                pass
+            try:
+                self._relayout()
+            except Exception:
+                pass
+            if cur_h is not None and cur_h == last_h:
+                break
+            last_h = cur_h
 
 
 # ---------------------------------------------------------------------------
