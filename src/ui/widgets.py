@@ -229,6 +229,15 @@ class RoundCard(tk.Frame):
             self._sync_request()
         except Exception:
             pass
+        # v2.3.18：``_sync_request`` 刚 ``configure(width=w, height=h)`` 完，画布几何
+        # 可能还没被 Tk 真正落定，紧接着的 ``_relayout`` 用 ``winfo_height()`` 读到的
+        # 仍是旧高度 —— 于是圆角矩形按旧高画、底边框切在新内容（如导入论文后右卡底部
+        # 的信任卡/商业行）上。"再 update_idletasks 一脚"把几何刷出来，保证重画时下沿
+        # 跟着内容长到正确位置。
+        try:
+            self._cv.update_idletasks()
+        except Exception:
+            pass
         try:
             self._relayout()
         except Exception:

@@ -95,7 +95,7 @@ ICON_NAME_MAP = {
     "code": "latex_template",       # LaTeX template 字段行
     "latex": "latex_template",
     "gear": "advanced_options",     # Advanced options 折叠条标题
-    "sliders": None,                # Review & Fix 暂无对应 PNG，保留自绘
+    "sliders": "review_and_fix",    # Review & Fix 标题（用户补生成的 PNG）
     # 顶部隐私 / 右侧信任区
     "thesis_local_privacy": "thesis_local_privacy",  # 顶部 "Your thesis never leaves your computer"
     "built_academic": "built_academic",  # 右卡信任卡片 "Built for academic work"
@@ -119,6 +119,7 @@ ICON_DEFAULT_SIZE = {
     "import_config": 26,
     "thesis_local_privacy": 22,
     "built_academic": 26,
+    "review_and_fix": 26,
     "btn_check_formatting": 18,
     "btn_fix_issues": 18,
 }

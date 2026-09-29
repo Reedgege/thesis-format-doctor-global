@@ -881,7 +881,7 @@ class App:
 
         head = tk.Frame(parent, bg=theme.SURFACE)
         head.pack(fill="x")
-        IconBadge(head, "doc", size=theme.BADGE_SIZE + 8,
+        IconBadge(head, "doc", size=theme.BADGE_SIZE + 6,
                   bg=theme.SURFACE).pack(side="left")
         htxt = tk.Frame(head, bg=theme.SURFACE)
         htxt.pack(side="left", padx=(10, 0), fill="x", expand=True)
@@ -1217,7 +1217,7 @@ class App:
         head.pack(fill="x")
         trow = tk.Frame(head, bg=theme.SURFACE)
         trow.pack(side="left")
-        IconBadge(trow, "sliders", size=theme.BADGE_SIZE + 8,
+        IconBadge(trow, "sliders", size=theme.BADGE_SIZE + 6,
                   bg=theme.SURFACE).pack(side="left")
         tk.Label(trow, text=self.tr("right_title"), bg=theme.SURFACE,
                  fg=theme.TEXT, font=F["F_CARD_HDR"], anchor="w").pack(

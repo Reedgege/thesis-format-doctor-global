@@ -105,7 +105,7 @@ MARK_RADIUS = 12       # 方块圆角
 MARK_BG = PRIMARY_HOVER   # 品牌方块底色（取主色深色，青蓝）
 MARK_FG = "#FFFFFF"       # 学士帽剪影
 
-BADGE_SIZE = 26        # 字段行 / 卡片标题前的小圆徽标直径
+BADGE_SIZE = 22        # 字段行 / 卡片标题前的小圆徽标直径（v2.3.18：由 26 调小，图标更精致不抢字）
 HAIRLINE_PAD = 4       # 字段之间细线的上下留白
 STEP_SIZE = 26         # 步进圆点直径（横排 ① Prepare —— ② Check —— ③ Fix）
 CARD_REQ_W = 420       # 圆角卡片对外发布的宽度请求上限（防 grid 与自动换行互相追着跑）
