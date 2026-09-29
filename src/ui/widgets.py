@@ -24,6 +24,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
+from . import icon_loader
 from . import theme
 
 
@@ -459,6 +460,7 @@ class RoundButton(tk.Frame):
         self._font = font
         self._text = text
         self._icon = icon
+        self._photo = None
         self._command = command
         self._enabled = True
         self._hover = False
@@ -525,8 +527,18 @@ class RoundButton(tk.Frame):
                     tw = tkfont.Font(font=self._font).measure(self._text)
                 except Exception:
                     tw = len(self._text) * 8
-                draw_icon(cv, self._icon, cx - tw / 2.0 - 15, cy, 16, fg, 2)
-                cx += 8
+                # v2.3.17：优先用用户准备的 PNG 图标；没有则回退自绘。
+                photo = icon_loader.load_icon(self._icon)
+                if photo:
+                    self._photo = photo
+                    # 图标中心放在文字左侧；图片自身已带正确颜色（透明底）
+                    ix = cx - tw / 2.0 - 12
+                    cv.create_image(ix, cy, image=photo, anchor="center",
+                                    tags="icon")
+                    cx += 6
+                else:
+                    draw_icon(cv, self._icon, cx - tw / 2.0 - 15, cy, 16, fg, 2)
+                    cx += 8
             cv.create_text(cx, cy, text=self._text, fill=fg,
                            font=self._font, width=max(40, w - 2 * self._padx))
         except Exception:
@@ -893,6 +905,7 @@ class IconBadge(tk.Canvas):
         self._icon = icon
         self._fill = fill
         self._fg = fg
+        self._photo = None
         self.draw()
 
     def draw(self):
@@ -901,6 +914,16 @@ class IconBadge(tk.Canvas):
         except Exception:
             return
         s = self._size
+        # v2.3.17：优先用用户准备的 PNG 图标；找不到或加载失败再回退自绘。
+        try:
+            photo = icon_loader.load_icon(self._icon, size=s)
+            if photo:
+                self._photo = photo
+                self.create_image(s / 2.0, s / 2.0, image=photo,
+                                  anchor="center", tags="img")
+                return
+        except Exception:
+            pass
         pad = 0.5
         self.create_oval(pad, pad, s - pad, s - pad, fill=self._fill,
                          outline=self._fill, width=1)

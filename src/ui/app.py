@@ -135,10 +135,12 @@ _SPEC_DISPLAY = {"APA": "APA 7th edition"}
 def _spec_display(key: str) -> str:
     return _SPEC_DISPLAY.get(key, key)
 
-# 字段行左侧的小圆徽标用的线描图标（设计稿每个字段前都有一枚，见 widgets.draw_icon）
+# 字段行左侧的小圆徽标：v2.3.17 起由 IconBadge 内部自动查找对应 PNG 图片；
+# 这里的名字仍是设计稿线描图标名，映射表在 src/ui/icon_loader.ICON_NAME_MAP。
+# row_paper_title 单独用 "paper"，以便与左卡大标题 "doc" -> your_documents 区分。
 _FIELD_ICONS = {
     "row_spec_title": "quote",
-    "row_paper_title": "doc",
+    "row_paper_title": "paper",
     "row_template_title": "bank",
     "row_latex_title": "code",
 }
@@ -781,7 +783,9 @@ class App:
 
         # —— 隐私声明：单行，保持「安静」（不再压第二行小字）——
         privacy = tk.Frame(cv, bg=theme.BG)
-        IconBadge(privacy, "shield", size=theme.BADGE_SIZE, bg=theme.BG).pack(side="left")
+        # v2.3.17：顶部隐私提示改用用户准备的「盾牌+电脑」PNG 图标。
+        IconBadge(privacy, "thesis_local_privacy", size=theme.BADGE_SIZE,
+                  bg=theme.BG).pack(side="left")
         tk.Label(privacy, text=self.tr("privacy_line"), bg=theme.BG, fg=theme.TEXT_2,
                  font=F["F_SMALL_B"]).pack(side="left", padx=(8, 0))
 
@@ -1139,8 +1143,13 @@ class App:
         r1.pack(fill="x", pady=(2, 7))
         c1 = tk.Frame(r1, bg=theme.SURFACE)
         c1.pack(side="left", fill="x", expand=True)
-        tk.Label(c1, text=self.tr("row_questionnaire_title"), bg=theme.SURFACE,
-                 fg=theme.TEXT, font=F["F_SUBTITLE"], anchor="w").pack(fill="x")
+        qhead = tk.Frame(c1, bg=theme.SURFACE)
+        qhead.pack(fill="x")
+        IconBadge(qhead, "questionnaire", size=theme.BADGE_SIZE,
+                  bg=theme.SURFACE).pack(side="left")
+        tk.Label(qhead, text=self.tr("row_questionnaire_title"), bg=theme.SURFACE,
+                 fg=theme.TEXT, font=F["F_SUBTITLE"], anchor="w").pack(
+                     side="left", padx=(8, 0), fill="x", expand=True)
         tk.Label(c1, text=self.tr("row_questionnaire_desc"), bg=theme.SURFACE,
                  fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
         self._q_name = tk.Label(c1, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
@@ -1159,8 +1168,13 @@ class App:
         r2.pack(fill="x", pady=(0, 2))
         c2 = tk.Frame(r2, bg=theme.SURFACE)
         c2.pack(side="left", fill="x", expand=True)
-        tk.Label(c2, text=self.tr("row_ai_title"), bg=theme.SURFACE, fg=theme.TEXT,
-                 font=F["F_SUBTITLE"], anchor="w").pack(fill="x")
+        ahead = tk.Frame(c2, bg=theme.SURFACE)
+        ahead.pack(fill="x")
+        IconBadge(ahead, "import_config", size=theme.BADGE_SIZE,
+                  bg=theme.SURFACE).pack(side="left")
+        tk.Label(ahead, text=self.tr("row_ai_title"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_SUBTITLE"], anchor="w").pack(
+                     side="left", padx=(8, 0), fill="x", expand=True)
         tk.Label(c2, text=self.tr("row_ai_desc"), bg=theme.SURFACE,
                  fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
         self._ai_name = tk.Label(c2, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
@@ -1308,15 +1322,13 @@ class App:
         trust.pack(fill="x", pady=(theme.SECTION_GAP, 0))
         row = tk.Frame(trust.inner, bg=theme.SURFACE_SOFT)
         row.pack(fill="x")
-        IconBadge(row, "shield", size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
+        # v2.3.17：用用户准备的「盾牌+学士帽」PNG 替换原来的 shield 自绘小徽标，
+        # 并去掉右侧冗余的单独 cap 图标（built_academic 图片已包含学士帽元素）。
+        IconBadge(row, "built_academic", size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
                   fill=theme.PRIMARY_SOFT).pack(side="left")
         tk.Label(row, text=self.tr("trust_title"), bg=theme.SURFACE_SOFT,
                  fg=theme.TEXT_2, font=F["F_LABEL"],
                  anchor="w").pack(side="left", padx=(8, 0))
-        cap = tk.Canvas(trust.inner, width=30, height=26, bg=theme.SURFACE_SOFT,
-                        highlightthickness=0, bd=0)
-        cap.pack(side="right", padx=(8, 0))
-        draw_icon(cap, "cap", 15, 13, 26, theme.PRIMARY_SOFT)
         body = tk.Label(trust.inner, text=self.tr("trust_body"),
                         bg=theme.SURFACE_SOFT, fg=theme.TEXT_2, font=F["F_HELP"],
                         anchor="w", justify="left")
