@@ -613,7 +613,10 @@ class App:
                                pady=(self._top_gap(), 0))
 
         main = tk.Frame(self._main_scroll.inner, bg=theme.BG)
-        main.pack(fill="both", expand=True)
+        # v2.3.16：网格容器右侧留 12px 余白（外部 padx），给自动隐藏滚动条落位，
+        # 既让两卡保持等宽，又让滚动条压在留白里、不挡右卡右侧的 Upgrade 按钮 / 图标
+        # （老板实测"右边的字被覆盖"）。两列仍按窗口半宽均分，等宽断言不受影响。
+        main.pack(fill="both", expand=True, padx=(0, 12))
         main.columnconfigure(0, weight=1, uniform="half", minsize=380)
         main.columnconfigure(1, weight=1, uniform="half", minsize=380)
         main.rowconfigure(0, weight=1)
@@ -636,7 +639,7 @@ class App:
         self._right_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                      pady=theme.CARD_PAD_Y, shadow=False)
         self._right_card.grid(row=0, column=1, sticky="new",
-                              padx=(theme.CARD_GAP // 2, 0))
+                             padx=(theme.CARD_GAP // 2, 0))
         self._build_left(self._left_card.inner)
         self._build_right(self._right_card.inner)
         self._enable_drag_drop()
@@ -1211,6 +1214,14 @@ class App:
         desc.pack(fill="x", pady=(2, 0))
         _auto_wrap(desc, parent, theme.CARD_PAD_X)
 
+        # v2.3.16：常驻「下一步」引导条——随状态机更新，明确告诉用户现在该做什么
+        # （老板反馈"向导性不够好"）。放在右卡标题下方，比把说明散落各处更聚焦。
+        self._guide_lbl = tk.Label(parent, text="", bg=theme.SURFACE_SOFT,
+                                  fg=theme.PRIMARY, font=F["F_HELP"], anchor="w",
+                                  justify="left")
+        self._guide_lbl.pack(fill="x", pady=(8, 0))
+        _auto_wrap(self._guide_lbl, parent, theme.CARD_PAD_X)
+
         self._spacer(parent)
 
         # 空状态：1-2-3 步骤引导（未选论文时显示）
@@ -1373,6 +1384,7 @@ class App:
         切换结果明细，都是"内容尺寸变了但不触发 <Configure>"的操作（见该方法 docstring）。
         """
         self._sync_ui_state()
+        self._update_guidance()
         self._relayout_all()
 
     def _sync_ui_state(self):
@@ -1473,6 +1485,48 @@ class App:
         self._fix_btn.set_text(tr("btn_fix"))
         self._fix_btn.set_action(self._run_fix)
         self._fix_btn.set_visible(True)
+
+    # ------------------------------------------------------------ 引导 / 授权映射
+    def _update_guidance(self):
+        """右卡常驻「下一步」引导条：随状态机更新（v2.3.16，治"向导性不够好"）。"""
+        tr = self.tr
+        try:
+            if self._phase == "fixed":
+                text = tr("guide_fixed")
+            elif self._phase == "results":
+                issues = self._last_issues or 0
+                text = tr("guide_ok") if not issues else tr("guide_fix", issues)
+            elif self._busy:
+                text = tr("guide_checking")
+            elif self._phase == "ready" or (self.docx_path.get()
+                                            and os.path.isfile(self.docx_path.get())):
+                text = tr("guide_check")
+            else:
+                text = tr("guide_pick")
+            self._guide_lbl.config(text=text)
+        except Exception:
+            pass
+
+    def _gate_message(self, gate):
+        """把授权层返回的 ``gate`` 按 ``reason`` 映射成本地图文案。
+
+        v2.3.16 修复：旧代码直接 ``gate.get("message")``，而 license 层所有 message 都是
+        中文硬编码，英文版下就显示中文（老板实测"试用提示词出现中文"）。这里只按 reason
+        取 i18n，绝不直接显示后端中文串；reason 未知时退回到中性标题文案。
+        """
+        tr = self.tr
+        reason = (gate or {}).get("reason")
+        if reason == "trial_exhausted":
+            return tr("gate_trial_exhausted")
+        if reason == "needs_reactivation":
+            return tr("gate_needs_reactivation")
+        if reason == "revoked":
+            return tr("gate_revoked")
+        if reason == "activated":
+            return tr("gate_activated")
+        if reason == "trial":
+            return tr("gate_trial", lic.TRIAL_FIX_LIMIT)
+        return tr("msg_need_activation_title")
 
     # ------------------------------------------------------------ 状态刷新
     def _refresh_rows(self):
@@ -1657,6 +1711,12 @@ class App:
         # 文案长度随语言变化会改变卡片/滚动区内容高度，必须主动重新测量，否则新文案会
         # 被旧的圆角矩形裁掉或顶不到位（界面"飘"/错位）。这一步也会触发一批 <Configure>。
         self._relayout_all()
+        # v2.3.16：重建后重新驱动状态机，确保「下一步」引导条与按钮态跟随新语言/当前阶段
+        # （否则切语言后引导条会空着，直到下一次交互才更新）。
+        try:
+            self._sync_ui()
+        except Exception:
+            pass
         # 先把重建带来的所有待处理布局 flush 掉，再把几何钉死成"最后一句"：
         # 重建触发的 WM 重排可能在上面的同步还原之后才被处理，把窗口又挪了位。
         # update_idletasks 让内容尺寸落定 → geometry(_geo) 钉死 → after_idle 再补钉一刀，
@@ -2324,7 +2384,7 @@ class App:
             gate = lic.require_fix_entitlement()
             if not gate.get("allowed"):
                 self._phase = "ready"
-                gate_no_go = gate.get("message") or tr("msg_need_activation_title")
+                gate_no_go = self._gate_message(gate)
                 self._set_status(gate_no_go, "err")
                 self._set_bar("err")
                 return
@@ -2332,7 +2392,7 @@ class App:
             preview_text = (
                 tr("preview_header") + "\n"
                 + "\n".join("  · " + line for line in changes)
-                + "\n\n" + tr("preview_trial", gate.get("message", "")))
+                + "\n\n" + tr("preview_trial", self._gate_message(gate)))
             self._set_report(preview_text,
                              summary_spec=("report_summary_fix", (len(changes),)))
         except DocxReadError as e:

@@ -271,12 +271,13 @@ class ScrollArea(tk.Frame):
         self._win = self._cv.create_window(0, 0, window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", self._sync_region)
         self._cv.bind("<Configure>", self._relayout)
-        # v2.3.15：滚动条"静止隐去"——内容溢出时也不常驻，指针进入区域或发生滚动
-        # 才显形，停手约 1.4s 后自动消失，整页更干净（商业软件质感）。
-        self._cv.bind("<Enter>", self._on_area_enter)
-        self._cv.bind("<Leave>", self._on_area_leave)
-        self._vsb.bind("<Enter>", self._on_area_enter)
-        self._vsb.bind("<Leave>", self._on_area_leave)
+        # v2.3.16：Enter/Leave 绑定在**整个滚动区 frame** 上（而非 canvas + scrollbar
+        # 分别绑定）。旧写法在滚动条显隐时会在 canvas 与 scrollbar 之间反复触发
+        # Enter/Leave，每次重置 1.4s 隐去计时器，造成滚动条疯狂闪、画布宽度来回变、
+        # 外层两列被拉动、左右两个框框不停抖（老板实测）。绑在 frame 上后，只有指针
+        # 真正离开整个滚动区才触发 Leave，循环被彻底打断。
+        self.bind("<Enter>", self._on_area_enter)
+        self.bind("<Leave>", self._on_area_leave)
 
     # ---------------------------------------------------------------- 滚动条
     # `_bar_needed` 由 `_relayout` 按"内容是否高于视口"维护（与当前滚动位置无关），
@@ -291,13 +292,19 @@ class ScrollArea(tk.Frame):
             self._reveal_bar()
 
     def _reveal_bar(self):
-        """内容溢出时：显形（hover/滚动活动期间），并预约静止后自动隐去。"""
+        """内容溢出时：显形（hover/滚动活动期间），并预约静止后自动隐去。
+
+        v2.3.16：用 ``place`` 把滚动条**叠加**在画布右侧（不进 pack 流），
+        显隐不再改变画布宽度 → 外层两列不会被拉动、不再抖；右卡预留的右内边距
+        （见 app.py 右卡 ``padx``）让滚动条落在留白里，不压内容。
+        """
         self._cancel_hide()
         if not self._bar_shown:
             self._bar_shown = True
             try:
-                # before=self._cv：保证滚动条在 canvas 右侧，而不是被挤到下面
-                self._vsb.pack(side="right", fill="y", before=self._cv)
+                self._vsb.place(relx=1.0, rely=0.0, relheight=1.0, width=9,
+                                anchor="ne")
+                self._vsb.lift()
             except Exception:
                 pass
         self._schedule_hide()
@@ -313,7 +320,7 @@ class ScrollArea(tk.Frame):
             return
         self._bar_shown = False
         try:
-            self._vsb.pack_forget()
+            self._vsb.place_forget()
         except Exception:
             pass
 

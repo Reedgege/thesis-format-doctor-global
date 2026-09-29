@@ -356,9 +356,11 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     # 等宽仍成立（列宽由窗口决定，与 sticky 无关）
     assert abs(lw - rw) <= 3, "两栏宽度不等：%d vs %d" % (lw, rw)
     # 右栏按自身自然高度、贴顶，不随左栏展开被拽高。允许右栏天然比左栏略高/略矮
-    # （两卡内容不同，且 v2.3.15 删掉了 Advanced 折叠区的提示行后左卡略矮），
-    # 真正要钉死的是"展开左栏时右栏不被拉高"（见下方 toggle 断言）。
-    assert rh <= lh + 30, "右栏异常高于左栏：%d vs %d" % (rh, lh)
+    # （两卡内容不同，且 v2.3.15 删掉了 Advanced 折叠区的提示行后左卡略矮；
+    #  v2.3.16 又给右栏加了常驻"下一步"引导条，右栏自然高度再增约 40px，
+    #  引导条文案在窄窗可能折行，故容差放宽到 +70）。真正要钉死的是"展开左栏时
+    #  右栏不被拉高"（见下方 toggle 断言）——那才是本用例的核心回归点。
+    assert rh <= lh + 70, "右栏异常高于左栏：%d vs %d" % (rh, lh)
     # 关键回归点：展开左栏 Advanced，右栏高度必须稳定（不跟着涨）
     right_before = ui._right_card._cv.winfo_height()
     left_before = ui._left_card._cv.winfo_height()
