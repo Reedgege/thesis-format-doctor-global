@@ -610,7 +610,14 @@ class App:
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1, uniform="half", minsize=380)
         main.columnconfigure(1, weight=1, uniform="half", minsize=380)
-        main.rowconfigure(0, weight=1)
+        # v2.3.12：用一行通栏细线把两张主卡的顶边「接起来」，消除最大化后顶部出现
+        # 「两个断开的小灰杠」的观感（老板 2026-09-28 反馈：要么全贯通、要么没有，
+        # 断断续续最难受）。row0 = 1px 顶线（跨两列、横跨 CARD_GAP），row1 = 两卡；
+        # 顶线用 theme.BORDER，与卡片 1px 边框同色，连成一条连续顶边。
+        main.rowconfigure(0, weight=0, minsize=1)
+        main.rowconfigure(1, weight=1)
+        self._top_line = tk.Frame(main, bg=theme.BORDER, height=1)
+        self._top_line.grid(row=0, column=0, columnspan=2, sticky="ew")
         self._main_frame = main
         # 两栏宽度只由窗口决定（见 _sync_columns），否则卡片里的自动换行会和 grid
         # 的列宽分配互相追着跑。
@@ -625,11 +632,11 @@ class App:
         # 和卡片内字段细线之外的所有分区分隔保持一致。
         self._left_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                     pady=theme.CARD_PAD_Y, shadow=False)
-        self._left_card.grid(row=0, column=0, sticky="new",
+        self._left_card.grid(row=1, column=0, sticky="new",
                              padx=(0, theme.CARD_GAP // 2))
         self._right_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                      pady=theme.CARD_PAD_Y, shadow=False)
-        self._right_card.grid(row=0, column=1, sticky="new",
+        self._right_card.grid(row=1, column=1, sticky="new",
                               padx=(theme.CARD_GAP // 2, 0))
         self._build_left(self._left_card.inner)
         self._build_right(self._right_card.inner)
