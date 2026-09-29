@@ -625,11 +625,11 @@ class App:
         # 和卡片内字段细线之外的所有分区分隔保持一致。
         self._left_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                     pady=theme.CARD_PAD_Y, shadow=False)
-        self._left_card.grid(row=1, column=0, sticky="new",
+        self._left_card.grid(row=0, column=0, sticky="new",
                              padx=(0, theme.CARD_GAP // 2))
         self._right_card = RoundCard(main, padx=theme.CARD_PAD_X,
                                      pady=theme.CARD_PAD_Y, shadow=False)
-        self._right_card.grid(row=1, column=1, sticky="new",
+        self._right_card.grid(row=0, column=1, sticky="new",
                               padx=(theme.CARD_GAP // 2, 0))
         self._build_left(self._left_card.inner)
         self._build_right(self._right_card.inner)
