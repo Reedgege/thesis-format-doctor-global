@@ -194,16 +194,21 @@ def test_primary_button_state_machine(ui, tmp_path):
 
 
 def test_secondary_button_stays_above_aux_row(ui, tmp_path):
-    """P1-1：次按钮 set_visible 后不能被排到辅助按钮行下面。"""
+    """P1-1：次按钮 set_visible 后不能被排到 CTA/商业行下面。
+
+    v2.3.19 重设计把底部 ``_aux_row`` 辅助按钮条整合进右卡的 ``_build_commercial``
+    （Trial + Upgrade 一行），并把操作按钮（Check/Fix/Save）挪进右卡偏下。原断言
+    引用的 ``_aux_row`` 已不存在——等价的不变量是：可见的 ``_fix_btn``（次按钮）必须
+    仍排在右卡底部的商业行（``_commercial_row``）**上方**，不能被挤到下面。
+    """
     docx = _make_docx(tmp_path / "t.docx")
     ui.docx_path.set(docx)
     ui._refresh_rows()
     ui.root.update_idletasks()
     assert ui._fix_btn._visible is True
-    # winfo_rooty() 是绝对屏幕 Y：重设计把 _fix_btn 挪进了左卡、_aux_row 留在底部
-    # CTA 条，两者父级不同，winfo_y()（父级相对）跨父比较没有意义；用绝对坐标才能
-    # 正确断言"次按钮在辅助按钮行上方"。
-    assert ui._fix_btn.winfo_rooty() < ui._aux_row.winfo_rooty()
+    # winfo_rooty() 是绝对屏幕 Y：两控件都在右卡内、父级相同，用绝对坐标断言
+    # "次按钮在商业行上方"最稳。
+    assert ui._fix_btn.winfo_rooty() < ui._commercial_row.winfo_rooty()
 
 
 # ---------------------------------------------------- P0-1 忙态必须能解除
@@ -355,12 +360,13 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     assert lw > 100 and lh > 100 and rh > 100
     # 等宽仍成立（列宽由窗口决定，与 sticky 无关）
     assert abs(lw - rw) <= 3, "两栏宽度不等：%d vs %d" % (lw, rw)
-    # 右栏按自身自然高度、贴顶，不随左栏展开被拽高。允许右栏天然比左栏略高/略矮
-    # （两卡内容不同，且 v2.3.15 删掉了 Advanced 折叠区的提示行后左卡略矮；
-    #  v2.3.16 又给右栏加了常驻"下一步"引导条，右栏自然高度再增约 40px，
-    #  引导条文案在窄窗可能折行，故容差放宽到 +70）。真正要钉死的是"展开左栏时
-    #  右栏不被拉高"（见下方 toggle 断言）——那才是本用例的核心回归点。
-    assert rh <= lh + 70, "右栏异常高于左栏：%d vs %d" % (rh, lh)
+    # 右栏按自身自然高度、贴顶，不随左栏展开被拽高——这是本用例的核心回归点（见下方
+    # toggle 断言）。右栏"比左栏高"本就允许：两卡内容不同，且 v2.3.19 把操作按钮
+    # （Check/Fix/Save）挪进右卡偏下、右卡又常驻信任卡 + 商业行，其自然高度本来就比
+    # 左卡高（CI 实测约 +114px）。故不再用"右栏必须 ≤ 左栏+N"约束，只钉死"展开左栏
+    # Advanced 时右栏高度必须稳定"这一真正会回归的硬条件（下方 toggle）。
+    # 仅保留一个宽松上限，拦住右栏被异常撑爆（如误把大块内容塞进右卡）：
+    assert rh <= lh + 300, "右栏异常高于左栏（疑似被异常撑高）：%d vs %d" % (rh, lh)
     # 关键回归点：展开左栏 Advanced，右栏高度必须稳定（不跟着涨）
     right_before = ui._right_card._cv.winfo_height()
     left_before = ui._left_card._cv.winfo_height()
