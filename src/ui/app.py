@@ -1295,16 +1295,23 @@ class App:
         # v2.3.19 按钮重组：操作按钮组（Check / Fix / Save）放在右卡偏下位置。
         # 理由：用户点击时视线落在按钮「上方」的内容（结果/状态）上，按钮在下方才符合
         # 「先看结果 → 再操作」的动线；左卡=输入/配置，右卡=操作/结果。
-        self._check_btn = RoundButton(parent, self.tr("btn_check"), self._run,
+        # 用固定容器 _ops_group 兜住三按钮：_fix_btn/_save_btn 初始 set_visible(False)，
+        # 在 set_visible(True) 时会 super().pack() 重排到「父容器末尾」——若直接挂在右卡
+        # 主体 parent 上，重排后会掉到下方 _commercial_row（Trial + Upgrade）之下，复辟
+        # P1-1 旧坑（次按钮被挤到 CTA 行下面）。故按钮只在 _ops_group 内重排，组本身位置
+        # 固定，永不污染右卡主体 packing 顺序。
+        self._ops_group = tk.Frame(parent, bg=theme.SURFACE)
+        self._ops_group.pack(fill="x", pady=(0, 8))
+        self._check_btn = RoundButton(self._ops_group, self.tr("btn_check"), self._run,
                                       style="primary", font=F["F_BTN"],
                                       height=50, icon="search")
         self._check_btn.pack(fill="x", pady=(0, 8))
-        self._fix_btn = RoundButton(parent, self.tr("btn_fix"), self._run_fix,
+        self._fix_btn = RoundButton(self._ops_group, self.tr("btn_fix"), self._run_fix,
                                     style="secondary", font=F["F_BTN_S"],
                                     height=42, icon="wrench")
         self._fix_btn.pack(fill="x", pady=(0, 8))
         self._fix_btn.set_visible(False)
-        self._save_btn = RoundButton(parent, self.tr("btn_save_report"),
+        self._save_btn = RoundButton(self._ops_group, self.tr("btn_save_report"),
                                      self._save_report, style="secondary",
                                      font=F["F_BTN_S"], height=42)
         self._save_btn.pack_forget()
