@@ -261,7 +261,7 @@ STRINGS: dict = {
         "app_title": "PaperFormat Pro",
         "app_tagline": "Academic formatting, made simple.",
         # 注：不用 🔒 之类的非 BMP emoji —— Tk 在 Windows 上常渲染成方框（tofu）。
-        "privacy_line": "Your documents stay on your computer",
+        "privacy_line": "Your thesis never leaves your computer",
         "privacy_sub": "Private  ·  Secure  ·  Offline processing",
 
         # —— 左栏：文档选择 ——
@@ -382,9 +382,9 @@ STRINGS: dict = {
 
         # —— 报告区 ——
         "report_placeholder": (
-            "Choose a citation style and your paper, then check the formatting.\n\n"
-            "Everything runs on this computer — no upload, no account. "
-            "Your paper never leaves it."
+            "Your thesis never leaves your computer.\n\n"
+            "No upload. No cloud processing. No waiting in a queue.\n\n"
+            "Choose a citation style and your thesis, then check the formatting."
         ),
         "report_summary_fix": "Fix preview ready · %s change(s) — confirm in the dialog.",
         "report_summary_generic": "Done. Click “Save report” to export the full report.",
@@ -393,7 +393,7 @@ STRINGS: dict = {
 
         # —— 状态栏 ——
         "bar_left": "PaperFormat Pro v%s",
-        "bar_idle": "Ready · Your files stay on your computer",
+        "bar_idle": "Ready · Your thesis never leaves your computer",
         "bar_checking": "Checking formatting…",
         "bar_fixing": "Applying format fixes…",
         "bar_check_done": "Formatting check complete",
@@ -476,7 +476,7 @@ STRINGS: dict = {
         "about_body": ("Heading levels, fonts and sizes, margins, line spacing, references — "
                        "checked one by one against the target, and corrected to match."),
         "about_privacy_hdr": "Privacy",
-        "about_privacy": "Everything runs on your device. Your paper is never uploaded, never collected.",
+        "about_privacy": "Everything runs on your device. Your thesis is never uploaded, never collected.",
         "about_source_hdr": "Where the rules come from",
         "about_source": ("Page layout follows your school's template; citation format follows the "
                          "style you pick (APA, MLA, Chicago, IEEE, Harvard)."),
@@ -513,8 +513,8 @@ STRINGS: dict = {
              "No. Only formatting: fonts, sizes, margins, line spacing, indentation, alignment and "
              "reference formatting. Headings keep their existing size and weight on purpose, and the "
              "app always writes a new file instead of overwriting yours."),
-            ("Q3 · Is my paper uploaded anywhere?",
-             "No. Your paper never leaves this computer — checking and fixing run entirely on your "
+            ("Q3 · Is my thesis uploaded anywhere?",
+             "No. Your thesis never leaves this computer — checking and fixing run entirely on your "
              "machine (no upload, works with the network unplugged). The app contacts the server only "
              "for activation and for the one-time free-trial registration, and sends the machine code "
              "only — never your document."),
@@ -645,7 +645,7 @@ STRINGS: dict = {
         "report_summary_hint": "完整报告不在界面展开 —— 点「保存报告」即可导出为文件。",
 
         "bar_left": "PaperFormat Pro v%s",
-        "bar_idle": "就绪 · 文件始终留在你的电脑上",
+        "bar_idle": "就绪 · 论文始终留在你的电脑上",
         "bar_checking": "正在体检格式…",
         "bar_fixing": "正在应用格式修正…",
         "bar_check_done": "体检完成",
