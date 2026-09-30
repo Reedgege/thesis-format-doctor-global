@@ -926,7 +926,18 @@ class App:
         self._spacer(parent)
         self._hairline(parent)
 
-        # ③ 高级选项折叠区
+        # ②-b 学校模板（可选）—— 提到高级选项之外、与其并列（v2.3.28 左卡对称：
+        # 论文 → 引用规范 → 学校模板 → 高级选项(收起) → 导出，与右卡结构呼应）
+        self._field_label(parent, "row_template_title", required=False)
+        self._helper(parent, "row_template_desc")
+        self._tpl_name, self._tpl_clear = self._select_field(
+            parent, "row_template_placeholder", self._pick_template,
+            on_clear=lambda: self._clear_input("template"))
+
+        self._spacer(parent)
+        self._hairline(parent)
+
+        # ③ 高级选项折叠区（默认收起，置于学校模板之下）
         self._build_advanced(parent)
 
         # ④ 导出 AI 模板：属于「导入配置」的一部分，放在配置区下方（v2.3.19 按钮重组：
@@ -1126,15 +1137,9 @@ class App:
         self._adv_body = tk.Frame(bar.inner, bg=theme.SURFACE)
 
         # —— 高级格式设置（默认折叠，渐进式披露）——
-        # ① 学校模板（可选）
-        self._field_label(self._adv_body, "row_template_title", required=False)
-        self._helper(self._adv_body, "row_template_desc")
-        self._tpl_name, self._tpl_clear = self._select_field(
-            self._adv_body, "row_template_placeholder", self._pick_template,
-            on_clear=lambda: self._clear_input("template"))
-        self._spacer(self._adv_body)
-        self._hairline(self._adv_body)
-        # ② LaTeX 模板（可选）
+        # 学校模板已于 v2.3.28 提到高级选项之外（见 _build_left），此处仅留
+        # LaTeX 模板 / 格式问卷 / 导入配置（AI）。
+        # ① LaTeX 模板（可选）
         self._field_label(self._adv_body, "row_latex_title", required=False)
         self._helper(self._adv_body, "row_latex_desc")
         self._latex_name, self._latex_clear = self._select_field(
