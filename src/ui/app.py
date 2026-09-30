@@ -1345,8 +1345,12 @@ class App:
     def _build_progress(self, parent):
         """极简进度条（替代旧版横排步进器）：Prepare → Check → Fix。"""
         F = self.F
+        # v2.3.27：高度 34 → 46。draw() 把步骤标签画到 y≈27 往下（底边≈41px），
+        # 原 34px 画布装不下自己的标签 → 标签被裁、右卡重测时只按 34px 量高，
+        # 导入论文后右卡"涨了但不够"、进度条标签压到状态行。46px 让画布高度与真实
+        # 内容一致，右卡才能涨到正确高度、标签完整显示。
         self._progress = ProgressBar(parent, steps=3, bg=theme.SURFACE,
-                                     font=F["F_HELP"], height=34)
+                                     font=F["F_HELP"], height=46)
         self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0))
         self._progress.set_labels([self.tr("step1_title"), self.tr("step2_title"),
                                    self.tr("step3_title")])
