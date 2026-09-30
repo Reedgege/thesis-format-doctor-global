@@ -409,13 +409,25 @@ class ScrollArea(tk.Frame):
         return False
 
     def handle_wheel(self, e):
-        """由 ``App`` 的全局滚轮回调分发进来；不在本区域内则什么都不做。"""
-        if not self._bar_shown or not self._in_area(e):
+        """由 ``App`` 的全局滚轮回调分发进来；不在本区域内则什么都不做。
+
+        v2.3.22 滚轮灵敏度修复（老板实测"上下滚不灵敏 / 要滚两下才动"）：
+
+          * 旧版第一行就 ``if not self._bar_shown: return`` —— 滚动条被 1.4s
+            自动隐藏后，用户第一次滚会被直接吞掉（必须滚第二下才动），这正是
+            "滚轮不灵敏"的体感。改为：只要在区域内就处理，并在需要时出现滚动条。
+          * 旧版每格只滚 1 个 unit（``yscrollincrement=0`` → 1 unit=1px）：
+            Windows 鼠标滚轮每格 ``e.delta=±120``，结果滚一屏要几百下。
+            改为按 delta 像素滚动（``-e.delta`` units）：鼠标每格滚约 120px
+            （约视口的 1/5，灵敏且不失控），触控板的小 delta（±30/±60）则
+            逐像素平滑滚动，不再"滚不动"。
+        """
+        if not self._in_area(e):
             return
         try:
-            # 精密触控板的 delta 常见 ±30/±60，用 int(delta/120) 会被截成 0
-            # 而"滚不动"，所以只取方向。
-            self._cv.yview_scroll(-1 if e.delta > 0 else 1, "units")
+            if self._bar_needed:
+                self._reveal_bar()
+            self._cv.yview_scroll(-e.delta, "units")
         except Exception:
             pass
 

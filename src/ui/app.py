@@ -213,7 +213,8 @@ def _scroll_frame(parent, bg: str = PAPER):
         except Exception:
             return
         try:
-            canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+            # v2.3.22：按 delta 像素滚动（旧版每格只滚 1px，滚轮极不灵敏）。
+            canvas.yview_scroll(-e.delta, "units")
         except Exception:
             pass
 
@@ -1460,22 +1461,32 @@ class App:
         results = self._phase in ("results", "fixed", "fixing")
 
         # 右卡：空状态（未选论文）与进度条（已选论文）互斥显示
+        # ⚠️ v2.3.23 修复：``pack_forget`` 后再 ``pack()`` 不带位置参数，Tk 会把 widget
+        # 插到父容器 packing 顺序的**最末尾**（信任卡/商业行之下），于是 1-2-3 步骤引导
+        # 在「删除论文」后跑到右下角、还常在视口外看不到（老板实测"导入后变下边、删了也
+        # 不回上边"）。必须用 ``before=`` 钉回原位：空状态/进度条都插在「状态行」之前
+        # （即标题/引导条之后、状态行之上），无论显隐多少次顺序都稳定。
         try:
             if paper:
                 self._empty_state.pack_forget()
-                self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+                self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                                    before=self._status_row)
             else:
-                self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+                self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                                       before=self._status_row)
                 self._progress.pack_forget()
         except Exception:
             pass
 
         # 结果明细与引导卡相反：有报告才出现（见 _build_right 的说明）。
         # v2.3.19：保存报告按钮与结果同显隐（同属「操作产出」，放在右卡）。
+        # ⚠️ 同上的 packing 顺序坑：结果明细也要 ``before=self._ops_group`` 钉回
+        # 状态行之下、操作按钮组之上的原位，否则重新显示时会掉到右卡最底部。
         try:
             if results:
-                self.summary_lbl.pack(fill="x", pady=(3, 0))
-                self.summary_hint.pack(fill="x")
+                self.summary_lbl.pack(fill="x", pady=(3, 0),
+                                      before=self._ops_group)
+                self.summary_hint.pack(fill="x", before=self._ops_group)
                 self._save_btn.pack(fill="x", pady=(8, 0))
             else:
                 self.summary_lbl.pack_forget()
