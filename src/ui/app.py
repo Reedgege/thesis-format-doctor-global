@@ -886,18 +886,14 @@ class App:
         drop.pack(fill="x", pady=(4, 0))
         self._paper_drop = drop
 
-        # 居中内容列
+        # 居中内容列（v2.3.26：去掉手绘云朵上传图标，避免观感廉价；纯文字引导更干净、更专业）
         vcol = tk.Frame(drop.inner, bg=theme.PRIMARY_SOFT)
         vcol.pack(expand=True)
-        cloud = tk.Canvas(vcol, width=34, height=26, bg=theme.PRIMARY_SOFT,
-                          highlightthickness=0, bd=0)
-        cloud.pack(pady=(0, 3))
-        draw_icon(cloud, "cloud", 17, 13, 26, theme.PRIMARY, 2)
 
         self._paper_name = tk.Label(vcol, text=self.tr("btn_select_doc"),
                                     bg=theme.PRIMARY_SOFT, fg=theme.PRIMARY,
                                     font=F["F_BODY"], cursor="hand2", anchor="center")
-        self._paper_name.pack(fill="x")
+        self._paper_name.pack(fill="x", pady=(2, 0))
         self._drop_hint = tk.Label(vcol, text=self.tr("drop_hint"),
                                    bg=theme.PRIMARY_SOFT, fg=theme.TEXT_2,
                                    font=F["F_HELP"], cursor="hand2", anchor="center")
@@ -916,7 +912,7 @@ class App:
         self._paper_clear.bind("<Enter>", lambda e: self._paper_clear.config(fg=theme.ERROR))
         self._paper_clear.bind("<Leave>", lambda e: self._paper_clear.config(fg=theme.TEXT_3))
         for w in (drop.inner, vcol, self._paper_name, self._drop_hint,
-                  self._paper_sub, cloud):
+                  self._paper_sub):
             w.bind("<Button-1>", lambda e: self._pick_docx())
             w.bind("<Enter>", lambda e: self._set_drop_hover(True))
             w.bind("<Leave>", lambda e: self._set_drop_hover(False))
@@ -1223,12 +1219,13 @@ class App:
 
     # ------------------------------------------------------------ 右栏
     def _build_right(self, parent):
-        """右卡 Review & Fix：1-2-3 引导与进度条**常驻**，不随状态互斥替换。
+        """右卡 Review & Fix：1-2-3 引导**常驻**，进度条按状态显隐，二者不互斥替换。
 
         重设计（2026-09-26 / 2.3.25 修正）：解决「右栏空白」+「右卡不稳定」两个问题。
-        1-2-3 步骤图与极简进度条都常驻右卡（进度条空态显示第 0 步 Prepare），信任卡
-        与商业区始终保留在底部。无论空态/已选论文/已出结果，顶部引导都固定在原地，
-        右卡高度随内容自然增长、绝不折叠或回缩，符合"内容不折叠"的界面底线。
+        1-2-3 步骤图永远钉在右卡顶部（根治 v2.3.23 之前"导入后 1-2-3 掉到右下角"），
+        进度条仅在已选论文后显示在 1-2-3 之下（空态隐藏，保持右栏干净、不挂无用步进器）；
+        信任卡与商业区始终保留在底部。无论空态/已选论文/已出结果，顶部引导都固定在原地，
+        符合"内容不折叠"的界面底线。
         """
         F = self.F
         head = tk.Frame(parent, bg=theme.SURFACE)
@@ -1264,8 +1261,10 @@ class App:
         for i, (title, body) in enumerate(self.tr("how_steps"), 1):
             self._build_step_row(self._empty_state, i, title, body)
 
-        # 极简进度条：v2.3.25 起常驻右卡（空态显示第 0 步 Prepare），不再选论文后才显示
+        # 极简进度条：默认隐藏，由 _sync_ui_state 在「已选论文」态才 pack（与
+        # test_ui_redesign 约定：空态不挂步进器），避免首帧闪一下
         self._build_progress(parent)
+        self._progress.pack_forget()
 
         # 状态行：结果与提示都落这里
         status_row = tk.Frame(parent, bg=theme.SURFACE)
@@ -1461,18 +1460,19 @@ class App:
         # fixing 也算"已有结果"：修正过程中不该把引导卡又弹回来（会闪一下）
         results = self._phase in ("results", "fixed", "fixing")
 
-        # 右卡：1-2-3 引导与进度条**常驻**（用户要求"内容不折叠、右卡不稳定"）。
-        # 两者都插在「状态行」之前、标题/引导条之后，顺序固定：1-2-3 在上、进度条在下；
-        # 任何状态切换都**不**隐藏/折叠内容，右卡整体高度随内容自然稳定，
-        # 导入/删除论文时顶部引导永不跑位（根治 v2.3.23 之前的"1-2-3 掉到右下角"问题）。
-        # ⚠️ 顺序用 ``before=self._status_row`` 钉死：先 pack 1-2-3、再 pack 进度条，
-        # 二者都落在状态行之前，1-2-3 恒在进度条之上，反复显隐也不乱序；且二者都不再
-        # ``pack_forget``，所以右卡高度只会随内容增长、绝不回缩（空态也保留进度条=第 0 步）。
+        # 右卡：1-2-3 引导**常驻**（用户要求"内容不折叠、右卡不稳定"），进度条按状态显隐。
+        # 1-2-3 永远插在「状态行」之前、标题/引导条之后，顺序钉死，导入/删除论文时
+        # 顶部引导永不跑位（根治 v2.3.23 之前"1-2-3 掉到右下角"问题）；进度条仅在已选
+        # 论文后显示在 1-2-3 之下（空态隐藏，避免右栏空白时还挂着 Prepare→Check→Fix，
+        # 与 test_ui_redesign 约定一致）。
         try:
             self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0),
                                    before=self._status_row)
-            self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
-                               before=self._status_row)
+            if paper:
+                self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                                   before=self._status_row)
+            else:
+                self._progress.pack_forget()
         except Exception:
             pass
 
