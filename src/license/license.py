@@ -524,10 +524,50 @@ def require_fix_entitlement() -> dict:
     """
     try:
         return _require_fix_entitlement()
-    except Exception as e:   # 授权模块自身异常不应阻断用户，按离线宽限放行试用
-        return {"allowed": True, "reason": "trial",
-                "message": f"授权状态读取异常（{e}），按首次免费试运行。",
-                "remaining_trial": 1}
+    except Exception as e:   # noqa: BLE001
+        return _entitlement_on_error(e)
+
+
+def _entitlement_on_error(e: Exception) -> dict:
+    """授权模块自身异常时的兜底裁决 —— **绝不能一律放行**（收费漏洞修复）。
+
+    旧实现是"任何异常都返回 allowed=True + 一份新的试用额度"，注释写着"不阻断用户"。
+    但这条分支实际是个**白嫖口子**：只要错误是持久的（授权文件所在目录不可写、磁盘满、
+    状态文件内容不可能解析），**每一次**修正都会重新白送一次试用 —— 等于无限免费修正；
+    篡改者还能主动制造这种异常来绕过门禁。
+
+    新策略（与项目既定的「扣减失败也拦（防篡改）」一致，fail-closed）：
+
+      · 本地状态明确**已激活** → 放行（不能让一次写入失败挡住已付费用户）；
+      · 未激活 → 想给试用**必须先落盘记次**（trial_fix_used=True），落不进去就一律
+        拦下 —— 宁可拦错一次，也不留"制造异常即白嫖"的口子；
+      · 已用过试用 / 状态损坏或被篡改 → 照常拦（与正常路径的裁决保持一致）。
+    """
+    try:
+        st = load_state()
+    except Exception:
+        return {"allowed": False, "reason": "state_error",
+                "message": "授权状态无法读取，暂时无法进行修正，请重试或联系客服。",
+                "remaining_trial": 0}
+    if st.get("activated"):
+        return {"allowed": True, "reason": "activated",
+                "message": f"已激活（{st.get('kind') or 'lifetime'}）",
+                "remaining_trial": None}
+    if (st.get("trial_fix_used")
+            or st.get("_state_reason") in ("corrupt", "tampered", "unsealed")):
+        return {"allowed": False, "reason": "trial_exhausted",
+                "message": "免费试用已用完，请输入激活码解锁无限修正。",
+                "remaining_trial": 0}
+    try:
+        st["trial_fix_used"] = True
+        save_state(st)          # 落盘成功，这一次试用才算真的给出去了
+    except Exception:
+        return {"allowed": False, "reason": "state_error",
+                "message": "授权状态无法写入，暂时无法进行修正，请重试或联系客服。",
+                "remaining_trial": 0}
+    return {"allowed": True, "reason": "trial",
+            "message": f"授权状态读取异常（{e}），已按首次免费试用放行一次。",
+            "remaining_trial": 0}
 
 
 def _require_fix_entitlement() -> dict:
@@ -540,7 +580,12 @@ def _require_fix_entitlement() -> dict:
         if hb and hb.get("ok") and hb.get("status") == "active":
             state["machine"] = fp
             state["last_heartbeat"] = int(time.time())
-            save_state(state)
+            # 写盘失败不能让整个裁决炸出去（旧实现会一路抛到 require_fix_entitlement
+            # 的兜底分支、被当成"异常即放行" → 免费无限修正）
+            try:
+                save_state(state)
+            except Exception:
+                pass
         else:
             state["activated"] = False
 
@@ -605,10 +650,16 @@ def _require_fix_entitlement() -> dict:
             if hb and hb.get("status") in ("revoked", "expired"):
                 state["activated"] = False
                 state["revoked"] = True
-                save_state(state)
+                try:
+                    save_state(state)
+                except Exception:
+                    pass
             elif hb:
                 state["last_heartbeat"] = int(time.time())
-                save_state(state)
+                try:
+                    save_state(state)
+                except Exception:
+                    pass
         if state.get("activated"):
             return {"allowed": True, "reason": "activated",
                     "message": f"已激活（{state.get('kind') or 'lifetime'}）",

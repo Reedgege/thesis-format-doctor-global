@@ -39,6 +39,12 @@ def _get_comments_part(document):
 
     新建时同时注册 [Content_Types].xml 的 Override 与 document.xml.rels 的关系，
     保证 Word 能识别 comments.xml。
+
+    ⚠️ 关键：已存在的 comments 部件是 python-docx 的 ``CommentsPart``（``XmlPart``
+    子类），它的 ``blob`` 是**由 ``element`` 现场序列化**出来的 —— 往 ``part._blob``
+    里写东西在保存时会被完全忽略。所以这里必须直接拿 ``part.element`` 当根元素来改，
+    否则「对已修正过的文档再跑一遍修正」会变成：旧批注清不掉、新批注文字丢失、
+    段落里只留下指向不存在 id 的孤儿标记（Word 可能提示文档需要修复）。
     """
     main = document.part
     part = None
@@ -58,12 +64,22 @@ def _get_comments_part(document):
         except Exception:
             # 已存在 Override 或 content_types 模型略有差异时忽略，不阻断主流程
             pass
-    root = parse_xml(part.blob)
+    # XmlPart（CommentsPart）以 element 为唯一真源；我们自建的裸 Part 才需要解析 blob。
+    root = getattr(part, "element", None)
+    if root is None:
+        root = parse_xml(part.blob)
     return part, root
 
 
 def _reserialize(part, root) -> None:
-    """把改动后的 comments 根元素写回 part 的 blob（plain Part 用 blob 序列化）。"""
+    """把改动后的 comments 根元素写回。
+
+    - ``XmlPart``（CommentsPart）：root 就是 ``part.element``，树已在内存里改好，
+      ``doc.save()`` 会自动序列化它 —— 这里**什么都不用做**；
+    - 我们自建的裸 ``Part``（文档原本没有批注部件时）：没有 element，需回写 ``_blob``。
+    """
+    if getattr(part, "element", None) is not None:
+        return
     part._blob = etree.tostring(root, encoding="UTF-8", xml_declaration=True, standalone=True)
 
 
@@ -130,7 +146,11 @@ def strip_our_comments(document) -> int:
     if part is None:
         return 0
 
-    root = parse_xml(part.blob)
+    # 必须用「活的」 element 当根（CommentsPart 是 XmlPart，blob 由 element 序列化而来；
+    # 另起一棵树来删，改完不会落盘，旧批注就永远清不掉）。
+    root = getattr(part, "element", None)
+    if root is None:
+        root = parse_xml(part.blob)
     our_ids = {
         c.get(qn("w:id"))
         for c in root.findall(qn("w:comment"))

@@ -53,6 +53,12 @@ def tmp_license(tmp_path, monkeypatch):
     """把授权状态文件指到临时路径 + 拦截三个中台调用（完全离线）。"""
     p = tmp_path / "license.json"
     monkeypatch.setattr(lic, "LICENSE_FILE", p)
+    # 必须同时把「旧目录」指到一个**不存在**的临时路径：``_license_file()`` 在新路径
+    # 不存在、而旧路径存在时会把旧文件复制过来（v2.3.10 目录改名后的老用户迁移）。
+    # 不打这个桩的话，开发机上跑测试会读到**本机真实授权状态**（用过试用 / 已激活），
+    # 于是 test_first_trial_allowed 等用例在开发机红、在干净 CI 绿 —— 测试不再可信，
+    # 真回归也会被这种"本机状态相关"的假失败掩盖。
+    monkeypatch.setattr(lic, "LICENSE_FILE_LEGACY", tmp_path / "legacy-license.json")
     monkeypatch.delenv("TFD_LICENSE_FILE", raising=False)
     # 默认：中台不可达（返回 None 表示离线宽限），各测试按需覆盖
     monkeypatch.setattr(lic, "_safe_trial_sync", lambda machine, claim=False: None)

@@ -1619,6 +1619,8 @@ class App:
             return tr("gate_needs_reactivation")
         if reason == "revoked":
             return tr("gate_revoked")
+        if reason == "state_error":
+            return tr("gate_state_error")
         if reason == "activated":
             return tr("gate_activated")
         if reason == "trial":

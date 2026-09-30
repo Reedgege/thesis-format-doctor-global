@@ -148,15 +148,31 @@ def _select_paragraphs(doc, ref_set: set, include_reference: bool = True) -> lis
 # 单维度修正基元（全部只动格式属性，不动文本）
 # ---------------------------------------------------------------------------
 
-def _set_run_font(run, font: Optional[str], size: Optional[float]):
-    """给单个 run 设字体/字号。
+def _is_comment_run(run) -> bool:
+    """批注标记 run（含 w:commentReference）不是正文，绝不能当正文套格式。
+
+    不跳过的话：上一遍加的批注标记 run 会在下一遍被当成正文重新设字体/字号 ——
+    既污染我们自己的标记，又让「是否真改了」恒为真（明明没改动却仍声称 font set，
+    汇总批注于是满嘴假话）。国内版 Pit 已踩过同类坑，这里照抄其结论。
+    """
+    try:
+        return run._r.find(qn("w:commentReference")) is not None
+    except Exception:
+        return False
+
+
+def _set_run_font(run, font: Optional[str], size: Optional[float]) -> bool:
+    """给单个 run 设字体/字号，**如实返回是否真改了**。
 
     字体同时写 w:rFonts 的 ascii/hAnsi/cs/eastAsia —— run.font.name 只映射
     ascii/hAnsi，只设它会让「仅设中文字体」的文档看起来没改到。
     """
+    changed = False
     if font:
         try:
-            run.font.name = font
+            if run.font.name != font:
+                run.font.name = font
+                changed = True
         except Exception:
             pass
         try:
@@ -165,15 +181,22 @@ def _set_run_font(run, font: Optional[str], size: Optional[float]):
             if rFonts is None:
                 rFonts = OxmlElement("w:rFonts")
                 rPr.insert(0, rFonts)
+                changed = True
             for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
-                rFonts.set(qn(attr), font)
+                if rFonts.get(qn(attr)) != font:
+                    rFonts.set(qn(attr), font)
+                    changed = True
         except Exception:
             pass
     if size is not None:
         try:
-            run.font.size = Pt(float(size))
+            want = Pt(float(size))
+            if run.font.size != want:
+                run.font.size = want
+                changed = True
         except Exception:
             pass
+    return changed
 
 
 def _apply_margins(doc, page: dict):
@@ -181,14 +204,21 @@ def _apply_margins(doc, page: dict):
 
     MARGIN_DIMS 的第二个元素是「侧面名」(top/bottom/left/right)：读取侧对应
     prof.margins 的键，写入侧对应 docx 分节的 `<side>_margin` 属性。
+
+    如实返回「是否真改了」：原来无返回值，汇总批注于是无条件写 "margins set to X"，
+    对本来页边距就合规的文档也会凭空冒出一条"我改了页边距"的批注。
     """
+    changed = False
     for pk, side, _label in _MARGIN_KEYS:
         if page.get(pk) is None:
             continue
         val = Inches(float(page[pk]))
         attr = f"{side}_margin"
         for sec in doc.sections:
-            setattr(sec, attr, val)
+            if getattr(sec, attr, None) != val:
+                setattr(sec, attr, val)
+                changed = True
+    return changed
 
 
 def _apply_font_and_size(page: dict, paras: list) -> bool:
@@ -204,8 +234,10 @@ def _apply_font_and_size(page: dict, paras: list) -> bool:
     changed = False
     for para in paras:
         for run in para.runs:
-            _set_run_font(run, font, size)
-            changed = True
+            if _is_comment_run(run):
+                continue                      # 批注标记不是正文，跳过
+            if _set_run_font(run, font, size):
+                changed = True
     return changed
 
 
@@ -218,9 +250,19 @@ def _apply_line_spacing(page: dict, paras: list) -> bool:
     if page.get("line_spacing") is None:
         return False
     sp = float(page["line_spacing"])
+    # 如实返回「是否真改了」：原来恒返回 True，导致汇总批注即便一个字没动也声称
+    # "line spacing set to X" —— 客户按批注去找改动会扑空（违背「让客户知道改了哪儿」）。
+    changed = False
     for para in paras:
-        para.paragraph_format.line_spacing = sp
-    return True
+        cur = para.paragraph_format.line_spacing
+        try:
+            same = cur is not None and abs(float(cur) - sp) <= 1e-6
+        except (TypeError, ValueError):
+            same = False        # 固定值/最小值行距（Length）一律视为需要归一化为倍数制
+        if not same:
+            para.paragraph_format.line_spacing = sp
+            changed = True
+    return changed
 
 
 def _apply_alignment(page: dict, paras: list) -> bool:
@@ -230,30 +272,48 @@ def _apply_alignment(page: dict, paras: list) -> bool:
     enum = _ALIGN_ENUM.get(str(wanted))
     if enum is None:
         return False
+    changed = False
     for para in paras:
-        para.paragraph_format.alignment = enum
-    return True
+        if para.paragraph_format.alignment != enum:
+            para.paragraph_format.alignment = enum
+            changed = True
+    return changed
 
 
-def _apply_first_line_indent(page: dict, paras: list):
-    """正文段落首行缩进（只作用于正文段落，不含标题与参考文献）。"""
+def _apply_first_line_indent(page: dict, paras: list) -> bool:
+    """正文段落首行缩进（只作用于正文段落，不含标题与参考文献）。
+
+    如实返回「是否真改了」（原来无返回值，调用方只能无条件记进 applied → 假报改动）。
+    """
     val = page.get("first_line_indent_in")
     if val is None:
-        return
+        return False
     inches = Inches(float(val))
+    changed = False
     for para in paras:
         pf = para.paragraph_format
-        pf.first_line_indent = inches
+        if pf.first_line_indent != inches:
+            pf.first_line_indent = inches
+            changed = True
         # 首行缩进要求整体不缩进（悬挂由参考文献单独处理）
-        pf.left_indent = Inches(0)
+        if pf.left_indent != Inches(0):
+            pf.left_indent = Inches(0)
+            changed = True
+    return changed
 
 
-def _apply_space_after(page: dict, paras: list):
+def _apply_space_after(page: dict, paras: list) -> bool:
+    """段后间距。如实返回「是否真改了」（原来无返回值 → 汇总批注假报）。"""
     val = page.get("space_after_pt")
     if val is None:
-        return
+        return False
+    pt = Pt(float(val))
+    changed = False
     for para in paras:
-        para.paragraph_format.space_after = Pt(float(val))
+        if para.paragraph_format.space_after != pt:
+            para.paragraph_format.space_after = pt
+            changed = True
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +446,8 @@ def _format_heading_one(para, f, body_font, body_size):
         except Exception:
             pass
     for run in para.runs:
+        if _is_comment_run(run):
+            continue          # 批注标记不是标题正文，跳过（否则第二遍恒显"已改"）
         if f.bold and run.font.bold is not True:
             run.font.bold = True
             changed = True
@@ -467,10 +529,13 @@ def _apply_heading_format(doc, target: TargetProfile, spec) -> dict:
         f = fmt_map.get(lvl) or fmt_map.get(deepest)
         if f is None:
             continue
+        # 只对**真的被改过**的标题段加批注。原来 add_comment 写在 if 外面 —— 不管这段
+        # 有没有改动都加一条写着 "Applied" 的批注：全合规的论文也会被塞满假批注，
+        # 客户按批注去找改动必然扑空，正是「让客户知道改了哪儿」要的反效果。
         if _format_heading_one(para, f, body_font, body_size):
             info["formatted"] += 1
-        add_comment(doc, para, _heading_comment_text(spec, lvl, f))
-        info["comments"] += 1
+            add_comment(doc, para, _heading_comment_text(spec, lvl, f))
+            info["comments"] += 1
     return info
 
 
@@ -478,8 +543,10 @@ def _build_summary_text(target: TargetProfile, applied: dict, spec, ref_info) ->
     """生成本遍全部改动的英文汇总批注文本（空则无改动）。"""
     bits = []
     page = target.page or {}
-    if page.get("margin_top_in") is not None:
-        m = page["margin_top_in"]
+    # 只报**真改了**的项（原来这里只看「目标值有没有设」，不看有没有真改 →
+    # 对本来就合规的文档也会凭空生成一条"我改了页边距"的批注）
+    if applied.get("margins") is not None:
+        m = applied["margins"]
         bits.append(f"margins set to {m}\" on all sides")
     if applied.get("font_family"):
         bits.append(f"body font set to {applied['font_family']}")
@@ -539,7 +606,8 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
 
     page = target.page or {}
     if page:
-        _apply_margins(doc, page)
+        if _apply_margins(doc, page):
+            applied["margins"] = page.get("margin_top_in")
         if _apply_font_and_size(page, no_heading):
             if page.get("font_family"):
                 applied["font_family"] = page.get("font_family")
@@ -549,11 +617,11 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
             applied["line_spacing"] = page.get("line_spacing")
         if _apply_alignment(page, no_heading):
             applied["body_alignment"] = page.get("body_alignment")
-        if page.get("first_line_indent_in") is not None:
-            _apply_first_line_indent(page, body_only)
+        # 只把**真发生了改动**的项记进 applied（原来这两处不看返回值、无条件记录，
+        # 汇总批注于是会声称"已设缩进/段后间距"，而原文可能本来就合规）
+        if _apply_first_line_indent(page, body_only):
             applied["first_line_indent_in"] = page.get("first_line_indent_in")
-        if page.get("space_after_pt") is not None:
-            _apply_space_after(page, body_only)
+        if _apply_space_after(page, body_only):
             applied["space_after_pt"] = page.get("space_after_pt")
         summary["page"] = dict(page)
 
