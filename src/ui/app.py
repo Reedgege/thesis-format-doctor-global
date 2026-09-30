@@ -1223,10 +1223,12 @@ class App:
 
     # ------------------------------------------------------------ 右栏
     def _build_right(self, parent):
-        """右卡 Review & Fix：空状态显示 1-2-3 步骤引导，有输入后切换为进度条。
+        """右卡 Review & Fix：1-2-3 引导与进度条**常驻**，不随状态互斥替换。
 
-        重设计（2026-09-26）：解决「右栏空白」问题 —— 未选论文时给出清晰步骤图，
-        选论文后自然过渡到进度条与状态提示；信任卡和商业区始终保留在底部。
+        重设计（2026-09-26 / 2.3.25 修正）：解决「右栏空白」+「右卡不稳定」两个问题。
+        1-2-3 步骤图与极简进度条都常驻右卡（进度条空态显示第 0 步 Prepare），信任卡
+        与商业区始终保留在底部。无论空态/已选论文/已出结果，顶部引导都固定在原地，
+        右卡高度随内容自然增长、绝不折叠或回缩，符合"内容不折叠"的界面底线。
         """
         F = self.F
         head = tk.Frame(parent, bg=theme.SURFACE)
@@ -1262,9 +1264,8 @@ class App:
         for i, (title, body) in enumerate(self.tr("how_steps"), 1):
             self._build_step_row(self._empty_state, i, title, body)
 
-        # 极简进度条：选论文后显示
+        # 极简进度条：v2.3.25 起常驻右卡（空态显示第 0 步 Prepare），不再选论文后才显示
         self._build_progress(parent)
-        self._progress.pack_forget()
 
         # 状态行：结果与提示都落这里
         status_row = tk.Frame(parent, bg=theme.SURFACE)
@@ -1460,21 +1461,18 @@ class App:
         # fixing 也算"已有结果"：修正过程中不该把引导卡又弹回来（会闪一下）
         results = self._phase in ("results", "fixed", "fixing")
 
-        # 右卡：空状态（未选论文）与进度条（已选论文）互斥显示
-        # ⚠️ v2.3.23 修复：``pack_forget`` 后再 ``pack()`` 不带位置参数，Tk 会把 widget
-        # 插到父容器 packing 顺序的**最末尾**（信任卡/商业行之下），于是 1-2-3 步骤引导
-        # 在「删除论文」后跑到右下角、还常在视口外看不到（老板实测"导入后变下边、删了也
-        # 不回上边"）。必须用 ``before=`` 钉回原位：空状态/进度条都插在「状态行」之前
-        # （即标题/引导条之后、状态行之上），无论显隐多少次顺序都稳定。
+        # 右卡：1-2-3 引导与进度条**常驻**（用户要求"内容不折叠、右卡不稳定"）。
+        # 两者都插在「状态行」之前、标题/引导条之后，顺序固定：1-2-3 在上、进度条在下；
+        # 任何状态切换都**不**隐藏/折叠内容，右卡整体高度随内容自然稳定，
+        # 导入/删除论文时顶部引导永不跑位（根治 v2.3.23 之前的"1-2-3 掉到右下角"问题）。
+        # ⚠️ 顺序用 ``before=self._status_row`` 钉死：先 pack 1-2-3、再 pack 进度条，
+        # 二者都落在状态行之前，1-2-3 恒在进度条之上，反复显隐也不乱序；且二者都不再
+        # ``pack_forget``，所以右卡高度只会随内容增长、绝不回缩（空态也保留进度条=第 0 步）。
         try:
-            if paper:
-                self._empty_state.pack_forget()
-                self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
-                                    before=self._status_row)
-            else:
-                self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0),
-                                       before=self._status_row)
-                self._progress.pack_forget()
+            self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                                   before=self._status_row)
+            self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                               before=self._status_row)
         except Exception:
             pass
 
