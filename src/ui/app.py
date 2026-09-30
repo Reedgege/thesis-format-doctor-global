@@ -1082,19 +1082,31 @@ class App:
                        fg=theme.TEXT_3, font=F["F_BODY"], anchor="w",
                        cursor="hand2")
         lbl.pack(side="left", fill="x", expand=True)
-        # v2.3.19：小「✕」清除按钮（右侧，默认隐藏；选中后由 _refresh_rows 显示）
+        # v2.3.19：小「✕」清除按钮（行尾，默认隐藏；选中后由 _refresh_rows 显示）。
+        # v2.3.29：做成带边框的小芯片、放在下拉箭头「⌄」左侧，hover 高亮——此前
+        # bg=SURFACE 与行同色、又挤在箭头右侧，实测几乎看不见 → 用户报"导入后没有叉号"。
         clear_btn = None
         if on_clear:
-            clear_btn = tk.Label(inner, text="✕", bg=theme.SURFACE, fg=theme.TEXT_3,
-                                 font=F["F_HELP"], cursor="hand2")
+            clear_btn = tk.Label(inner, text="✕", bg=theme.SURFACE, fg=theme.TEXT_2,
+                                 font=F["F_HELP"], cursor="hand2",
+                                 highlightbackground=theme.BORDER, highlightthickness=1,
+                                 padx=3, pady=0)
             clear_btn.pack(side="right", padx=(4, 0))
             clear_btn.pack_forget()
+            clear_btn._chevron = None   # 占位，下面绑定到真正的下拉箭头
             # 返回 "break" 阻止事件冒泡到整行（否则会同时触发「打开文件」）
             clear_btn.bind("<Button-1>", lambda e: (on_clear(), "break")[-1])
-            clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=theme.ERROR))
-            clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=theme.TEXT_3))
-        tk.Label(inner, text="⌄", bg=theme.SURFACE, fg=theme.SECONDARY,
-                 font=F["F_BODY"], cursor="hand2").pack(side="right")
+            clear_btn.bind("<Enter>",
+                           lambda e: clear_btn.config(bg=theme.PRIMARY_SOFT,
+                                                      fg=theme.ERROR))
+            clear_btn.bind("<Leave>",
+                           lambda e: clear_btn.config(bg=theme.SURFACE,
+                                                      fg=theme.TEXT_2))
+        chevron = tk.Label(inner, text="⌄", bg=theme.SURFACE, fg=theme.SECONDARY,
+                           font=F["F_BODY"], cursor="hand2")
+        chevron.pack(side="right")
+        if clear_btn is not None:
+            clear_btn._chevron = chevron
 
         def _click(_e=None):
             cmd()
@@ -1475,13 +1487,19 @@ class App:
         # 论文后显示在 1-2-3 之下（空态隐藏，避免右栏空白时还挂着 Prepare→Check→Fix，
         # 与 test_ui_redesign 约定一致）。
         try:
-            self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0),
-                                   before=self._status_row)
+            # v2.3.29：只在 manager 状态真变化时才 pack/forget —— 否则每次 _sync_ui 都
+            # 重新 pack 一遍 _progress，触发它的 <Configure>→draw() 重画（delete all 再
+            # 重绘），一次检查里被调多次就肉眼可见地闪（用户报"花屏"）。
+            if self._empty_state.winfo_manager() != "pack":
+                self._empty_state.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                                       before=self._status_row)
             if paper:
-                self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
-                                   before=self._status_row)
+                if self._progress.winfo_manager() != "pack":
+                    self._progress.pack(fill="x", pady=(theme.SECTION_GAP, 0),
+                                       before=self._status_row)
             else:
-                self._progress.pack_forget()
+                if self._progress.winfo_manager() == "pack":
+                    self._progress.pack_forget()
         except Exception:
             pass
 
@@ -1490,15 +1508,22 @@ class App:
         # ⚠️ 同上的 packing 顺序坑：结果明细也要 ``before=self._ops_group`` 钉回
         # 状态行之下、操作按钮组之上的原位，否则重新显示时会掉到右卡最底部。
         try:
+            # v2.3.29：同上，只在状态真变化时才 pack/forget，避免冗余 <Configure> 重画。
             if results:
-                self.summary_lbl.pack(fill="x", pady=(3, 0),
-                                      before=self._ops_group)
-                self.summary_hint.pack(fill="x", before=self._ops_group)
-                self._save_btn.pack(fill="x", pady=(8, 0))
+                if self.summary_lbl.winfo_manager() != "pack":
+                    self.summary_lbl.pack(fill="x", pady=(3, 0),
+                                          before=self._ops_group)
+                if self.summary_hint.winfo_manager() != "pack":
+                    self.summary_hint.pack(fill="x", before=self._ops_group)
+                if self._save_btn.winfo_manager() != "pack":
+                    self._save_btn.pack(fill="x", pady=(8, 0))
             else:
-                self.summary_lbl.pack_forget()
-                self.summary_hint.pack_forget()
-                self._save_btn.pack_forget()
+                if self.summary_lbl.winfo_manager() == "pack":
+                    self.summary_lbl.pack_forget()
+                if self.summary_hint.winfo_manager() == "pack":
+                    self.summary_hint.pack_forget()
+                if self._save_btn.winfo_manager() == "pack":
+                    self._save_btn.pack_forget()
         except Exception:
             pass
 
@@ -1870,8 +1895,11 @@ class App:
             else:
                 btn.place_forget()
         else:
+            # v2.3.29：把 ✕ 钉在下拉箭头「⌄」左侧（before=chevron），避免挤在箭头右边
+            # 被当成装饰、看不见。chevron 在 _select_field 里记到了 clear_btn._chevron。
+            before = getattr(btn, "_chevron", None)
             if show and btn.winfo_manager() != "pack":
-                btn.pack(side="right", padx=(4, 0))
+                btn.pack(side="right", padx=(4, 0), before=before)
             elif not show and btn.winfo_manager() == "pack":
                 btn.pack_forget()
 

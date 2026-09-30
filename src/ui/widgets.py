@@ -157,8 +157,11 @@ class RoundCard(tk.Frame):
         # 再也不触发，圆形/虚线卡片（上传投放区）就这么被压成一条线。
         if w <= 2:
             return
-        if h > 2:
+        # v2.3.29：尺寸没变就跳过重画 —— 否则每次 refresh()（一次检查里会被调约 3 次）
+        # 都 delete("card")+重绘圆角矩形，肉眼可见卡片边框/背景闪一下（用户报"花屏"）。
+        if h > 2 and getattr(self, "_last_draw", None) != (w, h):
             self._draw(w, h)
+            self._last_draw = (w, h)
         try:
             natural = self.inner.winfo_reqheight()
             self._cv.itemconfigure(
