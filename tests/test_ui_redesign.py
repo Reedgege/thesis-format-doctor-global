@@ -145,6 +145,42 @@ def test_collapse_toggles_visibility(ui):
     assert ui._adv_body.winfo_manager() == ""
 
 
+# ------------------------------------------------- v2.3.32 重绘闸门（防花屏）
+def test_paint_gate_nests_and_always_reopens(ui):
+    """重绘闸门必须能嵌套、且**异常路径也要开回来**。
+
+    背景（2026-10-01 真机像素取证）：布局变动分好几步走完，中间的
+    ``update_idletasks()`` 会把"还没走完"的画面推上屏（旧像素还残留在让出来的
+    区域里），屏幕上同时出现新旧两套内容 —— 就是用户报的"花屏"。修法是布局期间
+    用 WM_SETREDRAW 关掉顶层窗重绘，走完再开。`_toggle_advanced` 会嵌一层
+    `_relayout_all`，所以闸门**必须可重入**；而万一忘了开回来，窗口会永远空白，
+    比花屏严重得多，所以异常路径也钉在这里。
+    """
+    assert ui._paint_depth == 0 and ui._paint_frozen is False
+    with ui._paused_paint():
+        assert ui._paint_depth == 1, "闸门没有真的关上"
+        with ui._paused_paint():
+            assert ui._paint_depth == 2, "内层闸门没有计入嵌套深度"
+        assert ui._paint_depth == 1, "内层退出把外层闸门一起放开了"
+    assert ui._paint_depth == 0, "嵌套闸门没有逐层释放"
+    assert ui._paint_frozen is False, "闸门留在关闭态，窗口将不再重绘"
+
+    with pytest.raises(RuntimeError):
+        with ui._paused_paint():
+            raise RuntimeError("boom")
+    assert ui._paint_depth == 0 and ui._paint_frozen is False, \
+        "异常路径把重绘闸门留在了关闭状态"
+
+
+def test_flush_frame_is_the_emergency_release(ui):
+    """`_flush_frame` 是保险丝：即便闸门被留在关闭态，它也必须开回来并把画面画完。"""
+    ui._paint_depth = 1
+    ui._paint_frozen = True
+    ui._flush_frame()
+    assert ui._paint_depth == 0
+    assert ui._paint_frozen is False
+
+
 # ------------------------------------------------------------ 主按钮状态机
 def test_primary_button_state_machine(ui, tmp_path):
     """initial → ready → results → fixed 四态要走到位，且文案/可用态一致。"""

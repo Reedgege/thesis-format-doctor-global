@@ -54,6 +54,38 @@ from .modal_shell import ModalShell
 from .widgets import (BrandMark, IconBadge, ProgressBar, RoundButton, RoundCard,
                       ScrollArea, draw_icon)
 
+
+class _PausedPaint:
+    """重绘闸门（配合 ``App._freeze_paint`` / ``_thaw_paint``，见那里的长注释）。
+
+    用法：``with self._paused_paint(): ...布局变动...`` —— 块内不上屏，出块时
+    一次性画成最终画面。**必须**在 ``finally`` 里解冻：中途抛异常若忘了开回
+    WM_SETREDRAW，窗口会永远空白，那是比花屏严重得多的 P0。
+    """
+
+    __slots__ = ("_app",)
+
+    def __init__(self, app):
+        self._app = app
+
+    def __enter__(self):
+        try:
+            self._app._freeze_paint(True)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self._app._freeze_paint(False)
+        except Exception:
+            try:
+                self._app._thaw_paint()
+            except Exception:
+                pass
+        return False
+
+
 # --- 原生拖拽上传（仅 Windows）：把文档拖进窗口即选中 ---------------------------
 if sys.platform == "win32":
     class _FileDropTarget:
@@ -295,6 +327,9 @@ class App:
         self._report_is_placeholder = True
         self._step_index = 0
         self._busy = False
+        # v2.3.32 重绘闸门：嵌套深度 + 是否已关闸（见 _freeze_paint 的长注释）
+        self._paint_depth = 0
+        self._paint_frozen = False
         self._closing = False        # 根窗口已销毁（见 _on_destroy）
         self._resize_after = None    # 启动后首帧的延迟重排句柄
         # v2.2.0 状态机：phase 决定主按钮文案/可用态与步进位置（见 _sync_ui）
@@ -376,26 +411,30 @@ class App:
         「内容涨了但卡片没涨、滚动条也没出现」→ 用户看不到也滚不到
         （Codex 2026-09-12 P0-2）。这个方法是那类问题的**唯一收口**。
         """
-        # 先内后外：嵌套卡片没有自己的布局入口，父卡量到的会是它们的旧请求高度。
-        for card in list(getattr(self, "_extra_cards", [])):
-            if card is not None:
+        # v2.3.32：整个过程关掉重绘。量卡片要一连跑好几次 update_idletasks，
+        # 每一次都会把"还没走完"的中间画面推上屏（旧像素还残留在让出来的区域里），
+        # 屏幕上就同时出现新旧两套内容 = 花屏。闸门一关，中间态一帧都不上屏。
+        with self._paused_paint():
+            # 先内后外：嵌套卡片没有自己的布局入口，父卡量到的会是它们的旧请求高度。
+            for card in list(getattr(self, "_extra_cards", [])):
+                if card is not None:
+                    try:
+                        card.refresh()
+                    except Exception:
+                        pass
+            for card in (getattr(self, "_left_card", None),
+                         getattr(self, "_right_card", None)):
+                if card is not None:
+                    try:
+                        card.refresh()
+                    except Exception:
+                        pass
+            area = getattr(self, "_main_scroll", None)
+            if area is not None:
                 try:
-                    card.refresh()
+                    area.refresh_layout()
                 except Exception:
                     pass
-        for card in (getattr(self, "_left_card", None),
-                     getattr(self, "_right_card", None)):
-            if card is not None:
-                try:
-                    card.refresh()
-                except Exception:
-                    pass
-        area = getattr(self, "_main_scroll", None)
-        if area is not None:
-            try:
-                area.refresh_layout()
-            except Exception:
-                pass
 
     # ------------------------------------------------------------ 基础工具
     def tr(self, key: str, *args):
@@ -1219,19 +1258,24 @@ class App:
 
     def _toggle_advanced(self):
         """展开 / 收起 Advanced options（返回展开后的状态，便于测试断言）。"""
-        self._adv_open = not self._adv_open
-        try:
-            if self._adv_open:
-                self._adv_body.pack(fill="x", pady=(theme.SECTION_GAP, 0))
-                self._adv_chev.config(text="▾")
-            else:
-                self._adv_body.pack_forget()
-                self._adv_chev.config(text="▸")
-        except Exception:
-            pass
-        # 展开/收起改变了左卡内容高度 —— 必须主动重新测量，
-        # 否则新出现的那两行会被圆角矩形裁掉且滚不到（见 _relayout_all）。
-        self._relayout_all()
+        # v2.3.32：整段（显隐 + 重新测量）都关在闸门里 —— 实测展开/收起各有
+        # 数百毫秒的中间帧，屏幕上会出现"同一行字出现两遍、卡片被撕开"的花屏。
+        with self._paused_paint():
+            self._adv_open = not self._adv_open
+            try:
+                if self._adv_open:
+                    self._adv_body.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+                    self._adv_chev.config(text="▾")
+                else:
+                    self._adv_body.pack_forget()
+                    self._adv_chev.config(text="▸")
+            except Exception:
+                pass
+            # 展开/收起改变了左卡内容高度 —— 必须主动重新测量，
+            # 否则新出现的那两行会被圆角矩形裁掉且滚不到（见 _relayout_all）。
+            self._relayout_all()
+        # 出闸门后补一次完整刷新，确保最终画面立刻上屏（不等事件循环）。
+        self._flush_frame()
         return self._adv_open
 
     # ------------------------------------------------------------ 右栏
@@ -1779,14 +1823,114 @@ class App:
                 (s.get("pass", 0), s.get("info", 0),
                  s.get("warn", 0), s.get("fail", 0)))
 
-    def _set_busy(self, busy: bool):
-        """忙态统一交给状态机（RoundButton 自绘，没有 ttk 的 state 选项）。"""
-        self._busy = bool(busy)
-        self._sync_ui()
+    # ------------------------------------------------------------ 重绘闸门
+    # v2.3.32 "花屏"根治（2026-10-01 真机像素取证）：
+    #
+    # 一次布局变动要分好几步才走完：pack/unpack → 量卡片内容 → 改画布请求尺寸 →
+    # 重排卡片内部控件。`update_idletasks()` **会**把当时的画面推上屏幕，但它推的是
+    # 一个**还没走完**的中间状态，而且推得不完整（旧像素残留在被让出来的区域里）——
+    # 于是屏幕上同时出现"新旧两套内容"：标题被截断、进度条压在步骤行上、同一行字
+    # 出现两遍。这就是老板报的"花屏"（截图实证：点 Check 后右卡糊成一团）。
+    #
+    # 更糟的是 `run_check()` / `fix_docx()` 会**阻塞主线程好几秒**，事件循环停摆，
+    # 坏帧就一直挂在屏幕上"花"着不消失，直到跑完才自己恢复。
+    #
+    # 解法：给重绘装一道**闸门**。布局期间用 Win32 的 WM_SETREDRAW 把顶层窗的重绘
+    # 关掉（Tk 的控件全部画在顶层窗里，关一个就够），布局走完再打开并强制整窗重绘。
+    # 用户看到的只有"变动前"和"变动后"两个正常画面，中间态一帧都不会上屏。
+    # 非 Windows 平台直接 no-op，退回原有行为（X11/macOS 的 Tk 本来就没这毛病）。
+    _WM_SETREDRAW = 0x000B
+    _RDW_FLAGS = 0x0001 | 0x0004 | 0x0080 | 0x0100   # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
+
+    def _paint_hwnds(self):
+        """顶层窗句柄（Tk 在 Windows 上会给顶层窗套一层 wrapper，两个都发一遍最稳）。"""
+        out = []
+        try:
+            h = self.root.winfo_id()
+            if h:
+                out.append(h)
+            p = ctypes.windll.user32.GetParent(h)
+            if p:
+                out.append(p)
+        except Exception:
+            pass
+        return out
+
+    def _freeze_paint(self, freeze: bool):
+        """关 / 开整窗重绘，**可嵌套**（闸门会一层套一层，见 `_toggle_advanced`）。
+
+        用深度计数：只有最外层关闸时才真的发 WM_SETREDRAW(0)，只有回到最外层时才
+        真的打开并重绘。否则内层一退出就提前解冻，外层剩下的动作又会花屏。
+        """
+        depth = getattr(self, "_paint_depth", 0)
+        if freeze:
+            # 深度计数在**所有平台**都维护：非 Windows 虽然没得可冻结，但"闸门有没有
+            # 逐层关好、有没有漏开"这个不变量必须一致，测试才钉得住。
+            self._paint_depth = depth + 1
+            if depth > 0:
+                return                      # 已在闸门内，什么都不用做
+            self._paint_frozen = True
+            if not sys.platform.startswith("win"):
+                return
+            for h in self._paint_hwnds():
+                try:
+                    ctypes.windll.user32.SendMessageW(h, self._WM_SETREDRAW, 0, 0)
+                except Exception:
+                    pass
+            return
+        # 解冻
+        self._paint_depth = max(0, depth - 1)
+        if self._paint_depth > 0:
+            return
+        self._thaw_paint()
+
+    def _thaw_paint(self):
+        """强制开闸 + 整窗重绘。是"保险丝"：异常路径也要保证窗口能重新画出来。"""
+        self._paint_depth = 0
+        self._paint_frozen = False
+        if not sys.platform.startswith("win"):
+            return
+        user32 = ctypes.windll.user32
+        for h in self._paint_hwnds():
+            try:
+                user32.SendMessageW(h, self._WM_SETREDRAW, 1, 0)
+                user32.RedrawWindow(h, None, None, self._RDW_FLAGS)
+            except Exception:
+                pass
+
+    def _paused_paint(self):
+        """上下文管理器：块内一切布局变动都不上屏，出块时一次性画成最终画面。"""
+        return _PausedPaint(self)
+
+    def _flush_frame(self):
+        """把当前界面**完整画一遍**再返回（几何 + 重绘都处理）。
+
+        ``update_idletasks()`` 只跑几何计算、且画得**不完整**（见上面重绘闸门的说明）；
+        ``update()`` 才会把重绘一并做完。紧接着要进"阻塞好几秒"的引擎调用时必须用它，
+        否则屏幕上会一直挂着坏帧（实测：冻结帧 vs 正确帧差异 4.64% → 0.00%）。
+
+        安全说明：``update()`` 会派发待处理的输入事件，但调用点都在按钮回调里，
+        且 ``_busy`` 会把 ``_run`` / ``_run_fix`` 的重入挡在门口。
+        """
+        self._thaw_paint()          # 万一是异常路径逃出来的，先解冻
         try:
             self.root.update_idletasks()
         except Exception:
             pass
+        if getattr(self, "_closing", False):
+            return
+        try:
+            self.root.update()
+        except Exception:
+            pass
+
+    def _set_busy(self, busy: bool):
+        """忙态统一交给状态机（RoundButton 自绘，没有 ttk 的 state 选项）。"""
+        self._busy = bool(busy)
+        with self._paused_paint():
+            self._sync_ui()
+        # 必须用 _flush_frame（而非 update_idletasks）：见 v2.3.32 花屏说明。
+        self._flush_frame()
 
     # ------------------------------------------------------------ 语言切换
     def _set_lang(self, lang: str):
@@ -2406,6 +2550,9 @@ class App:
         self._set_busy(True)
         self._set_status(tr("status_checking"), "run")
         self._set_bar("run")
+        # v2.3.32：把状态行/引导条的最后一次改动也画进去，再进阻塞的引擎调用。
+        # 少了这一下，屏幕上冻结的仍是"状态已变但没重绘"的坏帧（花屏）。
+        self._flush_frame()
         try:
             target = self._build_target()
             prof, findings = checker.run_check(docx, target)
@@ -2507,6 +2654,8 @@ class App:
         self._set_busy(True)
         self._set_status(tr("status_fixing"), "run")
         self._set_bar("run", "bar_fixing")
+        # v2.3.32：同上，进阻塞的 compute_changes 之前先画成正确帧。
+        self._flush_frame()
         # 整段「算改动 → 授权裁决 → 预览」都在 try 里，由 finally 收忙态：
         # 任何一处抛异常（例如 gate 结构异常、文案格式化失败）都不能让
         # `_busy` 卡在 True —— 那会让主按钮永久停在 "Checking…"。
