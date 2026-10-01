@@ -482,9 +482,11 @@ class App:
         ① PNG + ``iconphoto``：跨平台标准做法。``PhotoImage`` 必须挂到实例属性上
            保留引用——只作为临时对象传进去时一旦被 GC 回收，部分 Tk 版本会把图标
            还原成默认（经典坑，v2.0.2 踩过）。
-        ② Windows 的 ``.ico`` + ``iconbitmap``：个别环境的 Tcl 没编进 PNG 解码器
-           （Tk 安装不完整），① 会静默失败；此时用仓库自带的 ``assets/icon.ico``
-           兜底 —— ``iconbitmap`` 读原生 ico，不依赖 PNG 解码器。
+        ② Windows 的 ``.ico`` + Win32 API：部分 Tcl/Nuitka 打包后 ``iconbitmap``
+           会静默不设置图标句柄（实测 ``WM_GETICON`` 仍返回 0），导致左上角仍是
+           Windows 默认程序图标。这里绕过 Tcl，用 ``LoadImageW`` 读原生 ``.ico``，
+           再 ``WM_SETICON`` 直接写当前窗口句柄，并 ``SetClassLongPtr`` 同步窗口类
+           图标，让后续弹出的 Toplevel 也带上图标。
         """
         try:
             png = iconpath.find_icon()
@@ -498,11 +500,40 @@ class App:
                 ico = iconpath.find_icon_ico()
                 if ico:
                     try:
-                        self.root.iconbitmap(default=ico)
+                        self._set_win_icon_from_ico(ico)
                     except Exception:
                         pass
         except Exception:
             pass
+
+    def _set_win_icon_from_ico(self, ico_path: str):
+        """Windows：用 Win32 API 把 ``.ico`` 设成标题栏/任务栏/类图标。
+
+        任何异常都向上抛，由 ``_apply_window_icon`` 吞掉，绝不影响启动。
+        """
+        user32 = ctypes.windll.user32
+        hwnd = self.root.winfo_id()
+        if not hwnd:
+            return
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        LR_DEFAULTSIZE = 0x0040
+        LR_SHARED = 0x8000
+        WM_SETICON = 0x0080
+        GCLP_HICON = -14
+        GCLP_HICONSM = -34
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        flags = LR_LOADFROMFILE | LR_DEFAULTSIZE | LR_SHARED
+
+        hsm = user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, flags)
+        hlg = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, flags)
+        if hsm:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hsm)
+            user32.SetClassLongPtrW(hwnd, GCLP_HICONSM, hsm)
+        if hlg:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hlg)
+            user32.SetClassLongPtrW(hwnd, GCLP_HICON, hlg)
 
     def _on_resize(self, _evt=None):
         if getattr(self, "_closing", False):
@@ -2901,8 +2932,12 @@ class App:
 def main():
     root = tk.Tk()
     root.withdraw()          # 消掉启动一闪：先隐藏主窗，等 UI 全部建完再显示
-    App(root)
+    app = App(root)
     root.deiconify()         # UI 构建完毕，正式显示
+    # v2.3.36:启动首帧强制整窗重绘——缩放屏(125%/150%)首画常空白、要等点击才出，
+    # 这里在 mainloop 前用与运行时同源的 _flush_frame 把最终画面画一次
+    # （不生中间态、不带回花屏；闸门保护在 Check/Fix/展开等运行时路径里原封未动）。
+    app._flush_frame()
     root.mainloop()
 
 
