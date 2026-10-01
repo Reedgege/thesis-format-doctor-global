@@ -361,6 +361,11 @@ class App:
         self._paint_frozen = False
         self._closing = False        # 根窗口已销毁（见 _on_destroy）
         self._resize_after = None    # 启动后首帧的延迟重排句柄
+        # 首帧真实尺寸未就绪标记：deiconify 后 WM 尚未报告客户区尺寸，winfo_width
+        # 仍是 1×1，此刻跑 _relayout_all 会把卡片按 1px 残框画成首屏（启动空白根因，
+        # v2.3.36 的 _flush_frame 反而把残帧提前画上了屏）。等首次拿到真实宽度再
+        # 统一重排一次，见 _on_resize 里的 _first_layout_done。
+        self._first_layout_done = False
         # v2.2.0 状态机：phase 决定主按钮文案/可用态与步进位置（见 _sync_ui）
         self._phase = "idle"          # idle / ready / results / fixed / error
         self._last_issues = None      # 最近一次体检的问题数（warn+fail）
@@ -546,6 +551,15 @@ class App:
             w = self.root.winfo_width()
         except Exception:
             return
+        # 首帧：窗口拿到真实客户区尺寸后，才第一次真正重排卡片内容。此前（1×1 时）
+        # _relayout_all 已把卡片画成残框，这里补一次真实尺寸下的重排把首屏纠正过来，
+        # 不依赖用户"点一下上边缘"（那只是靠点击触发 <Configure> 才碰巧修好）。
+        if not self._first_layout_done and w > 2:
+            self._first_layout_done = True
+            try:
+                self._relayout_all()
+            except Exception:
+                pass
         factor = self.F.scale_for_width(w)
         if self._last_scale is not None and abs(factor - self._last_scale) < 0.02:
             # scale 没变也要把主体顶留白重设成当前 _top_gap()：顶栏高度在重建/切语言
@@ -2934,10 +2948,15 @@ def main():
     root.withdraw()          # 消掉启动一闪：先隐藏主窗，等 UI 全部建完再显示
     app = App(root)
     root.deiconify()         # UI 构建完毕，正式显示
-    # v2.3.36:启动首帧强制整窗重绘——缩放屏(125%/150%)首画常空白、要等点击才出，
-    # 这里在 mainloop 前用与运行时同源的 _flush_frame 把最终画面画一次
-    # （不生中间态、不带回花屏；闸门保护在 Check/Fix/展开等运行时路径里原封未动）。
-    app._flush_frame()
+    # v2.3.36 曾在这里直接 app._flush_frame() 想"强制首帧重绘"，实测反而触发
+    # after_idle(_relayout_all) 在窗口尺寸还是 1×1 时把卡片画成残框（启动空白根因）。
+    # v2.3.37 改为：deiconify 后只驱动一轮事件循环，让 <Configure> 派发、_on_resize
+    # 拿到真实客户区宽度后，再在真实尺寸下 _relayout_all（见 _first_layout_done）。
+    # 这样首帧画的就是完整界面，不依赖用户"点一下上边缘"。
+    try:
+        root.update()
+    except Exception:
+        pass
     root.mainloop()
 
 
