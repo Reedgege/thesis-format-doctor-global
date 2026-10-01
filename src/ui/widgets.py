@@ -224,41 +224,30 @@ class RoundCard(tk.Frame):
 
         先 ``update_idletasks`` 让刚 pack 的子控件把请求尺寸算出来，再测量。
         """
-        # v2.3.19：某些标签（如 _auto_wrap 管理的信任卡正文）在 refresh 过程中才会
-        # 根据新宽度换行，导致第一次量到的 inner 高度是旧值；只刷新一次的话，圆角矩形
-        # 会按旧高度画，底边框正好切在换行后的新内容上。这里最多迭代 3 次，直到
-        # inner 请求高度稳定，确保卡片下沿真正包住所有内容。
-        last_h = None
-        for _ in range(3):
-            try:
-                self.inner.update_idletasks()
-            except Exception:
-                pass
-            try:
-                cur_h = self.inner.winfo_reqheight()
-            except Exception:
-                cur_h = None
-            try:
-                self._sync_request()
-            except Exception:
-                pass
-            # v2.3.18：``_sync_request`` 刚 ``configure(width=w, height=h)`` 完，画布几何
-            # 可能还没被 Tk 真正落定，紧接着的 ``_relayout`` 用 ``winfo_height()`` 读到的
-            # 仍是旧高度 —— 于是圆角矩形按旧高画、底边框切在新内容（如导入论文后右卡底部
-            # 的信任卡/商业行）上。"再 update_idletasks 一脚"把几何刷出来，保证重画时下沿
-            # 跟着内容长到正确位置。
-            try:
-                self._cv.update_idletasks()
-            except Exception:
-                pass
-            try:
-                self._relayout()
-            except Exception:
-                pass
-            if cur_h is not None and cur_h == last_h:
-                break
-            last_h = cur_h
-
+        # v2.3.31 修复"花屏"：不再在循环里反复 `update_idletasks` 强制刷屏。
+        #
+        # 旧逻辑每轮都「调画布尺寸 → 立即刷屏 → 才重画圆角」，刷屏那一刻画布已经
+        # 变高/变宽、圆角矩形却还按旧尺寸，中间帧被真实画到屏幕上，造成闪屏/花屏/
+        # 内容叠影。改成只做几何计算、调请求尺寸，最后 `_relayout` 按当前实际尺寸画
+        # 一次；若父布局因此给了新尺寸，<Configure> 会再触发一次重画，两帧都是
+        # "尺寸与图形匹配"的正确画面，只是完整刷新而非残影。
+        #
+        # 保留 inner.update_idletasks 一次：让子控件（特别是 _auto_wrap 标签）在测量前
+        # 先把请求尺寸算出来；_sync_request 按测到的高设置画布请求尺寸；_relayout 里
+        # 先同步 inner 宽高再画。若因换行高度还有变化，下一轮 <Configure>/refresh 会
+        # 自然补上，不需要在同一事件里强刷多帧。
+        try:
+            self.inner.update_idletasks()
+        except Exception:
+            pass
+        try:
+            self._sync_request()
+        except Exception:
+            pass
+        try:
+            self._relayout()
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # 竖向滚动区
