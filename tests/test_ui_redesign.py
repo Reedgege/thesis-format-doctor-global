@@ -510,3 +510,42 @@ def test_scroll_area_shows_bar_only_when_needed(_tk_session):
             win.destroy()
         except Exception:
             pass
+
+
+def test_long_filename_does_not_cover_clear_button(ui):
+    """v2.3.33 回归：超长模板/LaTeX 文件名不得盖住右侧「✕」清除按钮。
+
+    旧实现文件名 label 用 ``expand=True`` 吸收全部宽度并溢出到右框，长文件名会盖住
+    ✕；修复后拆成「左框(文件名) / 右框(✕+⌄)」两框，文件名被框宽裁住、动态加省略号，
+    物理上不可能盖住清除按钮。本用例用真实 ``_select_field`` 建行、喂超长名，断言
+    左框右边界不越过右框左边界、✕ 在文件名右侧、且超长名被截断加省略号、短名不截。
+    """
+    import tkinter as tk
+
+    parent = tk.Frame(ui.root, width=400, height=44)
+    parent.pack_propagate(False)
+    parent.pack(padx=20, pady=10)
+    long = ("Very_Long_School_Template_File_Name_That_Definitely_Exceeds_"
+            "The_Field_Width_2026_Edition_Final_Final.docx")
+    lbl, clear = ui._select_field(parent, "row_template_placeholder",
+                                  lambda: None, on_clear=lambda: None)
+    lbl._full_text = "●   " + long
+    ui._set_clear_visible(clear, True)
+    ui._fit_field_label(lbl)
+    ui.root.update_idletasks()
+    ui.root.update()
+
+    left = lbl.master
+    inner = left.master
+    right_f = [c for c in inner.winfo_children() if c is not left][0]
+
+    # 文件名左框右边界不得越过右框（✕/⌄）左边界
+    assert (left.winfo_rootx() + left.winfo_width()) <= right_f.winfo_rootx() + 1
+    # ✕ 必须在文件名右侧
+    assert clear.winfo_rootx() >= (left.winfo_rootx() + left.winfo_width()) - 1
+    # 超长名被截断加省略号
+    assert lbl["text"].endswith("…"), lbl["text"]
+    # 短名不应被截断
+    lbl._full_text = "short.docx"
+    ui._fit_field_label(lbl)
+    assert not lbl["text"].endswith("…"), lbl["text"]

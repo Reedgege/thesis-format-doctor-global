@@ -1117,20 +1117,32 @@ class App:
         box.pack(fill="x")
         inner = tk.Frame(box, bg=theme.SURFACE)
         inner.pack(fill="x", padx=10, pady=3)
-        lbl = tk.Label(inner, text=self.tr(placeholder_key), bg=theme.SURFACE,
+        # v2.3.33：根治「长文件名盖住 ✕」。拆成左右两框——
+        #   左框（expand）吸收剩余宽度，文件名 label 填在其中、文字被框宽裁住，
+        #   物理上不可能溢出到右框；右框放「✕ / ⌄」固定控件（自然宽度，永远在右侧）。
+        # 这样无论文件名多长都不会盖住清除按钮；下面的动态省略号只是锦上添花。
+        left = tk.Frame(inner, bg=theme.SURFACE)
+        left.pack(side="left", fill="x")
+        right = tk.Frame(inner, bg=theme.SURFACE)
+        right.pack(side="right")
+        lbl = tk.Label(left, text=self.tr(placeholder_key), bg=theme.SURFACE,
                        fg=theme.TEXT_3, font=F["F_BODY"], anchor="w",
                        cursor="hand2")
-        lbl.pack(side="left", fill="x", expand=True)
+        lbl.pack(side="left", fill="x", anchor="w")
+        # v2.3.33：存完整名，按左框真实像素宽动态截断加省略号（随窗口缩放 / Advanced
+        # 展开自动重算），保证文件名永远不溢出左框、更不盖住右侧 ✕/⌄。
+        lbl._full_text = ""
+        lbl.bind("<Configure>", lambda e: self._fit_field_label(lbl))
         # v2.3.19：小「✕」清除按钮（行尾，默认隐藏；选中后由 _refresh_rows 显示）。
         # v2.3.29：做成带边框的小芯片、放在下拉箭头「⌄」左侧，hover 高亮——此前
         # bg=SURFACE 与行同色、又挤在箭头右侧，实测几乎看不见 → 用户报"导入后没有叉号"。
         clear_btn = None
         if on_clear:
-            clear_btn = tk.Label(inner, text="✕", bg=theme.SURFACE, fg=theme.TEXT_2,
+            clear_btn = tk.Label(right, text="✕", bg=theme.SURFACE, fg=theme.TEXT_2,
                                  font=F["F_HELP"], cursor="hand2",
                                  highlightbackground=theme.BORDER, highlightthickness=1,
                                  padx=3, pady=0)
-            clear_btn.pack(side="right", padx=(4, 0))
+            clear_btn.pack(side="left", padx=(4, 0))
             clear_btn.pack_forget()
             clear_btn._chevron = None   # 占位，下面绑定到真正的下拉箭头
             # 返回 "break" 阻止事件冒泡到整行（否则会同时触发「打开文件」）
@@ -1141,9 +1153,9 @@ class App:
             clear_btn.bind("<Leave>",
                            lambda e: clear_btn.config(bg=theme.SURFACE,
                                                       fg=theme.TEXT_2))
-        chevron = tk.Label(inner, text="⌄", bg=theme.SURFACE, fg=theme.SECONDARY,
+        chevron = tk.Label(right, text="⌄", bg=theme.SURFACE, fg=theme.SECONDARY,
                            font=F["F_BODY"], cursor="hand2")
-        chevron.pack(side="right")
+        chevron.pack(side="left")
         if clear_btn is not None:
             clear_btn._chevron = chevron
 
@@ -1679,10 +1691,13 @@ class App:
         def _sel(lbl, value, none_key):
             if value:
                 name = os.path.basename(value)
-                if len(name) > 40:
-                    name = name[:18] + " … " + name[-18:]
-                lbl.config(text="●   " + name, fg=theme.PRIMARY)
+                full = "●   " + name
+                lbl._full_text = full
+                lbl.config(fg=theme.PRIMARY)
+                # v2.3.33：按实际像素宽动态截断，避免长文件名盖住右侧 ✕/⌄
+                self._fit_field_label(lbl)
             else:
+                lbl._full_text = ""
                 lbl.config(text=tr(none_key), fg=theme.TEXT_3)
 
         # 投放区主行文案：未选时显示「Select a document」，已选时显示文件名 + 大小，
@@ -2030,6 +2045,63 @@ class App:
         if self._phase in ("results", "fixed"):
             self._invalidate_results()
         self._refresh_rows()
+
+    # ------------------------------------------------------------ 文件名动态截断（v2.3.33）
+    def _fit_field_label(self, lbl):
+        """按 label 实际像素宽把完整文件名截断成「…」，保证不盖住右侧「✕ / ⌄」。
+
+        取代旧版固定 40 字符截断：窄面板（Advanced 里的 LaTeX 行）或更长文件名仍会
+        像素溢出、盖住清除按钮。此处量真实宽度、二分截到能装下的最长前缀 + 省略号；
+        label 未布局好（宽 ≤ 1）时延到 idle 再量，避免量到 0 误判。
+        """
+        full = getattr(lbl, "_full_text", None)
+        if not full:
+            return
+        # 量「左框」的宽（label 被框住，文字超出即裁切、绝不溢出到右侧 ✕/⌄ 框）。
+        holder = lbl.master
+        total = holder.winfo_width()
+        if total <= 1:
+            self.root.after_idle(lambda: self._fit_field_label(lbl))
+            return
+        avail = total - 8  # 左右内边距留白
+        if avail <= 0:
+            return
+        f = lbl["font"]
+        # lbl["font"] 拿到的是 Tk 字体名字符串（如 "font30"），用 lbl.tk.call 量像素宽。
+        # 注意 App 没有 .tk 属性，必须用控件自己的 lbl.tk，否则会抛 AttributeError
+        # 被 except 吞掉、误把完整名设回去 → 截断失效、长名盖住 ✕。
+        _measure = lambda t: lbl.tk.call("font", "measure", f, t)
+        try:
+            full_w = _measure(full)
+        except Exception:
+            full_w = None
+        if full_w is None or full_w <= avail:
+            if lbl["text"] != full:
+                lbl["text"] = full
+            return
+        ell = "…"
+        try:
+            ell_w = _measure(ell)
+        except Exception:
+            ell_w = 0
+        max_body = avail - ell_w
+        if max_body <= 0:
+            lbl["text"] = ell
+            return
+        lo, hi = 0, len(full)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            try:
+                w = _measure(full[:mid])
+            except Exception:
+                w = mid * 8
+            if w <= max_body:
+                lo = mid
+            else:
+                hi = mid - 1
+        new = full[:lo] + ell
+        if lbl["text"] != new:
+            lbl["text"] = new
 
     def _set_clear_visible(self, btn, show):
         """显隐某个「✕」清除按钮（论文用 place 固定右上角，其余用 pack 行尾）。"""
