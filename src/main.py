@@ -1,21 +1,22 @@
-"""PaperFormat Pro —— 命令行入口（离线）。
+"""PaperFormat Pro — command-line entry point (offline).
 
-用法：
-  python -m src.main gui                       # 启动桌面 GUI
-  python -m src.main check 论文.docx --spec APA
-  python -m src.main check 论文.docx --spec APA --template 学校模板.docx
-  python -m src.main check 论文.docx --ai ai填的表单.json
-  python -m src.main check 论文.docx --latex 学校模板.tex
-  python -m src.main check 论文.docx --spec APA --json          # 结构化输出
-  python -m src.main fix   论文.docx --spec APA [--out 输出.docx] [--preview] [--json]
-  python -m src.main activate 激活码
-  python -m src.main status                    # 查看授权状态
-  python -m src.main export-schema out.yaml    # 导出 AI 填表模板
+Usage:
+  python -m src.main gui                       # launch the desktop GUI
+  python -m src.main check thesis.docx --spec APA
+  python -m src.main check thesis.docx --spec APA --template school-template.docx
+  python -m src.main check thesis.docx --ai ai-filled-form.json
+  python -m src.main check thesis.docx --latex school-template.tex
+  python -m src.main check thesis.docx --spec APA --json          # structured output
+  python -m src.main fix   thesis.docx --spec APA [--out output.docx] [--preview] [--json]
+  python -m src.main activate <code>
+  python -m src.main status                    # show license status
+  python -m src.main export-schema out.yaml    # export the AI questionnaire template
 
-说明：
-- 检查（check）永远免费、无门禁；
-- 修正（fix）首次免费，之后需激活码；文档已合规时不落盘、不消耗试用；
-- JSON 输出一律走 UTF-8 字节流，任何终端都可被外部程序解析。
+Notes:
+- Checking (check) is always free, with no gate.
+- Fixing (fix) is free the first time, then requires an activation code; if the
+  document already complies, nothing is written and no trial credit is used.
+- JSON output is always emitted as a UTF-8 byte stream, parseable by any terminal.
 """
 
 from __future__ import annotations
@@ -161,16 +162,16 @@ def report_to_dict(docx_path, target, prof, findings) -> dict:
 def cmd_check(args):
     _init_console()
     if not os.path.isfile(args.docx):
-        print(f"错误：找不到文档 {args.docx}", file=sys.stderr)
+        print(f"Error: document not found: {args.docx}", file=sys.stderr)
         return 2
     try:
         target = _build_target(args)
         prof, findings = checker.run_check(args.docx, target)
     except DocxReadError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
     except (ValueError, FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"错误：构建目标画像失败：{e}", file=sys.stderr)
+        print(f"Error: failed to build target profile: {e}", file=sys.stderr)
         return 2
     if getattr(args, "json", False):
         text = json.dumps(report_to_dict(args.docx, target, prof, findings),
@@ -181,20 +182,24 @@ def cmd_check(args):
                 with open(args.out, "w", encoding="utf-8") as f:
                     f.write(text)
             except OSError as e:
-                print(f"错误：无法写入 {args.out}：{e}", file=sys.stderr)
+                print(f"Error: cannot write {args.out}: {e}", file=sys.stderr)
                 return 2
-            print(f"\nJSON 报告已写入：{args.out}", file=sys.stderr)
+            print(f"\nJSON report written to: {args.out}", file=sys.stderr)
         return 0
     rep = report_mod.build_report(args.docx, target, prof, findings)
     print(rep.markdown)
     if args.out:
+        out = args.out
         try:
-            with open(args.out, "w", encoding="utf-8") as f:
-                f.write(rep.markdown)
+            if out.lower().endswith(".docx"):
+                report_mod.build_docx_report(rep, out)
+            else:
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write(rep.markdown)
         except OSError as e:
-            print(f"错误：无法写入 {args.out}：{e}", file=sys.stderr)
+            print(f"Error: cannot write {out}: {e}", file=sys.stderr)
             return 2
-        print(f"\n报告已写入：{args.out}")
+        print(f"\nReport written to: {out}")
     return 0
 
 
@@ -207,26 +212,26 @@ def cmd_gui(args):
     try:
         from .ui.app import main as gui_main
     except Exception as e:
-        _fatal_dialog("无法启动图形界面：当前环境缺少 Tk（_tkinter）。\n\n"
-                      "细节：%s\n\n"
-                      "可改用命令行 `check` 子命令做体检。" % e)
+        _fatal_dialog("Cannot start the graphical interface: Tk (_tkinter) is missing from this environment.\n\n"
+                      "Details: %s\n\n"
+                      "You can use the `check` subcommand from the command line instead." % e)
         return 1
     try:
         gui_main()
         return 0
-    except Exception as e:  # noqa: BLE001  界面异常退出也要让用户看得见
-        _fatal_dialog("图形界面异常退出：\n\n%s: %s" % (type(e).__name__, e))
+    except Exception as e:  # noqa: BLE001  GUI crashes must still be visible to the user
+        _fatal_dialog("The graphical interface exited unexpectedly:\n\n%s: %s" % (type(e).__name__, e))
         return 1
 
 
 def cmd_export_schema(args):
     if not os.path.isfile(_TEMPLATE):
-        print("错误：找不到内置模板文件。", file=sys.stderr)
+        print("Error: built-in template file not found.", file=sys.stderr)
         return 2
     with open(_TEMPLATE, "r", encoding="utf-8") as src, \
-            open(args.out, "w", encoding="utf-8") as out:
+        open(args.out, "w", encoding="utf-8") as out:
         out.write(src.read())
-    print(f"AI 问卷模板已导出：{args.out}")
+    print(f"AI questionnaire template exported to: {args.out}")
     return 0
 
 
@@ -245,26 +250,26 @@ def _summary_lines(summary: dict) -> list:
         margins = {k.replace("margin_", "").replace("_in", ""): v
                    for k, v in page.items() if k.startswith("margin_") and v is not None}
         if margins:
-            out.append("页边距 → " + "，".join(f"{s} {v}″" for s, v in margins.items()))
+            out.append("Margins → " + ", ".join(f"{s} {v}″" for s, v in margins.items()))
         if page.get("font_family"):
             sz = f" {page['font_size_pt']}pt" if page.get("font_size_pt") else ""
-            out.append(f"正文字体 → {page['font_family']}{sz}")
+            out.append(f"Body font → {page['font_family']}{sz}")
         if page.get("line_spacing") is not None:
-            out.append(f"行距 → {page['line_spacing']}x")
+            out.append(f"Line spacing → {page['line_spacing']}x")
         if applied.get("body_alignment"):
-            out.append(f"正文对齐 → {applied['body_alignment']}")
+            out.append(f"Body alignment → {applied['body_alignment']}")
         if applied.get("first_line_indent_in") is not None:
-            out.append(f"正文首行缩进 → {applied['first_line_indent_in']}″")
+            out.append(f"Body first-line indent → {applied['first_line_indent_in']}″")
         if applied.get("space_after_pt") is not None:
-            out.append(f"段后间距 → {applied['space_after_pt']}pt")
+            out.append(f"Space after paragraph → {applied['space_after_pt']}pt")
     if summary.get("reference_style"):
-        kind = "顺序编码 [n]" if summary.get("reference_numbered") else "著者-出版年"
-        out.append(f"参考文献 → {summary['reference_style']}"
-                   f"（悬挂缩进 {summary.get('reference_hanging_indent_in')}″，{kind}）")
+        kind = "Numbered [n]" if summary.get("reference_numbered") else "Author-Year"
+        out.append(f"References → {summary['reference_style']}"
+                   f" (hanging indent {summary.get('reference_hanging_indent_in')}″, {kind})")
         added = summary.get("reference_numbering_added") or 0
         if added:
-            out.append(f"参考文献编号 → 为 {added} 条未编号条目补 [n] 前缀（仅新增前缀，不改文字）")
-    out.append("标题段已跳过（不改动标题字号/字体，保留原视觉层级）")
+            out.append(f"Reference numbering → added [n] prefix to {added} unnumbered entries (prefix only, text unchanged)")
+    out.append("Heading paragraphs skipped (heading size/font unchanged, original visual hierarchy preserved)")
     return out
 
 
@@ -276,7 +281,7 @@ def _fix_gate_cli(gate, as_json: bool) -> int:
                                ensure_ascii=False, indent=2))
     else:
         print(f"✗ {gate['message']}", file=sys.stderr)
-        print("  提示：执行 `python -m src.main activate 激活码` 解锁无限修正。",
+        print("  Tip: run `python -m src.main activate <code>` to unlock unlimited fixes.",
               file=sys.stderr)
     return 3
 
@@ -296,24 +301,24 @@ def cmd_fix(args):
     _init_console()
     as_json = bool(getattr(args, "json", False))
 
-    # ① 输入文件
+    # ① Input file
     if not os.path.isfile(args.docx):
-        print(f"错误：找不到文档 {args.docx}", file=sys.stderr)
+        print(f"Error: document not found: {args.docx}", file=sys.stderr)
         return 2
 
-    # ② 输出路径安全：参数层面的错误，先于授权裁决返回
+    # ② Output path safety: a parameter-level error, returned before the license decision
     if not args.preview and args.out and same_file(args.out, args.docx):
-        print("错误：输出路径与输入指向同一文件（不覆盖原件）。", file=sys.stderr)
+        print("Error: output path points to the same file as the input (original is not overwritten).", file=sys.stderr)
         return 2
 
     # ③ 目标画像（含 spec / 模板 / 问卷 / AI / LaTeX 的读取与校验）
     try:
         target = _build_target(args)
     except DocxReadError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
     except (ValueError, FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"错误：构建目标画像失败：{e}", file=sys.stderr)
+        print(f"Error: failed to build target profile: {e}", file=sys.stderr)
         return 2
 
     from .license import license as lic
@@ -326,16 +331,16 @@ def cmd_fix(args):
         try:
             changes = preview_fix(args.docx, target)
         except DocxReadError as e:
-            print(f"错误：{e}", file=sys.stderr)
+            print(f"Error: {e}", file=sys.stderr)
             return 2
         if as_json:
             _write_json(json.dumps({"ok": True, "mode": "preview", "changes": changes,
                                     "license": gate}, ensure_ascii=False, indent=2))
             return 0
-        print("将进行的格式修正（预览，仅列实际会变的项）：")
+        print("Format fixes to apply (preview — only the items that will actually change):")
         for line in changes:
-            print("  · " + line)
-        print(f"  试用状态：{gate['message']}")
+            print("  - " + line)
+        print(f"  Trial status: {gate['message']}")
         return 0
 
     # ⑤ 已合规 → 不生成副本、不消耗试用额度、不触发门禁
@@ -343,10 +348,10 @@ def cmd_fix(args):
     try:
         changes = compute_changes(args.docx, target)
     except DocxReadError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
     if not changes:
-        msg = "当前文档已符合目标格式，未生成副本、未消耗试用额度。"
+        msg = "This document already meets the target format. No copy was generated and no trial credit was used."
         if as_json:
             _write_json(json.dumps({"ok": True, "mode": "noop", "output": None,
                                     "changes": [], "message": msg},
@@ -367,13 +372,13 @@ def cmd_fix(args):
     try:
         summary = fix_docx(args.docx, out, target)
     except DocxReadError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
     except ValueError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
     except OSError as e:
-        print(f"错误：{e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 2
 
     counted = lic.record_fix_used()
@@ -386,9 +391,9 @@ def cmd_fix(args):
                                 "counted": counted},
                                ensure_ascii=False, indent=2))
         return 0
-    print(f"✓ 已生成修正稿：{out}")
+    print(f"✓ Fixed document generated: {out}")
     print(f"  {after}")
-    print("  本次应用：")
+    print("  Applied this run:")
     for line in detail:
         print("    " + line)
     return 0
@@ -407,13 +412,13 @@ def cmd_activate(args):
 def cmd_status(args):
     from .license import license as lic
     s = lic.status()
-    print(f"激活：{'是' if s['activated'] else '否'}")
-    print(f"种类：{s['kind'] or '-'}")
-    print(f"试用已用：{'是' if s['trial_fix_used'] else '否'}（共 {s['trial_limit']} 次）")
+    print(f"Activated: {'Yes' if s['activated'] else 'No'}")
+    print(f"Type: {s['kind'] or '-'}")
+    print(f"Trial used: {'Yes' if s['trial_fix_used'] else 'No'} (limit {s['trial_limit']})")
     if s.get("revoked"):
-        print("状态：已被吊销（需重新激活）")
-    print(f"机器指纹：{s['machine']}")
-    print(f"本地状态文件：{'正常' if s.get('state_ok') else '缺失/损坏'}")
+        print("Status: revoked (reactivation required)")
+    print(f"Machine fingerprint: {s['machine']}")
+    print(f"Local state file: {'OK' if s.get('state_ok') else 'missing/corrupted'}")
     return 0
 
 
@@ -425,43 +430,43 @@ def build_parser() -> argparse.ArgumentParser:
                    version="PaperFormat Pro %s" % app_version())
     sub = p.add_subparsers(dest="cmd")
 
-    g = sub.add_parser("gui", help="启动桌面 GUI")
+    g = sub.add_parser("gui", help="Launch the desktop GUI")
     g.set_defaults(func=cmd_gui)
 
-    c = sub.add_parser("check", help="命令行体检")
-    c.add_argument("docx", help="待检 Word 文档路径")
-    c.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="引用规范（默认 APA）")
-    c.add_argument("--template", help="学校模板 docx（可选，页面以学校为准）")
-    c.add_argument("--ai", help="AI 填好的问卷配置（YAML/JSON，可选）")
-    c.add_argument("--questionnaire", help="手填问卷 JSON（可选）")
-    c.add_argument("--latex", help="LaTeX 模板路径（可选，第⑤种来源）")
-    c.add_argument("--out", help="报告输出路径（md；配 --json 时为 .json）")
-    c.add_argument("--json", action="store_true", help="以 JSON 输出结构化结果（便于集成/自动化）")
+    c = sub.add_parser("check", help="Run a format check from the command line")
+    c.add_argument("docx", help="Path to the Word document to check")
+    c.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="Citation style (default APA)")
+    c.add_argument("--template", help="School template docx (optional; page layout follows the school)")
+    c.add_argument("--ai", help="AI-filled questionnaire config (YAML/JSON, optional)")
+    c.add_argument("--questionnaire", help="Manually filled questionnaire JSON (optional)")
+    c.add_argument("--latex", help="LaTeX template path (optional, 5th source)")
+    c.add_argument("--out", help="Report output path (.md or .docx; .json when used with --json)")
+    c.add_argument("--json", action="store_true", help="Output structured results as JSON (for integration/automation)")
     c.set_defaults(func=cmd_check)
 
-    f = sub.add_parser("fix", help="一键修正（仅改格式；首次免费，之后需激活）")
-    f.add_argument("docx", help="待修正 Word 文档路径")
-    f.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="引用规范（默认 APA）")
-    f.add_argument("--template", help="学校模板 docx（可选）")
-    f.add_argument("--ai", help="AI 填好的问卷配置（YAML/JSON，可选）")
-    f.add_argument("--questionnaire", help="手填问卷 JSON（可选）")
-    f.add_argument("--latex", help="LaTeX 模板路径（可选）")
-    f.add_argument("--out", help="输出路径（默认 原名_fixed.docx，已存在时自动加序号不覆盖）")
-    f.add_argument("--preview", action="store_true", help="只预览要改的项，不落盘")
-    f.add_argument("--json", action="store_true", help="以 JSON 输出结构化结果（便于集成/自动化）")
+    f = sub.add_parser("fix", help="One-click fix (format only; first use free, then requires activation)")
+    f.add_argument("docx", help="Path to the Word document to fix")
+    f.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="Citation style (default APA)")
+    f.add_argument("--template", help="School template docx (optional)")
+    f.add_argument("--ai", help="AI-filled questionnaire config (YAML/JSON, optional)")
+    f.add_argument("--questionnaire", help="Manually filled questionnaire JSON (optional)")
+    f.add_argument("--latex", help="LaTeX template path (optional)")
+    f.add_argument("--out", help="Output path (default <name>_fixed.docx; auto-numbered if it already exists)")
+    f.add_argument("--preview", action="store_true", help="Preview the changes only; do not write to disk")
+    f.add_argument("--json", action="store_true", help="Output structured results as JSON (for integration/automation)")
     f.set_defaults(func=cmd_fix)
 
-    a = sub.add_parser("activate", help="输入激活码解锁无限修正")
-    a.add_argument("code", help="激活码")
+    a = sub.add_parser("activate", help="Enter an activation code to unlock unlimited fixes")
+    a.add_argument("code", help="Activation code")
     a.add_argument("--offline", action="store_true",
-                   help="作为离线激活码处理（卖家签发，无需联网）")
+                   help="Treat as an offline activation code (issued by the seller, no internet required)")
     a.set_defaults(func=cmd_activate)
 
-    s = sub.add_parser("status", help="查看当前授权状态")
+    s = sub.add_parser("status", help="Show the current license status")
     s.set_defaults(func=cmd_status)
 
-    e = sub.add_parser("export-schema", help="导出 AI 填表模板")
-    e.add_argument("out", help="输出 YAML 路径")
+    e = sub.add_parser("export-schema", help="Export the AI questionnaire template")
+    e.add_argument("out", help="Output YAML path")
     e.set_defaults(func=cmd_export_schema)
     return p
 

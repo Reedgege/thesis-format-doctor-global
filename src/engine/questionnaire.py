@@ -244,8 +244,9 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     # 空校验：避免静默得到空画像
     if not page and ref_style is None and heading is None:
         raise ValueError(
-            "未从输入解析出任何有效格式字段（页边距/字体/参考文献风格/标题层级均为空）。"
-            "请检查 YAML/JSON 是否为合法格式，或是否包含 'filled' 等包装字段。"
+            "No valid format fields could be parsed from the input "
+            "(margins, font, reference style, and heading levels are all empty). "
+            "Check that the YAML/JSON is well-formed, or that it contains wrapper fields such as 'filled'."
         )
 
     return TargetProfile(
@@ -274,16 +275,16 @@ def target_from_ai(path: str) -> TargetProfile:
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
     if not text.strip():
-        raise ValueError("AI 配置文件为空。")
+        raise ValueError("The AI config file is empty.")
     # JSON 是 YAML 的子集；先按 JSON 试（报错信息更精准），失败再回落 YAML。
     try:
         data = json.loads(text)
     except (ValueError, json.JSONDecodeError):
         if safe_load is None:
-            raise ValueError("未安装 PyYAML，无法解析 YAML 模板；请改用 JSON 或安装 pyyaml。")
+            raise ValueError("PyYAML is not installed and the YAML template cannot be parsed; use JSON instead, or install pyyaml.")
         data = safe_load(text)
     if not isinstance(data, dict):
-        raise ValueError("AI 配置文件顶层必须是对象（键值对），实际为：%s" % type(data).__name__)
+        raise ValueError("The top level of the AI config file must be an object (key-value pairs); got: %s" % type(data).__name__)
     return target_from_dict(data, source="ai_import")
 
 
@@ -428,8 +429,9 @@ def build_target(spec_key: str, template: Optional[str] = None,
         applied_labels.append(_SOURCE_ORIGIN.get(t.source, t.source))
         if channel == "latex" and not t.page and not t.reference_style:
             notes.append(
-                "已读取 LaTeX 模板，但未能从中识别出格式字段（可能用了自定义宏或非常规模板）；"
-                "相关维度已回落到所选规范。"
+                "Read the LaTeX template, but could not recognize any format fields from it "
+                "(a custom macro or non-standard template may have been used); "
+                "the relevant dimensions fell back to the selected citation style."
             )
 
     merged.source = "+".join(["spec"] + applied_labels)

@@ -1,79 +1,82 @@
-# AI 填表模板 —— PaperFormat Pro
-# 把本文件交给任意 AI，让它按下方 fields 把学校的格式要求填成具体数值，
-# 再用软件的「导入 AI 填表」吃进去即可。模板本身也兼容旧版 JSON。
+# AI fill-in template — PaperFormat Pro
+# Hand this file to any AI, have it fill in your school's format requirements as
+# concrete values following the fields below, then load it with "Import AI form".
+# The template also works with the older JSON format.
 
 _purpose: |-
-  把本文件交给任意 AI（GPT / Gemini / Claude 等），连同你的学校模板或格式要求文档，
-  让 AI 按下方 fields 把格式要求填成具体数值，输出一份同样结构的 YAML（旧版 JSON 也兼容），
-  再用 PaperFormat Pro 的「导入 AI 填表」吃进去即可。
+  Hand this file to any AI (GPT / Gemini / Claude, etc.) together with your school
+  template or format-requirement document, and have the AI fill the format requirements
+  into concrete values following the fields below, producing a YAML with the same
+  structure (the older JSON format is also supported). Then load it into PaperFormat Pro
+  with "Import AI form".
 
 _how_to_fill: |-
-  AI 请把格式要求填成具体数值，两种结构软件都支持：
-  ① 直接输出顶层扁平键值（与 fields[].key 一致）；
-  ② 或包在 filled 对象里（如 filled: {...}）。
-  未知项留空或省略，不要编造。
-  单位：页边距 / 缩进用英寸，字号 / 段后间距用磅，行距用倍数
-  （2.0 = 双倍，1.5 = 一倍半，1.0 = 单倍）。
-  body_alignment 只能填 left / justify / center / right
-  （left = 左对齐，justify = 两端对齐）。
+  The AI should fill the format requirements as concrete values. Both structures are supported:
+  ① flat top-level key-values (matching fields[].key); or
+  ② wrapped in a filled object (e.g. filled: {...}).
+  Leave unknown items blank or omit them; do not invent values.
+  Units: margins / indents in inches, font size / space-after in points, line spacing as a multiple
+  (2.0 = double, 1.5 = one-and-a-half, 1.0 = single).
+  body_alignment must be one of left / justify / center / right
+  (left = left-aligned, justify = justified).
 
 fields:
   - key: margin_top_in
-    label: 上页边距
-    unit: 英寸
+    label: Top margin
+    unit: in
     example: 1.0
   - key: margin_bottom_in
-    label: 下页边距
-    unit: 英寸
+    label: Bottom margin
+    unit: in
     example: 1.0
   - key: margin_left_in
-    label: 左页边距
-    unit: 英寸
+    label: Left margin
+    unit: in
     example: 1.0
   - key: margin_right_in
-    label: 右页边距
-    unit: 英寸
+    label: Right margin
+    unit: in
     example: 1.0
   - key: font_family
-    label: 正文字体
+    label: Body font
     unit: ""
     example: Times New Roman
   - key: font_size_pt
-    label: 正文字号
-    unit: 磅
+    label: Body font size
+    unit: pt
     example: 12.0
   - key: line_spacing
-    label: 行距
-    unit: 倍
+    label: Line spacing
+    unit: x
     example: 2.0
   - key: body_alignment
-    label: 正文对齐
+    label: Body alignment
     unit: ""
     example: left
     allowed: [left, justify, center, right]
   - key: first_line_indent_in
-    label: 正文首行缩进
-    unit: 英寸
+    label: Body first-line indent
+    unit: in
     example: 0.5
   - key: space_after_pt
-    label: 段后间距
-    unit: 磅
+    label: Space after paragraph
+    unit: pt
     example: 0.0
   - key: heading_levels
-    label: 标题层级数
-    unit: 级
+    label: Heading levels
+    unit: levels
     example: 0
   - key: reference_style
-    label: 参考文献格式
+    label: Reference format
     unit: ""
     example: APA
     allowed: [APA, MLA, Chicago, IEEE, Harvard]
   - key: reference_hanging_indent_in
-    label: 参考文献悬挂缩进
-    unit: 英寸
+    label: Reference hanging indent
+    unit: in
     example: 0.5
   - key: reference_numbered
-    label: 是否顺序编码
+    label: Numbered references
     unit: ""
     example: false
 

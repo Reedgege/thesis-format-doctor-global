@@ -831,9 +831,14 @@ ALIGN_LABELS = {
 
 
 def questionnaire_label(lang: str, field: dict) -> str:
-    """问卷字段标签：英文模式下用映射表，缺失则回退引擎自带的中文标签。"""
+    """Questionnaire field label.
+
+    In English mode the English map (Q_LABELS_EN) is the single source of truth;
+    if a key is somehow missing it falls back to the English key (never the raw
+    Chinese label baked into the schema), so no Chinese can surface in the UI.
+    """
     if lang == "en":
-        return Q_LABELS_EN.get(field["key"], field.get("label", field["key"]))
+        return Q_LABELS_EN.get(field["key"], field["key"])
     return field.get("label", field["key"])
 
 

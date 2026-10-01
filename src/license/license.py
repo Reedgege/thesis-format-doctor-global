@@ -326,7 +326,7 @@ def save_state(state: dict):
     # 所以这里不再沉默：调用方传了未登记字段时至少留下可诊断的痕迹。
     if unknown:
         try:
-            print("[license] 警告：状态里存在未登记字段，已忽略：%s" % sorted(unknown),
+            print("[license] Warning: unregistered fields found in state, ignored: %s" % sorted(unknown),
                   file=sys.stderr)
         except Exception:
             pass
@@ -434,11 +434,11 @@ def _safe_trial_sync(machine: str, claim: bool = False) -> dict | None:
 # ---------------------------------------------------------------------------
 
 _ACTIVATE_ERR = {
-    "invalid_code": "激活码无效或不属于本产品",
-    "revoked": "该激活码已被吊销（退款锁死）",
-    "expired": "该激活码已过期",
-    "already_used": "该激活码已绑定其他机器（永久/周/月卡限一机）",
-    "missing_fields": "请求字段缺失（产品或激活码为空）",
+    "invalid_code": "Activation code is invalid or does not belong to this product",
+    "revoked": "This activation code has been revoked (refund-locked)",
+    "expired": "This activation code has expired",
+    "already_used": "This activation code is already bound to another machine (lifetime/weekly/monthly plans are limited to one machine)",
+    "missing_fields": "Request fields missing (product or activation code is empty)",
 }
 
 
@@ -446,15 +446,15 @@ def activate(code: str) -> dict:
     """输入激活码，向中台验证并写入本地状态。返回 {ok, kind, message}。"""
     code = (code or "").strip()
     if not code:
-        return {"ok": False, "message": "激活失败：请先输入激活码。"}
+        return {"ok": False, "message": "Activation failed: please enter an activation code first."}
     try:
         res = _check_mid_platform(code)
     except Exception as e:
-        return {"ok": False, "message": f"激活失败：{e}（网络不可用时可稍后重试）"}
+        return {"ok": False, "message": f"Activation failed: {e} (retry later if the network is unavailable)"}
     if not res.get("ok"):
         err = res.get("error", "")
         return {"ok": False,
-                "message": f"激活失败：{_ACTIVATE_ERR.get(err, err or '中台未通过')}"}
+                "message": f"Activation failed: {_ACTIVATE_ERR.get(err, err or 'Server rejected the request')}"}
     state = load_state()
     state["activated"] = True
     state["code"] = code
@@ -466,9 +466,9 @@ def activate(code: str) -> dict:
     try:
         save_state(state)
     except Exception as e:
-        return {"ok": False, "message": f"激活失败：无法写入本地状态（{e}）"}
+        return {"ok": False, "message": f"Activation failed: cannot write local state ({e})"}
     _safe_trial_sync(_machine_fingerprint(), claim=True)
-    return {"ok": True, "kind": state["kind"], "message": "激活成功"}
+    return {"ok": True, "kind": state["kind"], "message": "Activation successful"}
 
 
 # ---------------------------------------------------------------------------
@@ -488,11 +488,11 @@ def activate_offline(code: str) -> dict:
     """
     code = (code or "").strip()
     if not code:
-        return {"ok": False, "message": "离线激活码为空"}
+        return {"ok": False, "message": "Offline activation code is empty"}
     fp = _machine_fingerprint()
     if not verify_offline_code(code, fp):
         return {"ok": False, "message":
-                "离线激活码无效，或不属于本机（请确认是用本机的机器码生成的码）。"}
+                "Offline activation code is invalid, or does not belong to this machine (make sure it was generated from this machine's code)."}
     state = load_state()
     state["activated"] = True
     state["code"] = code
@@ -505,9 +505,9 @@ def activate_offline(code: str) -> dict:
     try:
         save_state(state)
     except Exception as e:
-        return {"ok": False, "message": f"离线激活失败：无法写入本地状态（{e}）"}
+        return {"ok": False, "message": f"Offline activation failed: cannot write local state ({e})"}
     return {"ok": True, "kind": "lifetime",
-            "message": "离线激活成功（终身版，无需联网）。"}
+            "message": "Offline activation successful (lifetime, no internet required)."}
 
 
 def require_fix_entitlement() -> dict:
@@ -547,26 +547,26 @@ def _entitlement_on_error(e: Exception) -> dict:
         st = load_state()
     except Exception:
         return {"allowed": False, "reason": "state_error",
-                "message": "授权状态无法读取，暂时无法进行修正，请重试或联系客服。",
+                "message": "License state cannot be read; fixing is temporarily unavailable. Please retry or contact support.",
                 "remaining_trial": 0}
     if st.get("activated"):
         return {"allowed": True, "reason": "activated",
-                "message": f"已激活（{st.get('kind') or 'lifetime'}）",
+                "message": f"Activated ({st.get('kind') or 'lifetime'})",
                 "remaining_trial": None}
     if (st.get("trial_fix_used")
             or st.get("_state_reason") in ("corrupt", "tampered", "unsealed")):
         return {"allowed": False, "reason": "trial_exhausted",
-                "message": "免费试用已用完，请输入激活码解锁无限修正。",
+                "message": "Free trial has been used up. Please enter an activation code to unlock unlimited fixes.",
                 "remaining_trial": 0}
     try:
         st["trial_fix_used"] = True
         save_state(st)          # 落盘成功，这一次试用才算真的给出去了
     except Exception:
         return {"allowed": False, "reason": "state_error",
-                "message": "授权状态无法写入，暂时无法进行修正，请重试或联系客服。",
+                "message": "License state cannot be written; fixing is temporarily unavailable. Please retry or contact support.",
                 "remaining_trial": 0}
     return {"allowed": True, "reason": "trial",
-            "message": f"授权状态读取异常（{e}），已按首次免费试用放行一次。",
+            "message": f"License state read error ({e}); allowing one free trial fix.",
             "remaining_trial": 0}
 
 
@@ -595,7 +595,7 @@ def _require_fix_entitlement() -> dict:
     if state.get("activated") and state.get("offline"):
         if verify_offline_code(state.get("code") or "", fp):
             return {"allowed": True, "reason": "activated",
-                    "message": f"已离线激活（{state.get('kind') or 'lifetime'}）",
+                    "message": f"Offline activated ({state.get('kind') or 'lifetime'})",
                     "remaining_trial": None}
         # 状态被改动 / 指纹已变（换机、重装）→ 降级，走下面的试用与激活逻辑
         state["activated"] = False
@@ -634,12 +634,12 @@ def _require_fix_entitlement() -> dict:
                 pass
             kind = state.get("kind") or "lifetime"
             return {"allowed": True, "reason": "activated",
-                    "message": (f"已离线激活（{kind}）" if legacy_offline
-                                else f"已激活（{kind}）"),
+                    "message": (f"Offline activated ({kind})" if legacy_offline
+                                else f"Activated ({kind})"),
                     "remaining_trial": None}
         return {"allowed": False, "reason": "needs_reactivation",
-                "message": "检测到旧版授权文件（本次升级前激活的）。"
-                           "请重新输入一次激活码即可恢复：离线码直接粘贴，在线码需联网。",
+                "message": "A legacy license file was detected (activated before this upgrade). "
+                           "Please re-enter your activation code once to restore it: paste an offline code directly, or connect online for an online code.",
                 "remaining_trial": 0}
 
     # ② 已激活：心跳 + 吊销/过期检查（服务器明确 revoked/expired 才锁；离线宽限）
@@ -662,10 +662,10 @@ def _require_fix_entitlement() -> dict:
                     pass
         if state.get("activated"):
             return {"allowed": True, "reason": "activated",
-                    "message": f"已激活（{state.get('kind') or 'lifetime'}）",
+                    "message": f"Activated ({state.get('kind') or 'lifetime'})",
                     "remaining_trial": None}
         return {"allowed": False, "reason": "revoked",
-                "message": "授权已被吊销或已过期，请重新输入激活码。",
+                "message": "Your license has been revoked or expired. Please re-enter your activation code.",
                 "remaining_trial": 0}
 
     # ③ 未激活：试用额度（中台优先、本地兜底、损坏/被篡改 fail-closed）
@@ -688,10 +688,10 @@ def _require_fix_entitlement() -> dict:
 
     if trial_used:
         return {"allowed": False, "reason": "trial_exhausted",
-                "message": "免费试用已用完，请输入激活码解锁无限修正。",
+                "message": "Free trial has been used up. Please enter an activation code to unlock unlimited fixes.",
                 "remaining_trial": 0}
     return {"allowed": True, "reason": "trial",
-            "message": f"首次免费试用（共 {TRIAL_FIX_LIMIT} 次）",
+            "message": f"First free trial ({TRIAL_FIX_LIMIT} free use available)",
             "remaining_trial": 1}
 
 
@@ -721,11 +721,11 @@ def post_fix_message(gate: dict, counted: bool = True) -> str:
     直接展示会出现「刚用完免费试用，却还显示首次免费试用」的错位。
     """
     if not counted:
-        return "试用计数写入失败（不影响本次修正结果，但请留意）。"
+        return "Trial count write failed (this fix still succeeded, but please note)."
     if gate.get("reason") == "activated":
-        return f"已激活（{gate.get('kind') or 'lifetime'}），可继续无限修正。"
-    return (f"免费试用额度已用尽（{TRIAL_FIX_LIMIT}/{TRIAL_FIX_LIMIT}），"
-            f"下次修正需输入激活码。")
+        return f"Activated ({gate.get('kind') or 'lifetime'}), you can continue fixing without limits."
+    return (f"Free trial quota exhausted ({TRIAL_FIX_LIMIT}/{TRIAL_FIX_LIMIT}); "
+            f"next fix requires an activation code.")
 
 
 def status() -> dict:

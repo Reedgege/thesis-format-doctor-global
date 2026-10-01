@@ -77,7 +77,7 @@ def test_after_fix_trial_exhausted(tmp_license):
     g = lic.require_fix_entitlement()
     assert g["allowed"] is False
     assert g["reason"] == "trial_exhausted"
-    assert "激活码" in g["message"]
+    assert "activation code" in g["message"]
 
 
 def test_activate_success_then_allowed(tmp_license, monkeypatch):
@@ -109,7 +109,7 @@ def test_activate_revoked_message(tmp_license, monkeypatch):
                         lambda code: {"ok": False, "error": "revoked"})
     r = lic.activate("REVOKED-CODE")
     assert r["ok"] is False
-    assert "吊销" in r["message"]
+    assert "revoked" in r["message"]
 
 
 def test_mid_platform_unreachable_does_not_crash(tmp_license, monkeypatch):
@@ -254,7 +254,7 @@ def test_activate_offline_rejects_other_machine(tmp_license, offline_keys):
     code = _sign(offline_keys, "OTHER-MACHINE-CODE")
     r = lic.activate_offline(code)
     assert r["ok"] is False
-    assert "机器码" in r["message"]
+    assert "machine" in r["message"]
 
 
 def test_offline_activation_grants_fix_without_network(tmp_license, monkeypatch, offline_keys):
@@ -560,7 +560,7 @@ def test_post_reads_body_of_non_2xx(monkeypatch):
     # 进而 activate() 必须给出"激活码无效"，而不是网络错误
     out = lic.activate("X")
     assert out["ok"] is False
-    assert "无效" in out["message"], out["message"]
+    assert "invalid" in out["message"], out["message"]
 
 
 def test_post_reraises_when_error_body_is_not_json(monkeypatch):
@@ -603,7 +603,7 @@ def test_post_reads_body_of_non_2xx(monkeypatch):
     # 进而 activate() 必须给出"激活码无效"，而不是网络错误
     out = lic.activate("X")
     assert out["ok"] is False
-    assert "无效" in out["message"], out["message"]
+    assert "invalid" in out["message"], out["message"]
 
 
 def test_post_reraises_when_error_body_is_not_json(monkeypatch):

@@ -584,12 +584,12 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
         OSError: 输出无法写入（目录不存在/无权限）。
     """
     if not output_path or same_file(output_path, input_path):
-        raise ValueError("输出路径必须不同于输入路径（不覆盖原件）")
+        raise ValueError("The output path must differ from the input path (the original is not overwritten)")
     try:
         doc = Document(input_path)
-    except Exception as e:  # 非 docx / 损坏 / 加密
+    except Exception as e:  # not a docx / corrupted / encrypted
         raise DocxReadError(
-            f"无法读取 Word 文档：{e}（请确认是 .docx 文件、未损坏且未加密）"
+            f"Cannot read the Word document: {e} (make sure it is a .docx file, not corrupted, and not encrypted)"
         ) from e
 
     strip_our_comments(doc)  # 清掉本工具上一遍批注（幂等，防 Pit 4 旧气泡带下）
@@ -753,7 +753,7 @@ def _notes(prof) -> list:
     notes: list = []
     n = getattr(prof, "table_paragraph_count", 0) or 0
     if n:
-        notes.append(f"提示：表格内文字（{n} 段）不参与修正，本次只改正文段落格式。")
+        notes.append(f"Note: text inside tables ({n} paragraph(s)) is not modified; only body paragraph formatting is fixed this run.")
     return notes
 
 

@@ -315,8 +315,17 @@ def _auto_wrap(label: tk.Label, container, padx: int):
     label.bind("<Destroy>", _cancel, add="+")
 
 
+# 月份缩写写死成英文，避免 strftime("%b") 依赖操作系统区域设置
+# （中文区域的机器上 "%b" 会渲染成中文月份，破坏英文界面的纯净度）。
+_MONTHS_EN = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
 def _fmt_expiry(value):
-    """把 license 层返回的 ``expires_at`` 尽量格式化成西方习惯的 ``Nov 1, 2026``。
+    """把 license 层返回的 ``expires_at`` 格式化成西方习惯的 ``Nov 1, 2026``。
+
+    月份缩写硬编码为英文（见 ``_MONTHS_EN``），不依赖系统区域设置，
+    保证英文界面在任何操作系统上都不会冒出中文月份。
 
     兼容多种来源格式：Unix 时间戳（int/float）、ISO 8601（含 ``Z`` 后缀）、纯日期。
     解析失败一律返回 ``None``，调用方退化成不带日期的 ''Licensed · monthly''。
@@ -325,7 +334,8 @@ def _fmt_expiry(value):
         return None
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(value).strftime("%b %d, %Y").replace(" 0", " ")
+            dt = datetime.fromtimestamp(value)
+            return "%s %d, %d" % (_MONTHS_EN[dt.month - 1], dt.day, dt.year)
         except Exception:
             return None
     s = str(value).strip()
@@ -337,7 +347,7 @@ def _fmt_expiry(value):
                    lambda: datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")):
         try:
             dt = parser()
-            return (dt.strftime("%b") + " " + str(dt.day) + ", " + str(dt.year))
+            return "%s %d, %d" % (_MONTHS_EN[dt.month - 1], dt.day, dt.year)
         except Exception:
             continue
     return None
@@ -2737,6 +2747,7 @@ class App:
             target = self._build_target()
             prof, findings = checker.run_check(docx, target)
             rep = report_mod.build_report(docx, target, prof, findings)
+            self._last_report = rep
 
             # 结果整理同样放在 try 内 + finally 收尾：这一段若抛异常而逃出去，
             # `_busy` 会永远停在 True（RoundButton 的异常兜底是静默的），
@@ -2940,14 +2951,20 @@ class App:
             messagebox.showwarning(tr("save_no_report_title"), tr("save_no_report"))
             return
         dst = filedialog.asksaveasfilename(
-            title=tr("save_report_dialog"), defaultextension=".md",
-            filetypes=[("Markdown", "*.md"), ("All files", "*.*")],
-            initialfile="format-check-report.md")
+            title=tr("save_report_dialog"), defaultextension=".docx",
+            filetypes=[("Word document", "*.docx"), ("Markdown", "*.md"),
+                       ("All files", "*.*")],
+            initialfile="format-check-report.docx")
         if not dst:
             return
         try:
-            with open(dst, "w", encoding="utf-8") as fh:
-                fh.write(content + "\n")
+            if dst.lower().endswith(".docx") and getattr(self, "_last_report", None) is not None:
+                # Render a structured Word report (keeps the GUI English-only
+                # and mirrors the Markdown report's section order).
+                report_mod.build_docx_report(self._last_report, dst)
+            else:
+                with open(dst, "w", encoding="utf-8") as fh:
+                    fh.write(content + "\n")
         except OSError as e:
             messagebox.showerror(tr("msg_fix_error_title"), str(e))
             return

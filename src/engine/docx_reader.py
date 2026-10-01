@@ -435,17 +435,17 @@ def read_docx(path: str) -> DocumentProfile:
     """
     try:
         doc = Document(path)
-    except Exception as e:  # 非 docx / 损坏 / 加密
+    except Exception as e:  # not a docx / corrupted / encrypted
         raise DocxReadError(
-            f"无法读取 Word 文档：{e}（请确认是 .docx 文件、未损坏且未加密）"
+            f"Cannot read the Word document: {e} (make sure it is a .docx file, not corrupted, and not encrypted)"
         ) from e
     try:
         return _read_docx_impl(doc)
     except DocxReadError:
         raise
-    except Exception as e:  # 能打开但内部结构异常 / 受保护
+    except Exception as e:  # opens but internal structure is abnormal / protected
         raise DocxReadError(
-            f"无法解析 Word 文档内容：{e}（文档可能受保护或结构损坏）"
+            f"Cannot parse the Word document content: {e} (the document may be protected or structurally corrupted)"
         ) from e
 
 

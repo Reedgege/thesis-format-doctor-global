@@ -593,10 +593,10 @@ def test_report_section_numbers_are_dense(tmp_path):
     md = build_report(str(src), target, prof, findings).markdown
 
     heads = [ln for ln in md.splitlines() if ln.startswith("## ")]
-    assert heads[0].startswith("## 一、"), heads
-    assert heads[1].startswith("## 二、"), heads
+    assert heads[0].startswith("## 1."), heads
+    assert heads[1].startswith("## 2."), heads
     assert "一之二" not in md
-    assert "## 三、" not in md, "只有两段时不应出现三"
+    assert "## 3." not in md, "只有两段时不应出现三"
 
 
 def test_report_section_numbers_with_notes(tmp_path):
@@ -616,9 +616,9 @@ def test_report_section_numbers_with_notes(tmp_path):
     _p, fs = run_check(str(src), target)
     md = build_report(str(src), target, prof, fs).markdown
     heads = [ln for ln in md.splitlines() if ln.startswith("## ")]
-    assert heads[0].startswith("## 一、")
-    assert heads[1].startswith("## 二、提示"), heads
-    assert heads[2].startswith("## 三、"), heads
+    assert heads[0].startswith("## 1."), heads
+    assert heads[1].startswith("## 2. Notes"), heads
+    assert heads[2].startswith("## 3."), heads
     assert "一之二" not in md
 
 
@@ -648,21 +648,21 @@ def test_report_actual_column_not_duplicated(tmp_path):
     _p, fs = run_check(str(src), target)
     md = build_report(str(src), target, prof, fs).markdown
     assert "实测：实测" not in md
-    assert "实测：2.0" in md, md
+    assert "Actual: 2.0" in md, md
 
 
 def test_post_fix_message_reflects_consumed_trial():
     """修正成功后展示的是**扣减后**的状态，不再出现「刚用完却显示首次免费」。"""
     from src.license import license as lic
 
-    trial_gate = {"reason": "trial", "message": "首次免费试用（共 1 次）"}
+    trial_gate = {"reason": "trial", "message": "First free trial (1 free use available)"}
     msg = lic.post_fix_message(trial_gate, True)
-    assert "已用尽" in msg and "激活码" in msg
+    assert "exhausted" in msg and "activation code" in msg
 
     act_gate = {"reason": "activated", "kind": "lifetime"}
-    assert "已激活" in lic.post_fix_message(act_gate, True)
+    assert "Activated" in lic.post_fix_message(act_gate, True)
 
-    assert "写入失败" in lic.post_fix_message(trial_gate, False)
+    assert "write failed" in lic.post_fix_message(trial_gate, False)
 
 
 def test_cli_fix_prints_post_state(tmp_path, monkeypatch, capsys):
@@ -677,14 +677,14 @@ def test_cli_fix_prints_post_state(tmp_path, monkeypatch, capsys):
     from src.license import license as lic
     monkeypatch.setattr(lic, "require_fix_entitlement",
                         lambda: {"allowed": True, "reason": "trial",
-                                 "message": "首次免费试用（共 1 次）",
+                                 "message": "First free trial (1 free use available)",
                                  "remaining_trial": 1})
     monkeypatch.setattr(lic, "record_fix_used", lambda: True)
 
     rc = cli.cmd_fix(_fix_args(str(src), preview=False, json=False))
     assert rc == 0
     out = capsys.readouterr().out
-    assert "已用尽" in out, out
+    assert "exhausted" in out, out
     assert "首次免费试用" not in out, out
     assert os.path.exists(str(tmp_path / "s3_fixed.docx"))
 

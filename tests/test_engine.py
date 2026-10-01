@@ -154,7 +154,7 @@ def test_school_conflict_in_report(tmp_path):
     left = [f for f in findings if f.dimension == "margins" and "left" in f.message.lower()]
     assert left and left[0].severity == "fail" and left[0].source == "school"
     # 冲突应出现在报告
-    assert any(d == "左页边距" for d, _, _ in rep.conflicts), "规范 vs 学校冲突应入报告"
+    assert any(d == "Left margin" for d, _, _ in rep.conflicts), "规范 vs 学校冲突应入报告"
 
 
 # ---------------------------------------------------------------------------

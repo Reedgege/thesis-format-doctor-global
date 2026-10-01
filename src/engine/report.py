@@ -1,7 +1,9 @@
-"""对比裁决报告：把检查结果整理成「以谁为准」的可读报告。
+"""Comparison report: organize check results into a readable "which source wins" report.
 
-核心价值：把 spec / 学校模板 / 问卷 / AI 四类来源在「每个维度」上的裁决显式列出，
-让用户一眼看清哪些按通用规范、哪些按学校要求，冲突项高亮。
+Core value: explicitly list, for each dimension, how the four sources
+(spec / school template / questionnaire / AI) are reconciled, so the user
+can see at a glance what follows the general spec vs. the school requirement,
+with conflicts highlighted.
 """
 
 from __future__ import annotations
@@ -15,39 +17,40 @@ from .questionnaire import TargetProfile
 from .specs import get_spec
 
 ORIGIN_LABEL = {
-    "spec": "通用规范",
-    "school": "学校模板",
-    "template": "学校模板",
-    "user": "格式问卷",
-    "ai_import": "AI 填表",
-    "ai": "AI 填表",
-    "latex_template": "LaTeX 模板",
-    "latex": "LaTeX 模板",
+    "spec": "General Spec",
+    "school": "School Template",
+    "template": "School Template",
+    "user": "Questionnaire",
+    "ai_import": "AI Import",
+    "ai": "AI Import",
+    "latex_template": "LaTeX Template",
+    "latex": "LaTeX Template",
 }
 
 
 @dataclass
 class Report:
     meta: dict = field(default_factory=dict)
-    resolution: list = field(default_factory=list)   # (维度, 来源标签)
-    conflicts: list = field(default_factory=list)     # (维度, 左描述, 右描述)
+    resolution: list = field(default_factory=list)   # (dimension, source label)
+    conflicts: list = field(default_factory=list)     # (dimension, left desc, right desc)
     findings: list = field(default_factory=list)
     summary: dict = field(default_factory=dict)
+    notes: list = field(default_factory=list)         # questionnaire / LaTeX import notes
     markdown: str = ""
 
 
 _DIM_LABEL = {
-    "margin_top_in": "上页边距", "margin_bottom_in": "下页边距",
-    "margin_left_in": "左页边距", "margin_right_in": "右页边距",
-    "font_family": "正文字体", "font_size_pt": "正文字号",
-    "line_spacing": "行距", "heading_levels": "标题层级",
-    "body_alignment": "正文对齐", "first_line_indent_in": "正文首行缩进",
-    "space_after_pt": "段后间距",
-    "reference_style": "参考文献格式", "reference_hanging_indent_in": "参考文献悬挂缩进",
-    "reference_numbered": "参考文献编码方式",
+    "margin_top_in": "Top margin", "margin_bottom_in": "Bottom margin",
+    "margin_left_in": "Left margin", "margin_right_in": "Right margin",
+    "font_family": "Body font", "font_size_pt": "Body font size",
+    "line_spacing": "Line spacing", "heading_levels": "Heading levels",
+    "body_alignment": "Body alignment", "first_line_indent_in": "Body first-line indent",
+    "space_after_pt": "Space after paragraph",
+    "reference_style": "Reference format", "reference_hanging_indent_in": "Reference hanging indent",
+    "reference_numbered": "Reference numbering",
 }
 
-_ALIGN_LABEL = ALIGN_LABEL  # 对齐标签单一来源在 checker
+_ALIGN_LABEL = ALIGN_LABEL  # single source of truth lives in checker
 
 
 def _fmt_val(key: str, v) -> str:
@@ -66,7 +69,7 @@ def _fmt_val(key: str, v) -> str:
     if key == "body_alignment":
         return _ALIGN_LABEL.get(str(v), str(v))
     if key == "reference_numbered":
-        return "顺序编码" if v else "著者-出版年"
+        return "Numbered" if v else "Author-Year"
     if key == "reference_style":
         return str(v)
     return str(v)
@@ -79,17 +82,17 @@ def _source_label(origin: str) -> str:
 def _friendly_source(target: TargetProfile) -> str:
     origins = sorted({v for v in target.resolution.values() if v})
     if not origins:
-        return "未设置"
+        return "Not set"
     return " + ".join(_source_label(o) for o in origins)
 
 
 def _collect_conflicts(target: TargetProfile) -> list:
-    """规范默认 vs 显式来源 + 显式来源之间 的冲突。"""
+    """Conflicts between the general spec default and explicit sources, plus between explicit sources."""
     out: list = []
     spec_key = target.spec_key
     spec = get_spec(spec_key) if spec_key and spec_key != "Other" else None
 
-    # 1) 规范默认 vs 显式来源
+    # 1) Spec default vs explicit source
     if spec:
         spec_page = spec.page.__dict__
         spec_ref = spec.reference
@@ -115,16 +118,16 @@ def _collect_conflicts(target: TargetProfile) -> list:
                 continue
             if tval is not None and sval is not None and tval != sval:
                 out.append((_DIM_LABEL.get(key, key),
-                            f"通用规范 {_fmt_val(key, sval)}",
+                            f"General Spec {_fmt_val(key, sval)}",
                             f"{_source_label(origin)} {_fmt_val(key, tval)}"))
 
-    # 2) 显式来源之间
+    # 2) Between explicit sources
     for c in target.conflicts:
         dim = _DIM_LABEL.get(c["dim"], c["dim"])
         chain = " → ".join(
             f"{_source_label(lbl)} {_fmt_val(c['dim'], val)}" for lbl, val in c["entries"]
         )
-        out.append((dim, "来源冲突", chain))
+        out.append((dim, "Source conflict", chain))
 
     return out
 
@@ -138,77 +141,173 @@ def build_report(docx_path: str, target: TargetProfile,
         "spec_key": target.spec_key or "Other",
     }
 
-    # —— 来源裁决表 ——
+    # —— Source resolution table ——
     for dim, origin in target.resolution.items():
         rep.resolution.append((_DIM_LABEL.get(dim, dim), _source_label(origin)))
 
-    # —— 冲突 ——
+    # —— Conflicts ——
     rep.conflicts = _collect_conflicts(target)
 
     rep.findings = findings
     rep.summary = summarize(findings)
+    rep.notes = list(getattr(target, "notes", ()) or ())
 
     # —— Markdown ——
     lines: list = []
-    lines.append("# PaperFormat Pro · 格式体检报告")
+    lines.append("# PaperFormat Pro · Format Check Report")
     lines.append("")
-    lines.append(f"- 文档：`{docx_path}`")
-    lines.append(f"- 规范：{rep.meta['spec_key']}　来源：{rep.meta['source']}")
+    lines.append(f"- Document: `{docx_path}`")
+    lines.append(f"- Spec: {rep.meta['spec_key']}  ·  Source: {rep.meta['source']}")
     s = rep.summary
-    lines.append(f"- 结论：通过 {s.get('pass',0)} · 提示 {s.get('info',0)} · 警告 {s.get('warn',0)} · 不达标 {s.get('fail',0)}")
+    lines.append(f"- Summary: Pass {s.get('pass',0)} · Info {s.get('info',0)} · Warning {s.get('warn',0)} · Fail {s.get('fail',0)}")
     lines.append("")
 
-    # 章节号**动态分配**：只有实际渲染的段落才占号，避免出现「一、」直接跳「三、」。
-    _CN = "一二三四五六七八九十"
+    # Section numbers are assigned dynamically: only rendered sections take a number,
+    # so we never jump from "1." to "3.".
     _sec = [0]
 
     def _sec_no() -> str:
         _sec[0] += 1
-        n = _sec[0]
-        return _CN[n - 1] if n <= len(_CN) else str(n)
+        return str(_sec[0])
 
-    lines.append(f"## {_sec_no()}、维度裁决（以谁为准）")
+    lines.append(f"## {_sec_no()}. Dimension Resolution (which source wins)")
     lines.append("")
     if rep.resolution:
-        # 按来源分组：模板存在时来源会分散，分组后比逐行罗列更易读。
+        # Group by source: when a template is present the sources scatter;
+        # grouping reads better than a flat list.
         groups: dict = {}
         for dim, origin in rep.resolution:
             groups.setdefault(origin, []).append(dim)
         for origin, dims in groups.items():
-            lines.append(f"- **{origin}**（{len(dims)} 项）：{'、'.join(dims)}")
+            lines.append(f"- **{origin}** ({len(dims)} items): {', '.join(dims)}")
     else:
-        lines.append("- 未设置具体目标值（请上传学校模板或填写问卷）")
+        lines.append("- No specific target values set (upload a school template or fill the questionnaire)")
     lines.append("")
-    lines.append("> 说明：标注「通用规范」的页面维度（页边距/字体/行距等）仅作参考提示，"
-                 "不强制判不达标；页面排版以学校模板/问卷为准。参考文献维度始终以规范为准。")
+    lines.append("> Note: Page-level dimensions labeled \"General Spec\" (margins, fonts, line spacing, etc.) "
+                 "are shown for reference only and do not force a Fail; page layout follows your school "
+                 "template / questionnaire. Reference formatting always follows the general spec.")
     lines.append("")
 
     if getattr(target, "notes", None):
-        lines.append(f"## {_sec_no()}、提示")
+        lines.append(f"## {_sec_no()}. Notes")
         lines.append("")
         for n in target.notes:
-            lines.append(f"- ℹ️ {n}")
+            lines.append(f"- {n}")
         lines.append("")
 
     if rep.conflicts:
-        lines.append(f"## {_sec_no()}、规范 vs 学校模板 / 来源间 冲突项")
+        lines.append(f"## {_sec_no()}. Spec vs School Template / Inter-source Conflicts")
         lines.append("")
-        lines.append("> 以下维度不同来源要求不一致，已**以具体来源（学校/问卷/AI）为准**检查：")
+        lines.append("> The following dimensions have conflicting requirements from different sources; "
+                     "they were checked against the specific source (school / questionnaire / AI):")
         lines.append("")
         for dim, left, right in rep.conflicts:
-            lines.append(f"- **{dim}**：{left} → {right}")
+            lines.append(f"- **{dim}**: {left} → {right}")
         lines.append("")
 
-    lines.append(f"## {_sec_no()}、详细检查项")
+    lines.append(f"## {_sec_no()}. Detailed Findings")
     lines.append("")
     order = {"fail": 0, "warn": 1, "info": 2, "pass": 3}
     for f in sorted(findings, key=lambda x: order.get(x.severity, 9)):
         icon = {"pass": "✅", "warn": "⚠️", "fail": "❌", "info": "ℹ️"}.get(f.severity, "•")
         line = f"- {icon} **[{f.dimension}]** {f.message}"
         if f.expected or f.actual:
-            line += f"　（期望：{f.expected or '—'} ｜ 实测：{f.actual or '—'}）"
+            line += f"  (Expected: {f.expected or '—'} | Actual: {f.actual or '—'})"
         lines.append(line)
     lines.append("")
 
     rep.markdown = "\n".join(lines)
     return rep
+
+
+def build_docx_report(rep: "Report", out_path: str) -> str:
+    """Render the structured report as a Word document (English).
+
+    Mirrors the Markdown report's content and section order so the two
+    outputs stay in lock-step. Returns the written path.
+
+    The DOCX rendering deliberately avoids emoji (Word emoji glyphs vary by
+    platform) and uses bracketed uppercase severity tags that read cleanly
+    for Western users, e.g. ``[PASS] [margins] ...``.
+    """
+    from docx import Document
+
+    doc = Document()
+
+    # —— Title + meta block ——
+    doc.add_heading("PaperFormat Pro · Format Check Report", level=0)
+    meta = rep.meta
+    s = rep.summary or {}
+    doc.add_paragraph(f"Document: {meta.get('docx', '')}")
+    doc.add_paragraph(f"Spec: {meta.get('spec_key', '')}  ·  Source: {meta.get('source', '')}")
+    doc.add_paragraph(
+        f"Summary: Pass {s.get('pass', 0)} · Info {s.get('info', 0)} · "
+        f"Warning {s.get('warn', 0)} · Fail {s.get('fail', 0)}"
+    )
+
+    # Section numbers are assigned dynamically: only rendered sections take a number.
+    _sec = [0]
+
+    def _sec_no() -> int:
+        _sec[0] += 1
+        return _sec[0]
+
+    # —— Section 1: Dimension Resolution ——
+    doc.add_heading(f"{_sec_no()}. Dimension Resolution (which source wins)", level=1)
+    if rep.resolution:
+        groups: dict = {}
+        for dim, origin in rep.resolution:
+            groups.setdefault(origin, []).append(dim)
+        for origin, dims in groups.items():
+            p = doc.add_paragraph(style="List Bullet")
+            r = p.add_run(f"{origin} ({len(dims)} items): ")
+            r.bold = True
+            p.add_run(", ".join(dims))
+    else:
+        doc.add_paragraph(
+            "No specific target values set (upload a school template or fill the questionnaire)"
+        )
+    note_p = doc.add_paragraph()
+    nr = note_p.add_run(
+        "Note: Page-level dimensions labeled \"General Spec\" (margins, fonts, line spacing, etc.) "
+        "are shown for reference only and do not force a Fail; page layout follows your school "
+        "template / questionnaire. Reference formatting always follows the general spec."
+    )
+    nr.italic = True
+
+    # —— Section 2: Notes ——
+    if getattr(rep, "notes", None):
+        doc.add_heading(f"{_sec_no()}. Notes", level=1)
+        for n in rep.notes:
+            doc.add_paragraph(n, style="List Bullet")
+
+    # —— Section 3: Conflicts ——
+    if rep.conflicts:
+        doc.add_heading(f"{_sec_no()}. Spec vs School Template / Inter-source Conflicts", level=1)
+        cp = doc.add_paragraph()
+        cr = cp.add_run(
+            "The following dimensions have conflicting requirements from different sources; "
+            "they were checked against the specific source (school / questionnaire / AI):"
+        )
+        cr.italic = True
+        for dim, left, right in rep.conflicts:
+            p = doc.add_paragraph(style="List Bullet")
+            r = p.add_run(f"{dim}: ")
+            r.bold = True
+            p.add_run(f"{left} → {right}")
+
+    # —— Section 4: Detailed Findings ——
+    doc.add_heading(f"{_sec_no()}. Detailed Findings", level=1)
+    order = {"fail": 0, "warn": 1, "info": 2, "pass": 3}
+    sev_tag = {"pass": "PASS", "warn": "WARN", "fail": "FAIL", "info": "INFO"}
+    for f in sorted(rep.findings, key=lambda x: order.get(x.severity, 9)):
+        tag = sev_tag.get(f.severity, (f.severity or "").upper())
+        p = doc.add_paragraph(style="List Bullet")
+        r = p.add_run(f"[{tag}] [{f.dimension}] ")
+        r.bold = True
+        p.add_run(f.message)
+        if f.expected or f.actual:
+            p.add_run(f"  (Expected: {f.expected or '—'} | Actual: {f.actual or '—'})")
+
+    doc.save(out_path)
+    return out_path
