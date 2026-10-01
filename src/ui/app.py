@@ -2060,8 +2060,10 @@ class App:
         # 量「左框」的宽（label 被框住，文字超出即裁切、绝不溢出到右侧 ✕/⌄ 框）。
         holder = lbl.master
         total = holder.winfo_width()
+        # 宽度还没布局好（比如 Advanced 收起、内部行不可见）就直接返回，不要
+        # after_idle 无限重试——折叠行永远拿不到正宽度，重试会死循环。
+        # 等展开 / 缩放时，上面的 <Configure> 绑定会自动再算。
         if total <= 1:
-            self.root.after_idle(lambda: self._fit_field_label(lbl))
             return
         avail = total - 8  # 左右内边距留白
         if avail <= 0:
