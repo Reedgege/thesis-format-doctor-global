@@ -56,34 +56,8 @@ from .widgets import (BrandMark, IconBadge, ProgressBar, RoundButton, RoundCard,
                       ScrollArea, draw_icon)
 
 
-# ---------------------------------------------------------------------------
-# 启动诊断（仅用于定位"打开空白/需点击才出"问题；写 %TEMP%/tfd_startup_diag.log）
-# 全程 try 包裹，任何异常都不影响主流程；发布稳定版时可整体删除。
-# ---------------------------------------------------------------------------
-import tempfile as _tf
-_DIAG_FH = None
-_DIAG_SEEN = set()
-def _diag(msg):
-    global _DIAG_FH
-    try:
-        if _DIAG_FH is None:
-            try:
-                _DIAG_FH = open(_tf.gettempdir() + "/tfd_startup_diag.log", "a", encoding="utf-8")
-            except Exception:
-                _DIAG_FH = False
-        if _DIAG_FH is False:
-            return
-        _DIAG_FH.write("%s  %s\n" % (datetime.now().strftime("%H:%M:%S.%f"), msg))
-        _DIAG_FH.flush()
-    except Exception:
-        pass
-
-def _diag_first(evt, w):
-    """每种事件类型只记一次首条，避免 <Configure> 刷屏。"""
-    if evt in _DIAG_SEEN:
-        return
-    _DIAG_SEEN.add(evt)
-    _diag("EVENT first %s w=%d" % (evt, w))
+# (启动诊断代码已随 v2.3.39 移除：空白问题已在真机用诊断日志确认根治，
+#  不再写 %TEMP%/tfd_startup_diag.log)
 
 
 class _PausedPaint:
@@ -375,7 +349,6 @@ class App:
         self.lang = i18n.load_lang()
         self.F = Fonts(root)
         self.F.rebuild(self.lang)
-        _diag("init start screen=%dx%d" % (root.winfo_screenwidth(), root.winfo_screenheight()))
 
         self.version = _app_version()
         self._last_scale = None
@@ -438,14 +411,6 @@ class App:
 
         self._build()
         self._resize_after = self.root.after(120, self._on_resize)
-        # 启动诊断：记录关键事件的首次到达 + 当时窗口宽度（定位"空白/需点击"用）
-        try:
-            for _ev in ("<Configure>", "<Map>", "<Expose>", "<FocusIn>", "<Visibility>"):
-                root.bind(_ev, lambda e, ev=_ev: _diag_first(ev, root.winfo_width()), add="+")
-        except Exception:
-            pass
-        _diag("init done w=%d h=%d mapped=%s state=%s"
-              % (root.winfo_width(), root.winfo_height(), root.winfo_ismapped(), root.wm_state()))
 
     def _on_destroy(self, e=None):
         """根窗口销毁：标记关闭 + 取消挂起的 after（见 __init__ 的说明）。"""
@@ -484,7 +449,6 @@ class App:
         「内容涨了但卡片没涨、滚动条也没出现」→ 用户看不到也滚不到
         （Codex 2026-09-12 P0-2）。这个方法是那类问题的**唯一收口**。
         """
-        _diag("relayout w=%d h=%d depth=%d" % (self.root.winfo_width(), self.root.winfo_height(), self._paint_depth))
         # v2.3.32：整个过程关掉重绘。量卡片要一连跑好几次 update_idletasks，
         # 每一次都会把"还没走完"的中间画面推上屏（旧像素还残留在让出来的区域里），
         # 屏幕上就同时出现新旧两套内容 = 花屏。闸门一关，中间态一帧都不上屏。
@@ -591,8 +555,6 @@ class App:
             w = self.root.winfo_width()
         except Exception:
             return
-        _diag("resize w=%d first=%s last_scale=%s depth=%d frozen=%s"
-              % (w, self._first_layout_done, self._last_scale, self._paint_depth, self._paint_frozen))
         # 首帧：窗口拿到真实客户区尺寸后，才第一次真正重排卡片内容。此前（1×1 时）
         # _relayout_all 已把卡片画成残框，这里补一次真实尺寸下的重排把首屏纠正过来，
         # 不依赖用户"点一下上边缘"（那只是靠点击触发 <Configure> 才碰巧修好）。
@@ -643,11 +605,9 @@ class App:
             if not self._first_layout_done:
                 self._first_layout_done = True
                 self._relayout_all()
-                _diag("first relayout done w=%d" % w)
         except Exception:
-            _diag("first relayout ERROR %r" % (sys.exc_info()[1],))
+            pass
         self._first_layout_flushed = True
-        _diag("first flush (force repaint) w=%d" % w)
         self._flush_frame()
 
     def _center(self, win: tk.Toplevel, w: int, h: int):
@@ -3028,10 +2988,8 @@ def main():
         root.after(120, lambda: root.attributes("-topmost", False))
     except Exception:
         pass
-    _diag("main deiconify w=%d mapped=%s state=%s" % (root.winfo_width(), root.winfo_ismapped(), root.wm_state()))
     # 首帧布局：轮询到真实尺寸再 relayout + 强制整窗重绘，不依赖 <Configure> 何时到达。
     app._schedule_first_layout()
-    _diag("mainloop enter")
     root.mainloop()
 
 
