@@ -190,7 +190,6 @@ def test_primary_button_state_machine(ui, tmp_path):
     assert ui._check_btn.enabled is True
     assert ui._check_btn.text == i18n.t(ui.lang, "btn_check")
     assert ui._step_index == 0
-    assert ui._fix_btn._visible is False
     assert "only required input" in ui.status_lbl.cget("text")
     # 空态不摆进度条（视觉收敛：避免右栏空荡时还挂着 Prepare→Check→Fix）
     assert ui._progress.winfo_manager() == ""
@@ -204,8 +203,7 @@ def test_primary_button_state_machine(ui, tmp_path):
     assert ui._check_btn.enabled is True
     assert ui._check_btn._command == ui._run
     assert ui._step_index == 1
-    assert ui._fix_btn._visible is True
-    # 选了论文后进度条重新出现
+    # ready 态不应出现独立 Fix 入口：修正只在校验出结果后由主按钮承担（方案 B）
     assert ui._progress.winfo_manager() == "pack"
 
     # results：真跑一次体检
@@ -229,22 +227,23 @@ def test_primary_button_state_machine(ui, tmp_path):
     assert ui._step_index == 3, "三步应全部完成（进度条满格）"
 
 
-def test_secondary_button_stays_above_aux_row(ui, tmp_path):
-    """P1-1：次按钮 set_visible 后不能被排到 CTA/商业行下面。
+def test_save_button_stays_above_commercial_row(ui, tmp_path):
+    """P1-1 等价不变量：结果态出现的保存报告按钮必须排在右卡底部商业行（_commercial_row）上方。
 
-    v2.3.19 重设计把底部 ``_aux_row`` 辅助按钮条整合进右卡的 ``_build_commercial``
-    （Trial + Upgrade 一行），并把操作按钮（Check/Fix/Save）挪进右卡偏下。原断言
-    引用的 ``_aux_row`` 已不存在——等价的不变量是：可见的 ``_fix_btn``（次按钮）必须
-    仍排在右卡底部的商业行（``_commercial_row``）**上方**，不能被挤到下面。
+    v2.3.19 重设计把操作按钮（Check / Fix / Save）挪进右卡偏下、用固定 _ops_group 兜住，
+    避免重排后掉到 _commercial_row（Trial + Upgrade）之下。修正入口（Fix）已改为「主按钮在
+    results 态变 Fix」，次级 _fix_btn 已移除；这里改用结果态出现的 _save_btn 验证同一不变量。
     """
     docx = _make_docx(tmp_path / "t.docx")
     ui.docx_path.set(docx)
     ui._refresh_rows()
+    ui._phase = "results"
+    ui._last_issues = 1
+    ui._sync_ui()
     ui.root.update_idletasks()
-    assert ui._fix_btn._visible is True
-    # winfo_rooty() 是绝对屏幕 Y：两控件都在右卡内、父级相同，用绝对坐标断言
-    # "次按钮在商业行上方"最稳。
-    assert ui._fix_btn.winfo_rooty() < ui._commercial_row.winfo_rooty()
+    assert ui._save_btn.winfo_manager() == "pack"
+    # winfo_rooty() 是绝对屏幕 Y：两控件都在右卡内、父级相同，用绝对坐标断言最稳。
+    assert ui._save_btn.winfo_rooty() < ui._commercial_row.winfo_rooty()
 
 
 # ---------------------------------------------------- P0-1 忙态必须能解除
@@ -522,6 +521,15 @@ def test_long_filename_does_not_cover_clear_button(ui):
     """
     import tkinter as tk
 
+    # 与同文件其它几何断言用例一致：先确保 root 已映射且有确定尺寸。
+    # headless 整跑时 shared root 偶尔处于未映射/尺寸未就绪态，子控件 winfo_width()
+    # 会量到 0/1，导致 _fit_field_label 直接 early-return、文本停在占位符——这正是
+    # 整跑偶发失败（单跑却过）的根因。
+    if not _mapped(ui.root):
+        ui.root.geometry("1100x760")
+    ui.root.update_idletasks()
+    ui.root.update()
+
     parent = tk.Frame(ui.root, width=400, height=44)
     parent.pack_propagate(False)
     parent.pack(padx=20, pady=10)
@@ -531,9 +539,16 @@ def test_long_filename_does_not_cover_clear_button(ui):
                                   lambda: None, on_clear=lambda: None)
     lbl._full_text = "●   " + long
     ui._set_clear_visible(clear, True)
-    ui._fit_field_label(lbl)
     ui.root.update_idletasks()
     ui.root.update()
+    # 布局完成后再显式算一次：v2.3.34 起 _fit_field_label 在宽度<=1 时直接返回、
+    # 不再 after_idle 重试，依赖 <Configure> 在整跑环境下偶发不触发；这里显式调用并补一个
+    # 小轮询（强制几何刷新后重算），彻底摆脱对单次 update 时机的依赖。
+    for _ in range(5):
+        ui.root.update_idletasks()
+        ui._fit_field_label(lbl)
+        if lbl["text"].endswith("…"):
+            break
 
     left = lbl.master
     inner = left.master

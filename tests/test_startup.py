@@ -333,7 +333,7 @@ def test_gui_defaults_to_english(tmp_path, monkeypatch, tk_root):
     assert "PaperFormat Pro" in texts
     # v2.2.0 按设计规格改了卡片标题：Files → Your Documents、Workflow → Review & Fix
     assert "Your Documents" in texts and "Review & Fix" in texts
-    # 除语言切换按钮外，英文界面不应出现中文（那个按钮按设计显示目标语言名"中文"）
+    # 英文界面不应出现中文；语言按钮按设计显示目标语言名 Chinese（拉丁字母，避免西方机器缺中文字体变方框）
     lang_btn = ui.tr("lang_button")
     rest = [t for t in texts if t != lang_btn]
     assert not [t for t in rest if any("\u4e00" <= c <= "\u9fff" for c in t)]

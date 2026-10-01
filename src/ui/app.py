@@ -37,6 +37,7 @@ import ctypes
 import tkinter as tk
 import traceback
 import webbrowser
+from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 from ..engine import checker, report as report_mod
@@ -310,6 +311,34 @@ def _auto_wrap(label: tk.Label, container, padx: int):
     label.bind("<Destroy>", _cancel, add="+")
 
 
+def _fmt_expiry(value):
+    """把 license 层返回的 ``expires_at`` 尽量格式化成西方习惯的 ``Nov 1, 2026``。
+
+    兼容多种来源格式：Unix 时间戳（int/float）、ISO 8601（含 ``Z`` 后缀）、纯日期。
+    解析失败一律返回 ``None``，调用方退化成不带日期的 ''Licensed · monthly''。
+    """
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value).strftime("%b %d, %Y").replace(" 0", " ")
+        except Exception:
+            return None
+    s = str(value).strip()
+    if not s:
+        return None
+    iso = s.replace("Z", "+00:00")
+    for parser in (lambda: datetime.fromisoformat(iso),
+                   lambda: datetime.strptime(s, "%Y-%m-%d"),
+                   lambda: datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")):
+        try:
+            dt = parser()
+            return (dt.strftime("%b") + " " + str(dt.day) + ", " + str(dt.year))
+        except Exception:
+            continue
+    return None
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -533,13 +562,41 @@ class App:
         for w in list(self._popups):
             self._close_one(w)
 
-    def _link(self, parent, text, cmd, fg=ACCENT):
+    def _link(self, parent, text, cmd, fg=ACCENT, tooltip=None):
         lbl = tk.Label(parent, text=text, bg=PAPER, fg=fg,
                        font=self.F["F_SUBTITLE"], cursor="hand2")
         lbl.bind("<Button-1>", lambda e: cmd())
         lbl.bind("<Enter>", lambda e: lbl.config(fg="#33465c"))
         lbl.bind("<Leave>", lambda e: lbl.config(fg=fg))
+        if tooltip:
+            self._attach_tooltip(lbl, tooltip)
         return lbl
+
+    # ------------------------------------------------------------ 极简 tooltip
+    def _attach_tooltip(self, widget, text):
+        """悬停显示一行说明；不影响 _link 既有的颜色 hover。"""
+        tip = {"w": None}
+
+        def show(_e):
+            if tip["w"] or not text:
+                return
+            x = widget.winfo_rootx() + 12
+            y = widget.winfo_rooty() + widget.winfo_height() + 6
+            tw = tk.Toplevel(widget)
+            tw.wm_overrideredirect(True)
+            tw.attributes("-topmost", True)
+            tk.Label(tw, text=text, bg="#2C2C2A", fg="#FFFFFF",
+                     font=self.F["F_SMALL"], padx=7, pady=4).pack()
+            tw.wm_geometry("+%d+%d" % (x, y))
+            tip["w"] = tw
+
+        def hide(_e):
+            if tip["w"]:
+                tip["w"].destroy()
+                tip["w"] = None
+
+        widget.bind("<Enter>", show)
+        widget.bind("<Leave>", hide)
 
     # ------------------------------------------------------------ 样式
     def _build_style(self):
@@ -801,7 +858,7 @@ class App:
             pass
 
     def _build_header(self):
-        """顶栏：品牌 + 标语 + 隐私声明（左）／语言 ▾ · About · Help（右）。
+        """顶栏：品牌 + 标语 + 隐私声明（左）／语言（Chinese / 英文） · About · Help（右）。
 
         与前版的差别（都是为背景服务）：
           ① 顶栏仍画在背景画布上（``create_window``，不占 pack 空间）—— 背景素材的
@@ -809,7 +866,7 @@ class App:
           ② **删掉顶栏下的通栏细线**：参考稿里没有这条线，留着会横穿天际线；
           ③ 按设计稿补上**品牌 mark**（``widgets.BrandMark`` 加载 ``iconpath.find_icon()``
              取到的 PaperFormat Pro 新版圆形徽章 PNG，与窗口/任务栏图标同源）
-             与隐私声明前的盾牌小徽标；语言选择器改成「当前语言 ▾」。
+             与隐私声明前的盾牌小徽标；语言选择器显示目标语言名（英文界面显 Chinese、中文界面显 英文），悬停提示仅切换界面语言。
         """
         F = self.F
         cv = self._backdrop
@@ -838,7 +895,8 @@ class App:
         self._nav_sep(nav)
         self._link(nav, self.tr("lang_button"),
                    lambda: self._set_lang(i18n.other_lang(self.lang)),
-                   fg=theme.TEXT).pack(side="right")
+                   fg=theme.TEXT,
+                   tooltip=self.tr("lang_button_tip")).pack(side="right")
 
         self._hdr_brand, self._hdr_nav, self._hdr_privacy = brand, nav, privacy
         self._hdr_brand_win = cv.create_window(theme.PAGE_PAD, theme.HEADER_PAD_Y,
@@ -1369,7 +1427,7 @@ class App:
         # v2.3.19 按钮重组：操作按钮组（Check / Fix / Save）放在右卡偏下位置。
         # 理由：用户点击时视线落在按钮「上方」的内容（结果/状态）上，按钮在下方才符合
         # 「先看结果 → 再操作」的动线；左卡=输入/配置，右卡=操作/结果。
-        # 用固定容器 _ops_group 兜住三按钮：_fix_btn/_save_btn 初始 set_visible(False)，
+        # 用固定容器 _ops_group 兜住操作按钮：_check_btn 常驻、_save_btn 初始 pack_forget()，
         # 在 set_visible(True) 时会 super().pack() 重排到「父容器末尾」——若直接挂在右卡
         # 主体 parent 上，重排后会掉到下方 _commercial_row（Trial + Upgrade）之下，复辟
         # P1-1 旧坑（次按钮被挤到 CTA 行下面）。故按钮只在 _ops_group 内重排，组本身位置
@@ -1380,11 +1438,6 @@ class App:
                                       style="primary", font=F["F_BTN"],
                                       height=50, icon="search")
         self._check_btn.pack(fill="x", pady=(0, 8))
-        self._fix_btn = RoundButton(self._ops_group, self.tr("btn_fix"), self._run_fix,
-                                    style="secondary", font=F["F_BTN_S"],
-                                    height=42, icon="wrench")
-        self._fix_btn.pack(fill="x", pady=(0, 8))
-        self._fix_btn.set_visible(False)
         self._save_btn = RoundButton(self._ops_group, self.tr("btn_save_report"),
                                      self._save_report, style="secondary",
                                      font=F["F_BTN_S"], height=42)
@@ -1474,14 +1527,29 @@ class App:
         self._refresh_commercial()
 
     def _refresh_commercial(self):
-        """按 license 的**只读**状态刷新试用行文案（任何异常都退回中性文案）。"""
+        """按 license 的**只读**状态刷新试用行文案与升级按钮显隐（任何异常都退回中性文案）。
+
+        状态分档：revoked（过期/撤销）→ 已激活且 kind=monthly（月卡）/ lifetime（终身）→
+        试用未用 → 试用已用完。月卡与终身卡都是付费用户，不显示「Upgrade to continue」；
+        只有试用或授权异常（含撤销/过期）才显示升级入口。所有权益判断只读 ``lic.status()``，
+        UI 不碰任何计数。
+        """
         tr = self.tr
         text = tr("trial_none")
+        upgrade_visible = True
         try:
             st = lic.status()
             limit = int(st.get("trial_limit") or 1)
-            if st.get("activated"):
-                text = tr("trial_licensed")
+            if st.get("revoked"):
+                text = tr("trial_revoked")
+            elif st.get("activated"):
+                kind = st.get("kind") or "lifetime"
+                if kind == "monthly":
+                    exp = _fmt_expiry(st.get("expires_at"))
+                    text = tr("trial_licensed_monthly_exp", exp) if exp else tr("trial_licensed_monthly")
+                else:
+                    text = tr("trial_licensed")
+                upgrade_visible = False
             elif not st.get("trial_fix_used"):
                 left = max(0, limit)
                 text = tr("trial_fix_one", left) if left == 1 else tr("trial_fix_many", left)
@@ -1491,6 +1559,10 @@ class App:
             pass
         try:
             self._trial_lbl.config(text=text)
+        except Exception:
+            pass
+        try:
+            self._upgrade_btn.set_visible(upgrade_visible)
         except Exception:
             pass
 
@@ -1509,7 +1581,7 @@ class App:
     def _sync_ui(self):
         """状态机收口：先算状态，再统一做一次重新测量。
 
-        ``_relayout_all()`` 不能省 —— 这里会显隐 ``_fix_btn``、展开/收起 Advanced、
+        ``_relayout_all()`` 不能省 —— 这里会随状态显隐结果明细、展开/收起 Advanced、
         切换结果明细，都是"内容尺寸变了但不触发 <Configure>"的操作（见该方法 docstring）。
         """
         self._sync_ui_state()
@@ -1592,7 +1664,6 @@ class App:
                 self._set_step(1)
             self._check_btn.set_text(tr("btn_check_busy"))
             self._check_btn.set_enabled(False)
-            self._fix_btn.set_visible(False)
             return
 
         if not paper:
@@ -1602,7 +1673,6 @@ class App:
             # 比一上来就置灰更有「引导下一步」的明确感（v2.3.4）。
             self._check_btn.set_enabled(True)
             self._check_btn.set_action(self._run)
-            self._fix_btn.set_visible(False)
             if self._phase in ("idle", "error"):
                 self._set_status(tr("state_missing_paper"), "idle",
                                  spec=("state_missing_paper", ()))
@@ -1613,7 +1683,6 @@ class App:
             self._check_btn.set_text(tr("btn_review"))
             self._check_btn.set_enabled(True)
             self._check_btn.set_action(self._review_changes)
-            self._fix_btn.set_visible(False)
             return
 
         if self._phase == "results":
@@ -1627,7 +1696,6 @@ class App:
                 self._check_btn.set_text(tr("btn_check"))
                 self._check_btn.set_action(self._run)
             self._check_btn.set_enabled(True)
-            self._fix_btn.set_visible(False)
             return
 
         # ready（含出错后可重试）
@@ -1635,9 +1703,6 @@ class App:
         self._check_btn.set_text(tr("btn_check"))
         self._check_btn.set_enabled(True)
         self._check_btn.set_action(self._run)
-        self._fix_btn.set_text(tr("btn_fix"))
-        self._fix_btn.set_action(self._run_fix)
-        self._fix_btn.set_visible(True)
 
     # ------------------------------------------------------------ 引导 / 授权映射
     def _update_guidance(self):
@@ -2378,93 +2443,163 @@ class App:
         tk.Label(inner, text=tr("about_footer"), bg=PAPER, fg=MUTED,
                  font=self.F["F_FOOT"]).pack(padx=padx, pady=(16, 18))
 
-    # ------------------------------------------------------------ 激活
+    # ------------------------------------------------------------ 升级 / 激活（合并弹窗）
     def _upgrade_dialog(self):
-        """升级 / 定价弹窗（规格 COMMERCIAL UI：主页只留一行，点开才展示四个方案）。
+        """升级 / 购买 / 激活 合并弹窗（规格 COMMERCIAL UI）。
 
-        视觉一律走 ``modal_shell.ModalShell`` + ``widgets.RoundCard`` —— 规格硬要求
-        「同一功能不得造第二套样式」，弹窗不许自创标题栏/配色。
+        设计（老板 2026-10-01 定）：
+        - 顶部一行 SKU 信息（终身 / 月付），让客户买前就看清价格；
+        - 一个「购买」按钮直接开官网 pricing 页（价格单一来源在 store.js，app 不写死）；
+        - 在线激活码输入框**直接放在弹窗主区域**（默认可见），客户买前就知道码填哪儿、
+          买后粘贴即激活，无需再开第二个弹窗；
+        - 离线激活（机器码 + 离线码）默认折叠，断网灾备用。
 
-        定价与权益逻辑在 ``license`` 层，**本弹窗只做呈现**：四个方案卡照
-        ``04_COMPONENTS/pricing-*.svg`` 的版式（名称 / 副题 / 价格 / 说明 / 选择按钮），
-        价格给占位符（规格稿本身就是 ``$—``），点「选择方案」接到既有的激活 / 联系流程，
-        绝不在这里发明价格或改动任何权益判断。
+        授权逻辑仍走 ``lic.activate`` / ``lic.activate_offline``，本弹窗只换外壳。
         """
         tr = self.tr
         F = self.F
-        win = ModalShell(self.root, tr("up_title"), width=640, height=840)
+        win = ModalShell(self.root, tr("up_title"), width=600, height=720)
         self._track(win)
-
         body = win.content
+
         tk.Label(body, text=tr("up_subtitle"), bg=theme.SURFACE, fg=theme.TEXT_2,
-                 font=F["F_SMALL"], anchor="w").pack(fill="x")
+                 font=F["F_SMALL"], anchor="w", justify="left",
+                 wraplength=520).pack(fill="x")
 
-        # 规格 modal-shell.svg 的两条摘要信息条（One-time / 方案组）
-        one = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
+        # SKU 一行（终身 / 月付）
+        sku = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
                         border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
-        one.pack(fill="x", pady=(12, 0))
-        tk.Label(one.inner, text=tr("up_plan_onetime"), bg=theme.SURFACE_SOFT,
+        sku.pack(fill="x", pady=(12, 0))
+        tk.Label(sku.inner, text=tr("up_sku_line"), bg=theme.SURFACE_SOFT,
                  fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
-        tk.Label(one.inner, text=tr("up_onetime_desc"), bg=theme.SURFACE_SOFT,
-                 fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
 
-        group = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
-                          border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
-        group.pack(fill="x", pady=(8, 0))
-        tk.Label(group.inner, text=tr("up_group_title"), bg=theme.SURFACE_SOFT,
-                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
-        tk.Label(group.inner, text=tr("up_group_desc"), bg=theme.SURFACE_SOFT,
-                 fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
+        # 购买按钮（开官网 pricing 页）
+        RoundButton(body, text=tr("up_buy"), command=self._open_buy,
+                    style="primary", font=F["F_BTN"], height=38,
+                    padx=18).pack(fill="x", pady=(12, 0))
 
-        grid = tk.Frame(body, bg=theme.SURFACE)
-        grid.pack(fill="both", expand=True, pady=(12, 0))
-        grid.columnconfigure(0, weight=1, uniform="plan")
-        grid.columnconfigure(1, weight=1, uniform="plan")
+        tk.Label(body, text=tr("up_note"), bg=theme.SURFACE, fg=theme.TEXT_3,
+                 font=F["F_FOOT"], anchor="w", justify="left",
+                 wraplength=520).pack(fill="x", pady=(8, 0))
 
-        plans = (
-            ("up_plan_onetime", "up_plan_onetime_sub", "up_plan_onetime_desc"),
-            ("up_plan_weekly", "up_plan_weekly_sub", "up_plan_weekly_desc"),
-            ("up_plan_monthly", "up_plan_monthly_sub", "up_plan_monthly_desc"),
-            ("up_plan_lifetime", "up_plan_lifetime_sub", "up_plan_lifetime_desc"),
-        )
-        for i, (name_key, sub_key, desc_key) in enumerate(plans):
-            card = RoundCard(grid, radius=12, fill=theme.SURFACE,
-                             border=theme.BORDER, shadow=False, padx=14, pady=12)
-            card.grid(row=i // 2, column=i % 2, sticky="nsew",
-                      padx=(0, 8) if i % 2 == 0 else (8, 0),
-                      pady=(0, 10))
+        # 在线激活（主区域，默认可见）—— 买前就知道码填哪儿
+        act = RoundCard(body, radius=12, fill=theme.SURFACE_SOFT,
+                        border=theme.INFO_BORDER, shadow=False, padx=14, pady=10)
+        act.pack(fill="x", pady=(12, 0))
+        tk.Label(act.inner, text=tr("up_act_label"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w").pack(fill="x")
+        code_var = tk.StringVar()
+        ttk.Entry(act.inner, textvariable=code_var, width=40,
+                  font=F["F_BODY"]).pack(fill="x", pady=(8, 0))
+        tk.Label(act.inner, text=tr("act_online_hint"), bg=theme.SURFACE_SOFT,
+                 fg=theme.TEXT_3, font=F["F_FOOT"], anchor="w",
+                 justify="left").pack(fill="x", pady=(3, 6))
 
-            def _choose(_e=None):
+        def _submit():
+            code = code_var.get().strip()
+            if not code:
+                messagebox.showwarning(tr("act_title"), tr("act_need_code"), parent=win)
+                return
+            r = lic.activate(code)
+            messagebox.showinfo(tr("act_result_title"), r["message"], parent=win)
+            if r["ok"]:
+                self._refresh_commercial()
                 self._close_one(win)
-                self._activate_dialog()
 
-            tk.Label(card.inner, text=tr(name_key), bg=theme.SURFACE,
-                     fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
-            tk.Label(card.inner, text=tr(sub_key), bg=theme.SURFACE,
-                     fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
-            tk.Label(card.inner, text=tr("up_price_tbd"), bg=theme.SURFACE,
-                     fg=theme.PRIMARY, font=F["F_TITLE"], anchor="w").pack(
-                         fill="x", pady=(6, 0))
-            tk.Label(card.inner, text=tr(desc_key), bg=theme.SURFACE,
-                     fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
-                     justify="left", wraplength=230).pack(fill="x", pady=(2, 8))
-            RoundButton(card.inner, text=tr("up_choose"), command=_choose,
-                        style="secondary", font=F["F_BTN_S"],
-                        height=30, padx=10).pack(fill="x")
+        RoundButton(act.inner, text=tr("act_online_btn"), command=_submit,
+                    style="secondary", font=F["F_BTN_S"], height=34,
+                    padx=14).pack(anchor="w")
 
-        note = tk.Label(body, text=tr("up_note"), bg=theme.SURFACE,
-                        fg=theme.TEXT_3, font=F["F_HELP"], anchor="w",
-                        justify="left")
-        note.pack(fill="x", pady=(6, 0))
-        # 说明行跟着弹窗宽度换行：不设 wraplength 会被 590px 的内容区横向裁掉。
-        _auto_wrap(note, body, 0)
+        # 离线激活（默认折叠）
+        self._build_offline_fold(win, body)
 
-        win.add_primary_action(tr("up_view_plans"), self._view_plans)
         win.add_cancel_action(tr("up_close"))
-        win.add_secondary_action(tr("up_have_code"), self._activate_dialog)
-        # 内容比初始高度高时按真实需要长高，保证底部按钮与说明不被裁掉
-        # （上限 = 屏幕可用高度，避免小屏弹窗探出可视区）。
-        self._fit_modal(win, 640)
+        self._fit_modal(win, 600)
+
+    def _open_buy(self):
+        """「购买」按钮：开官网 pricing 页（价格单一来源在 store.js，app 不写死）。"""
+        try:
+            webbrowser.open(i18n.BRAND_BUY_URL)
+        except Exception:
+            pass
+
+    def _build_offline_fold(self, win, parent):
+        """离线激活折叠区：机器码（复制给卖家）+ 离线激活码（粘贴即用）。默认收起。"""
+        tr = self.tr
+        F = self.F
+
+        head = tk.Frame(parent, bg=theme.SURFACE, cursor="hand2")
+        head.pack(fill="x", pady=(12, 0))
+        marker = tk.StringVar(value="[+]")
+        tk.Label(head, textvariable=marker, bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_LABEL"], width=3, anchor="w").pack(side="left")
+        tk.Label(head, text=tr("up_offline_expand"), bg=theme.SURFACE,
+                 fg=theme.TEXT_2, font=F["F_LABEL"], anchor="w").pack(side="left", padx=(2, 0))
+
+        pane = tk.Frame(parent, bg=theme.SURFACE)
+
+        # 机器码
+        mc_var = tk.StringVar(value=lic._machine_fingerprint())
+        mc_card = RoundCard(pane, radius=10, fill=theme.SURFACE_SOFT,
+                            border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
+        mc_card.pack(fill="x", pady=(8, 0))
+        tk.Label(mc_card.inner, text=tr("act_machine_label"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w").pack(fill="x")
+        ttk.Entry(mc_card.inner, textvariable=mc_var, width=40, state="readonly",
+                  font=F["F_MONO"]).pack(fill="x", pady=(6, 0))
+        tk.Label(mc_card.inner, text=tr("act_machine_hint"), bg=theme.SURFACE_SOFT,
+                 fg=theme.TEXT_3, font=F["F_FOOT"], anchor="w",
+                 justify="left").pack(fill="x", pady=(3, 6))
+
+        def _copy_mc():
+            try:
+                win.clipboard_clear()
+                win.clipboard_append(mc_var.get())
+                messagebox.showinfo(tr("act_copy_ok_title"), tr("act_copy_ok"), parent=win)
+            except Exception:
+                pass
+
+        RoundButton(mc_card.inner, text=tr("act_copy_btn"), command=_copy_mc,
+                    style="secondary", font=F["F_BTN_S"], height=32, padx=12).pack(anchor="w")
+
+        # 离线激活码
+        off_card = RoundCard(pane, radius=10, fill=theme.SURFACE_SOFT,
+                             border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
+        off_card.pack(fill="x", pady=(8, 0))
+        tk.Label(off_card.inner, text=tr("act_offline_label"), bg=theme.SURFACE_SOFT,
+                 fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w").pack(fill="x")
+        off_var = tk.StringVar()
+        ttk.Entry(off_card.inner, textvariable=off_var, width=40,
+                  font=F["F_MONO"]).pack(fill="x", pady=(6, 0))
+        tk.Label(off_card.inner, text=tr("act_offline_hint"), bg=theme.SURFACE_SOFT,
+                 fg=theme.TEXT_3, font=F["F_FOOT"], anchor="w",
+                 justify="left").pack(fill="x", pady=(3, 6))
+
+        def _submit_offline():
+            code = off_var.get().strip()
+            if not code:
+                messagebox.showwarning(tr("act_title"), tr("act_need_offline"), parent=win)
+                return
+            r = lic.activate_offline(code)
+            messagebox.showinfo(tr("act_result_title"), r["message"], parent=win)
+            if r["ok"]:
+                self._refresh_commercial()
+                self._close_one(win)
+
+        RoundButton(off_card.inner, text=tr("act_offline_btn"), command=_submit_offline,
+                    style="secondary", font=F["F_BTN_S"], height=32, padx=12).pack(anchor="w")
+
+        def _toggle():
+            if pane.winfo_ismapped():
+                pane.pack_forget()
+                marker.set("[+]")
+            else:
+                pane.pack(fill="x")
+                marker.set("[-]")
+            self._fit_modal(win, 600)
+
+        head.bind("<Button-1>", lambda e: _toggle())
+        # 默认折叠（pane 尚未 pack）
 
     def _fit_modal(self, win, width: int):
         """把弹窗调到内容的真实高度，并保证**整窗留在屏幕工作区内**。
@@ -2489,112 +2624,9 @@ class App:
         except Exception:
             pass
 
-    def _view_plans(self):
-        """「View plans ›」：打开官网（与页脚官网同一入口，不引入新逻辑）。"""
-        try:
-            webbrowser.open(i18n.BRAND_SITE_URL)
-        except Exception:
-            pass
-
     def _activate_dialog(self):
-        """激活弹窗 —— 视觉与升级弹窗同一套 modal-shell 语言（规格禁止弹窗自创样式）。
-
-        **只换外壳**：``lic.activate`` / ``lic.activate_offline`` / ``_machine_fingerprint``
-        与三个处理函数逐字未动，颜色全部走 theme 令牌。
-        """
-        tr = self.tr
-        F = self.F
-        win = ModalShell(self.root, tr("act_title"), width=600, height=660)
-        self._track(win)
-        body = win.content
-
-        tk.Label(body, text=tr("act_subtitle"), bg=theme.SURFACE,
-                 fg=theme.TEXT_2, font=F["F_SMALL"], anchor="w", justify="left",
-                 wraplength=500).pack(fill="x")
-
-        def _section(label_key: str, icon: str):
-            """一节 = 柔和面圆角卡（与主页信息面板同款），返回卡片内容区。"""
-            card = RoundCard(body, radius=12, fill=theme.SURFACE_SOFT,
-                             border=theme.INFO_BORDER, shadow=False,
-                             padx=14, pady=10)
-            card.pack(fill="x", pady=(10, 0))
-            head = tk.Frame(card.inner, bg=theme.SURFACE_SOFT)
-            head.pack(fill="x")
-            IconBadge(head, icon, size=theme.BADGE_SIZE, bg=theme.SURFACE_SOFT,
-                      fill=theme.PRIMARY_SOFT).pack(side="left")
-            tk.Label(head, text=tr(label_key), bg=theme.SURFACE_SOFT,
-                     fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w",
-                     justify="left").pack(side="left", padx=(8, 0))
-            return card.inner
-
-        def _hint(parent, key):
-            tk.Label(parent, text=tr(key), bg=theme.SURFACE_SOFT,
-                     fg=theme.TEXT_3, font=F["F_FOOT"], anchor="w",
-                     justify="left").pack(fill="x", pady=(3, 6))
-
-        # ① 在线激活码
-        sec = _section("act_online_label", "globe")
-        code_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=code_var, width=40,
-                  font=F["F_BODY"]).pack(fill="x", pady=(8, 0))
-        _hint(sec, "act_online_hint")
-
-        def _submit():
-            code = code_var.get().strip()
-            if not code:
-                messagebox.showwarning(tr("act_title"), tr("act_need_code"), parent=win)
-                return
-            r = lic.activate(code)
-            messagebox.showinfo(tr("act_result_title"), r["message"], parent=win)
-            if r["ok"]:
-                self._close_one(win)
-
-        RoundButton(sec, text=tr("act_online_btn"), command=_submit,
-                    style="secondary", font=F["F_BTN_S"], height=34,
-                    padx=14).pack(anchor="w")
-
-        # ② 本机机器码（发给卖家换离线码）
-        sec = _section("act_machine_label", "mail")
-        mc_var = tk.StringVar(value=lic._machine_fingerprint())
-        ttk.Entry(sec, textvariable=mc_var, width=40, state="readonly",
-                  font=F["F_MONO"]).pack(fill="x", pady=(8, 0))
-        _hint(sec, "act_machine_hint")
-
-        def _copy_mc():
-            try:
-                win.clipboard_clear()
-                win.clipboard_append(mc_var.get())
-                messagebox.showinfo(tr("act_copy_ok_title"), tr("act_copy_ok"),
-                                    parent=win)
-            except Exception:
-                pass
-
-        RoundButton(sec, text=tr("act_copy_btn"), command=_copy_mc,
-                    style="secondary", font=F["F_BTN_S"], height=34,
-                    padx=14).pack(anchor="w")
-
-        # ③ 离线激活码（卖家签发，无需联网）
-        sec = _section("act_offline_label", "shield")
-        off_var = tk.StringVar()
-        ttk.Entry(sec, textvariable=off_var, width=40,
-                  font=F["F_MONO"]).pack(fill="x", pady=(8, 0))
-        _hint(sec, "act_offline_hint")
-
-        def _submit_offline():
-            code = off_var.get().strip()
-            if not code:
-                messagebox.showwarning(tr("act_title"), tr("act_need_offline"), parent=win)
-                return
-            r = lic.activate_offline(code)
-            messagebox.showinfo(tr("act_result_title"), r["message"], parent=win)
-            if r["ok"]:
-                self._close_one(win)
-
-        RoundButton(sec, text=tr("act_offline_btn"), command=_submit_offline,
-                    style="secondary", font=F["F_BTN_S"], height=34,
-                    padx=14).pack(anchor="w")
-
-        win.add_cancel_action(tr("up_close"))
+        """兼容 dev 工具（截图 / smoke）旧引用：直接打开合并后的「购买 · 激活」弹窗。"""
+        self._upgrade_dialog()
 
     # ------------------------------------------------------------ 目标画像
     def _build_target(self) -> TargetProfile:
