@@ -397,8 +397,19 @@ class App:
 
         _sw = root.winfo_screenwidth()
         _sh = root.winfo_screenheight()
+        # 可用高度 = 屏幕高 − 任务栏预留。预留 64px（与 _fit_modal 同口径，覆盖任务栏
+        # + 标题栏 + 边距），并在可用区内居中。否则小屏（1280×720 / 1366×768 / 150%
+        # 缩放）上 0.94 这种系数算出的初始高度几乎顶满，WM 再往下偏一点，底部页脚/
+        # 状态栏就被任务栏吃掉 —— 正是 v2.1.1 修过的那个 P0 的现世报。
+        _taskbar_reserve = 64
+        _avail = max(360, _sh - _taskbar_reserve)
         root.title("PaperFormat Pro")
-        root.geometry("%dx%d" % (min(_BASE_W, int(_sw * 0.88)), min(1020, int(_sh * 0.94))))
+        _w = min(_BASE_W, int(_sw * 0.88))
+        _h = min(1020, _avail - 16)
+        _h = max(480, _h)
+        _x = max(8, (_sw - _w) // 2)
+        _y = max(8, (_avail - _h) // 2)
+        root.geometry("%dx%d+%d+%d" % (_w, _h, _x, _y))
         # minsize 必须**按屏幕夹一次**：写死 1100×720 的话，在 1280×720 这类小屏
         # （或 1366×768 / 150% 缩放）上 WM 会把窗口强行撑到比可用区域还高，
         # side="bottom" 的页脚与状态栏直接落到屏幕外 —— 正好推翻 v2.1.1 修过的 P0。

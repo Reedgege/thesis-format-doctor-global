@@ -52,14 +52,18 @@ class ModalShell(tk.Toplevel):
         self.resizable(False, False)  # 默认不可调整大小（保持简洁）
         self.title(title)
 
-        # 画圆角边框和投影的 Canvas（作为底层）
+        # 画圆角边框和投影的 Canvas（作为底层，可纵向滚动）
         self._cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
-        self._cv.pack(fill="both", expand=True)
+        self._cv.pack(side="left", fill="both", expand=True)
+        self._sb = ttk.Scrollbar(self, orient="vertical", command=self._cv.yview)
+        self._cv.configure(yscrollcommand=self._on_scroll)
         self._cv.bind("<Configure>", self._draw)
+        self._cv.bind("<MouseWheel>", self._on_wheel)
 
-        # 内容容器
+        # 内容容器（嵌入 Canvas，超出可视区时由滚动条接管）
         self._inner = tk.Frame(self._cv, bg=theme.SURFACE)
         self._win = self._cv.create_window(0, 0, window=self._inner, anchor="nw")
+        self._relaying = False
 
         # 标题
         F = i18n.resolve_font_spec(i18n.detect_lang())
@@ -126,11 +130,58 @@ class ModalShell(tk.Toplevel):
                           width=1, tags="modal")
         cv.tag_lower("modal")
 
-        # 更新内容容器位置
+        # 更新内容容器尺寸 + 滚动区域（内容超出可视区时显示滚动条）
+        self._sync_scroll(w, h)
+
+    # ------------------------------------------------------------- 滚动支持
+    def _sync_scroll(self, w: int, h: int):
+        """把内容容器调到真实高度，并在超出可视区时启用纵向滚动条。
+
+        关键修复：旧实现把 ``_inner`` 强制压成可视区高度（inner_h = h-2），
+        内容一旦比弹窗高就被 Canvas 裁掉、且 Canvas 没有滚动条 → 离线激活
+        折叠展开后整段落在可视区外、点 [+] 像没反应。现在让 ``_inner`` 按自然
+        高度排布，滚动区覆盖全部内容，溢出才显示滚动条。
+        """
+        if self._relaying:
+            return
+        self._relaying = True
         try:
-            inner_w = w - 2
-            inner_h = h - 2
+            self.update_idletasks()
+            ih = int(self._inner.winfo_reqheight())
+            inner_w = max(1, w - 2)
+            # 至少填满可视区，避免内容短时下方留空；内容更高则按自然高度
+            inner_h = max(ih, h - 2)
             self._cv.itemconfigure(self._win, width=inner_w, height=inner_h)
+            self._cv.configure(scrollregion=(0, 0, inner_w, inner_h))
+            if ih > h + 2:
+                if not self._sb.winfo_ismapped():
+                    self._sb.pack(side="right", fill="y")
+            else:
+                if self._sb.winfo_ismapped():
+                    self._sb.pack_forget()
+        except Exception:
+            pass
+        finally:
+            self._relaying = False
+
+    def _on_scroll(self, first: str, last: str):
+        """Canvas 的 yscrollcommand 回调：同步滚动条并隐藏/显示。"""
+        try:
+            self._sb.set(first, last)
+            f, l = float(first), float(last)
+            if f <= 0.0 and l >= 1.0:
+                if self._sb.winfo_ismapped():
+                    self._sb.pack_forget()
+            else:
+                if not self._sb.winfo_ismapped():
+                    self._sb.pack(side="right", fill="y")
+        except Exception:
+            pass
+
+    def _on_wheel(self, event):
+        """鼠标滚轮滚动内容（Windows 用 delta，跨平台兜底）。"""
+        try:
+            self._cv.yview_scroll(int(-1 * (event.delta / 120)), "units")
         except Exception:
             pass
 
