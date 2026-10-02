@@ -1347,8 +1347,9 @@ class App:
         self._adv_chev.pack(side="right")
         IconBadge(hdr, "gear", size=theme.BADGE_SIZE,
                   bg=theme.SURFACE).pack(side="left")
-        tk.Label(hdr, text=self.tr("adv_label"), bg=theme.SURFACE, fg=theme.TEXT,
-                 font=F["F_LABEL"], cursor="hand2").pack(side="left", padx=(8, 0))
+        self._adv_title = tk.Label(hdr, text=self.tr("adv_label"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_LABEL"], cursor="hand2")
+        self._adv_title.pack(side="left", padx=(8, 0))
 
         self._adv_body = tk.Frame(bar.inner, bg=theme.SURFACE)
 
@@ -1418,7 +1419,7 @@ class App:
                      command=self._pick_ai_config, style="secondary",
                      font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
 
-        for w in (hdr, self._adv_chev):
+        for w in (hdr, self._adv_chev, self._adv_title):
             w.bind("<Button-1>", lambda e: self._toggle_advanced())
 
     def _toggle_advanced(self):
@@ -2626,10 +2627,12 @@ class App:
         head = tk.Frame(parent, bg=theme.SURFACE, cursor="hand2")
         head.pack(fill="x", pady=(12, 0))
         marker = tk.StringVar(value="[+]")
-        tk.Label(head, textvariable=marker, bg=theme.SURFACE, fg=theme.TEXT_2,
-                 font=F["F_LABEL"], width=3, anchor="w").pack(side="left")
-        tk.Label(head, text=tr("up_offline_expand"), bg=theme.SURFACE,
-                 fg=theme.TEXT_2, font=F["F_LABEL"], anchor="w").pack(side="left", padx=(2, 0))
+        mark_lbl = tk.Label(head, textvariable=marker, bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_LABEL"], width=3, anchor="w")
+        mark_lbl.pack(side="left")
+        title_lbl = tk.Label(head, text=tr("up_offline_expand"), bg=theme.SURFACE,
+                 fg=theme.TEXT_2, font=F["F_LABEL"], anchor="w")
+        title_lbl.pack(side="left", padx=(2, 0))
 
         pane = tk.Frame(parent, bg=theme.SURFACE)
 
@@ -2694,6 +2697,8 @@ class App:
             self._fit_modal(win, 600)
 
         head.bind("<Button-1>", lambda e: _toggle())
+        mark_lbl.bind("<Button-1>", lambda e: _toggle())
+        title_lbl.bind("<Button-1>", lambda e: _toggle())
         # 默认折叠（pane 尚未 pack）
 
     def _fit_modal(self, win, width: int):

@@ -58,7 +58,10 @@ class ModalShell(tk.Toplevel):
         self._sb = ttk.Scrollbar(self, orient="vertical", command=self._cv.yview)
         self._cv.configure(yscrollcommand=self._on_scroll)
         self._cv.bind("<Configure>", self._draw)
-        self._cv.bind("<MouseWheel>", self._on_wheel)
+        # 滚轮挂在顶层窗：子控件（Entry/Button/Label）的 MouseWheel 会冒泡到顶层窗
+        # bindtag，折叠区/内容上方滚轮也能滚；return "break" 阻断继续冒泡到 root 的
+        # bind_all，避免弹窗打开时主窗口在背后跟着滚。
+        self.bind("<MouseWheel>", self._on_wheel)
 
         # 内容容器（嵌入 Canvas，超出可视区时由滚动条接管）
         self._inner = tk.Frame(self._cv, bg=theme.SURFACE)
@@ -184,6 +187,7 @@ class ModalShell(tk.Toplevel):
             self._cv.yview_scroll(int(-1 * (event.delta / 120)), "units")
         except Exception:
             pass
+        return "break"
 
     # ---------------------------------------------------------------- 对外
     @property
