@@ -499,7 +499,7 @@ def _ensure_trailing_period(para) -> bool:
 
 
 def _heading_comment_text(spec, lvl, f) -> str:
-    name = spec.name.split("(")[0].strip()
+    name = _spec_label(spec)
     return f"{name} Level {lvl} heading: {f.desc}. Applied."
 
 
@@ -539,41 +539,131 @@ def _apply_heading_format(doc, target: TargetProfile, spec) -> dict:
     return info
 
 
-def _build_summary_text(target: TargetProfile, applied: dict, spec, ref_info) -> str:
-    """生成本遍全部改动的英文汇总批注文本（空则无改动）。"""
-    bits = []
-    page = target.page or {}
-    # 只报**真改了**的项（原来这里只看「目标值有没有设」，不看有没有真改 →
-    # 对本来就合规的文档也会凭空生成一条"我改了页边距"的批注）
-    if applied.get("margins") is not None:
-        m = applied["margins"]
-        bits.append(f"margins set to {m}\" on all sides")
-    if applied.get("font_family"):
-        bits.append(f"body font set to {applied['font_family']}")
-    if applied.get("font_size_pt") is not None:
-        bits.append(f"font size set to {applied['font_size_pt']} pt")
-    if applied.get("line_spacing") is not None:
-        bits.append(f"line spacing set to {applied['line_spacing']}x")
-    if applied.get("body_alignment"):
-        bits.append(f"body alignment set to {applied['body_alignment']}")
-    if applied.get("first_line_indent_in") is not None:
-        bits.append(f"first-line indent set to {applied['first_line_indent_in']}\"")
-    if applied.get("space_after_pt") is not None:
-        bits.append(f"space after set to {applied['space_after_pt']} pt")
-    if ref_info and (ref_info.get("hanging_applied") or ref_info.get("numbering_added")):
-        bits.append(
-            f"references formatted per {target.reference_style}"
-            + ("; numbered [1].." if ref_info.get("numbering_added") else "")
-        )
-    if not bits:
+def _spec_label(spec) -> str:
+    """规范显示名（纯英文）：用 spec.key 而非 spec.name，避免规范名里的本地化
+    后缀（如「美国心理学会」或「自定义…」）泄漏进用户可见的批注。"""
+    key = getattr(spec, "key", None) or "Other"
+    return "Custom" if key == "Other" else key
+
+
+def _line_spacing_label(v) -> str:
+    """行距数值 → 人类可读标签（single / 1.5 lines / double / Nx）。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
         return ""
-    name = spec.name.split("(")[0].strip()
-    return f"PaperFormat Pro ({name}): " + "; ".join(bits) + "."
+    if abs(f - 1.0) <= 1e-6:
+        return "single"
+    if abs(f - 1.5) <= 1e-6:
+        return "1.5 lines"
+    if abs(f - 2.0) <= 1e-6:
+        return "double"
+    return f"{f:g}x"
+
+
+def _align_label(v) -> str:
+    return ALIGN_LABEL.get(str(v), str(v) if v is not None else "unknown")
+
+
+def _before(prof, attr, default="unknown"):
+    """安全取修前画像值；prof 为 None 或缺失时返回 default。"""
+    if prof is None:
+        return default
+    val = getattr(prof, attr, None)
+    return val if val is not None else default
+
+
+def _margins_before(prof) -> str:
+    m = (prof.margins if prof is not None else None) or {}
+    def _one(k):
+        v = m.get(k)
+        return f"{float(v):.2f}\"" if v is not None else "n/a"
+    return (f"top {_one('top')} / bottom {_one('bottom')} / "
+            f"left {_one('left')} / right {_one('right')}")
+
+
+def _build_summary_text(target, applied, spec, ref_info, prof) -> str:
+    """生成本遍全部改动的英文「改动清单」批注（before → after）。
+
+    仅报**真改了**的项；格式为带 from→to 的要点列表 + 作用范围说明，挂在文档
+    首段与末段，让客户在任意一头都能一眼看到「改了什么、从什么改成什么、是否动了正文」。
+    """
+    has_ref = bool(ref_info and (ref_info.get("hanging_applied")
+                                 or ref_info.get("numbering_added")))
+    if not (applied or has_ref):
+        return ""
+    name = _spec_label(spec)
+    lines: list = []
+
+    # —— 页面 / 正文级（统一改动）——
+    if applied.get("margins") is not None:
+        after = f"{float(applied['margins']):.2f}\" on all four sides"
+        lines.append(f"Page margins: {_margins_before(prof)}  →  {after}")
+    if applied.get("font_family"):
+        lines.append(f"Body font: {_before(prof, 'font_family')}  →  {applied['font_family']}")
+    if applied.get("font_size_pt") is not None:
+        b = _before(prof, "font_size_pt")
+        if b == "unknown":
+            lines.append(f"Font size: set to {applied['font_size_pt']} pt")
+        else:
+            lines.append(f"Font size: {b} pt  →  {applied['font_size_pt']} pt")
+    if applied.get("line_spacing") is not None:
+        raw = _before(prof, "line_spacing")
+        b = _line_spacing_label(raw)
+        a = _line_spacing_label(applied["line_spacing"])
+        lines.append(f"Line spacing: set to {a}" if not b else f"Line spacing: {b}  →  {a}")
+    if applied.get("body_alignment"):
+        b = _align_label(_before(prof, "body_alignment"))
+        a = _align_label(applied["body_alignment"])
+        lines.append(f"Body alignment: {b}  →  {a}")
+    if applied.get("first_line_indent_in") is not None:
+        b = _before(prof, "first_line_indent_in")
+        btxt = f"{float(b):.2f}\"" if b != "unknown" else "none"
+        lines.append(f"First-line indent: {btxt}  →  {float(applied['first_line_indent_in']):.2f}\"")
+    if applied.get("space_after_pt") is not None:
+        b = _before(prof, "space_after_pt")
+        btxt = f"{b} pt" if b != "unknown" else "0 pt"
+        lines.append(f"Space after paragraph: {btxt}  →  {applied['space_after_pt']} pt")
+
+    # —— 参考文献 ——
+    if has_ref:
+        bits = []
+        if ref_info.get("hanging_applied"):
+            bits.append("hanging indent applied")
+        if ref_info.get("numbering_added"):
+            bits.append(f"{ref_info['numbering_added']} entries numbered [1]..")
+        lines.append(f"Reference list ({target.reference_style}): " + "; ".join(bits))
+
+    if not lines:
+        return ""
+    body = "\n".join("• " + ln for ln in lines)
+    return (
+        f"PaperFormat Pro ({name}) \u2014 Format adjustments applied to this document:\n"
+        f"{body}\n\n"
+        f"Scope: these changes apply to all body paragraphs. Headings, the reference "
+        f"list, and tables are handled separately (see their own comments). No text "
+        f"content was added, deleted, or rewritten."
+    )
 
 
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
+
+def _last_meaningful_paragraph(doc):
+    """返回文档最后一个非空段落（用于把汇总批注也挂在文档末尾，方便客户在尾部查看）。
+
+    若全篇皆空则退回最后一个段落；用底层 w:p 元素身份判断，避免 python-docx
+    多次访问 doc.paragraphs 产生不同包装对象导致「同一段被加两条汇总」。
+    """
+    last = None
+    for para in doc.paragraphs:
+        if (para.text or "").strip():
+            last = para
+    if last is None:
+        return doc.paragraphs[-1] if doc.paragraphs else None
+    return last
+
 
 def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
     """对 input 做纯格式修正，写入 output（不覆盖原件）。返回变更摘要 dict。
@@ -593,6 +683,12 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
         ) from e
 
     strip_our_comments(doc)  # 清掉本工具上一遍批注（幂等，防 Pit 4 旧气泡带下）
+
+    # 修前画像：用作批注的 before 值（profiling 失败不阻断修正，仅退化为无 before 值）
+    try:
+        prof = read_docx(input_path)
+    except Exception:
+        prof = None
 
     ref_indices = reference_paragraph_indices(doc)
     ref_set = set(ref_indices)
@@ -639,14 +735,19 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
     head_info = _apply_heading_format(doc, target, spec)
     summary["headings_formatted"] = head_info["formatted"]
 
-    # 批注：文档首段汇总本遍全部改动；参考文献段加批注
+    # 批注：文档首段 + 末段各一条「改动清单」汇总本遍全部改动；参考文献段加批注
     summary_text = _build_summary_text(
-        target, applied, spec, ref_info if target.reference_style else None
+        target, applied, spec, ref_info if target.reference_style else None, prof
     )
     comments_added = head_info["comments"]
     if summary_text and doc.paragraphs:
-        add_comment(doc, doc.paragraphs[0], summary_text)
+        first_para = doc.paragraphs[0]
+        add_comment(doc, first_para, summary_text)
         comments_added += 1
+        last_para = _last_meaningful_paragraph(doc)
+        if last_para is not None and last_para._p is not first_para._p:
+            add_comment(doc, last_para, summary_text)
+            comments_added += 1
     if target.reference_style and ref_indices and ref_info and (
             ref_info.get("hanging_applied") or ref_info.get("numbering_added")):
         ref_heading_idx = ref_indices[0] - 1

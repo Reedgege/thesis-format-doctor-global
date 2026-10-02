@@ -216,7 +216,7 @@ SPECS: dict[str, StyleSpec] = {
     ),
     "Other": StyleSpec(
         key="Other",
-        name="Other / 自定义（请上传学校模板或手填问卷）",
+        name="Other / Custom (upload your school template or fill the questionnaire)",
         page=PageLayout(None, None, None, None, None, None, None),
         reference=ReferenceRule(
             style_key="Other",
