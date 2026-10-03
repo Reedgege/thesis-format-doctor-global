@@ -34,7 +34,22 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt pytest
 
       - name: Run regression tests
-        run: python -m pytest tests -q -p no:cacheprovider
+        # 输出落到文件再 tee：本机无 GitHub API admin 权限时下载不到 Actions 日志，
+        # 只能靠构件把失败详情带出来（见下一步 Upload）。
+        run: |
+          python -m pytest tests -q -p no:cacheprovider --tb=long -rA 2>&1 | Tee-Object -FilePath pytest-log.txt
+          exit $LASTEXITCODE
+
+      # 把 pytest 输出作为构件留下来（即使上一步失败也要传）：
+      # GitHub Actions 的 job logs 需要仓库 admin 权限才能下载，出包被卡住时
+      # 没有构件就只能靠猜。有了它，任何环境都能拿到"到底哪条用例红"。
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-${{ github.run_id }}
+          path: pytest-log.txt
+          if-no-files-found: warn
 
       # 真机入口验证：「无参数启动必须进 GUI」—— 这就是"双击打不开"的回归防线。
       # 打包版用 --windows-console-mode=disable，没有控制台可看，静默退出=用户以为没反应。
