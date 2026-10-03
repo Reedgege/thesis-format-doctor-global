@@ -47,3 +47,12 @@ reedcode_log.txt
 tools/codex_review/round*_diff.txt
 tools/codex_review/prompt_*.txt
 docs/codex_review_*.md
+
+# 图标生成/探针临时产物：预览图、真实运行截图、一次性探针脚本
+# 正式产物只保留 icon.png / icon.ico / icon.icns 与 src/data/icon.png
+assets/_prev_*.png
+assets/_test*.png
+assets/_test2*.png
+assets/_desktop_*.png
+assets/_titlebar_shot.png
+tools/_*.py

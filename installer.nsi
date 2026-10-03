@@ -73,6 +73,17 @@ SectionEnd
 Section "Uninstall"
   Delete "$DESKTOP\${APPNAME}.lnk"
   RMDir /r "$SMPROGRAMS\${APPNAME}"
+
+  ; 删除安装目录本身（含运行时写在安装目录内的任何文件/子目录）
   RMDir /r "$INSTDIR"
+
+  ; 删除用户本地数据目录：授权状态 + 设置/语言偏好。
+  ; 这些目录由应用首次运行时创建，默认在用户家目录下，卸载时一并清理，
+  ; 避免给客户留下“垃圾文件”。如果用户用环境变量自定义了路径，则尊重其设置、不删。
+  RMDir /r "$PROFILE\.paperformatpro"
+
+  ; 旧版本（v2.3.10 之前）用的目录名也清掉，确保老用户升级后再卸载同样干净。
+  RMDir /r "$PROFILE\.thesis-format-doctor-global"
+
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPDIR}"
 SectionEnd

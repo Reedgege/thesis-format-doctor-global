@@ -421,6 +421,13 @@ class App:
         # （`invalid command name "<lambda>"`），Windows 上 Tcl 的 bgerror 会弹**模态框
         # 并把进程卡住** —— 表现就是「刚启动就关窗口，进程退不掉」（测试里表现为偶发挂起）。
         root.bind("<Destroy>", self._on_destroy, add="+")
+        # v2.3.48：窗口真正映射到屏幕时（deiconify → <Map>）再设一次图标，这是任务栏
+        # 图标生效的最稳时机；此前靠 winfo_viewable() 轮询守卫会在编译后 exe 上永久拦住
+        # 补设，导致任务栏无图标。该回调幂等无害，最小化/还原再次映射时也会重设。
+        try:
+            root.bind("<Map>", self._on_window_mapped)
+        except Exception:
+            pass
         # Tk 回调里的未捕获异常：默认实现走 messagebox（**模态、阻塞事件循环**），
         # 用户看到的是一个卡死的窗口。改成只记日志 —— 重要错误本来就已经走状态行了。
         root.report_callback_exception = self._on_tk_error
@@ -540,6 +547,9 @@ class App:
         # 真机实测（v2.3.46 及更早）任务栏/标题栏一直没有图标的原因：
         # WM_GETICON 与 ClassLongPtr(HICON) 全为 0，与用哪版图标文件无关。
         # 因此这里再排一次「窗口显示后」的补设。
+        # 注意：v2.3.47 那次补设里用 winfo_viewable() 做「等映射」守卫，结果在编译后
+        # exe 上该判断始终返回 False，把补设永久拦死，反而让任务栏图标彻底没了
+        # （见 _reapply_window_icon / _on_window_mapped 的 v2.3.48 修正）。
         self._schedule_icon_apply()
 
     def _schedule_icon_apply(self):
@@ -549,24 +559,39 @@ class App:
         确保 WM 已收到映射消息。这里用 ``after`` 延后若干毫秒执行，避开映射与
         首次布局的竞争。所有失败静默——图标只是锦上添花。
         """
-        for delay in (0, 60, 300):
+        for delay in (0, 60, 300, 1200):
             try:
                 self.root.after(delay, self._reapply_window_icon)
             except Exception:
                 pass
 
     def _reapply_window_icon(self):
-        """窗口已显示后重新设置图标（幂等；失败不影响任何功能）。"""
+        """窗口已显示后重新设置图标（幂等；失败不影响任何功能）。
+
+        **不再**用 ``winfo_viewable()`` 守卫去「等窗口映射」——本应用里该判断在编译后
+        exe 上会**始终返回 False**（真机/源码探针均复现），导致补设被永久拦截、任务栏
+        图标永远设不上（v2.3.47 的回退反而引入此回归）。图标设置本身是幂等且无害的：
+        未映射时 WM 忽略、映射后后续重试即生效。真正的「映射后才生效」保证改由
+        ``<Map>`` 事件绑定（``_on_window_mapped``）提供——窗口一旦真正可见，该回调必然
+        触发，此刻 ``WM_SETICON`` 一定能写进去。
+        """
         try:
             if getattr(self, "_closing", False):
                 return
-            if not self.root.winfo_viewable():
-                # 还没真正映射就再等等，避免又落到 withdraw 状态上。
-                try:
-                    self.root.after(120, self._reapply_window_icon)
-                    return
-                except Exception:
-                    return
+            self._apply_window_icon_once()
+        except Exception:
+            pass
+
+    def _on_window_mapped(self, _evt=None):
+        """窗口真正被映射到屏幕时回调：此刻 ``WM_SETICON`` 才会被 Windows 采纳，是
+        任务栏图标生效的最可靠时机（比轮询 ``winfo_viewable()`` 稳得多）。幂等、静默。
+
+        绑定见 ``App.__init__``：deiconify() 触发 <Map>，此时窗口已可见，设置必生效。
+        窗口被最小化再还原、或重新 deiconify 时 <Map> 会再次触发，重设幂等无害。
+        """
+        try:
+            if getattr(self, "_closing", False):
+                return
             self._apply_window_icon_once()
         except Exception:
             pass
