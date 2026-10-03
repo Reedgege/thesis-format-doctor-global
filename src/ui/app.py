@@ -272,13 +272,39 @@ def _auto_wrap(label: tk.Label, container, padx: int):
 
         卡片内容区（``RoundCard.inner``）的尺寸是钉死的，label 变高**不会**触发父级
         重排 —— 不主动喊一声，宽窗口拖窄后信任卡/说明文字的第二行会被圆角矩形裁掉。
+
+        v2.3.52：光刷新卡片**不够**，必须连外层滚动区一起收口。卡片把画布请求高度
+        顶到 530 之后，外层 grid 的行高是由``ScrollArea`` 钉在画布 window item 上的
+        那个快照决定的；而 ``ScrollArea._relayout`` 只在 :meth:`refresh_layout` 被调
+        时才重算。首屏自动换行重排就发生在这条路径上（此前的
+        ``_schedule_first_layout`` 早已跑完），于是快照停在 517 → 行高 517 →
+        右卡（sticky="new"，高度全看自然高度）底部被裁 13px。真机取证：
+        自然 530 / 实际 517，补一次 area 刷新即回到 530。
+
+        两段都只在"宽度真的变了"（``_apply`` 里``w == state["wl"]`` 已提前返回）
+        且窗口已映射时才跑，不会退化成构建期那种跨卡级联。
         """
+        card = None
+        area = None
         try:
             while w is not None:
-                if isinstance(w, RoundCard):
-                    w.refresh()
-                    return
+                if card is None and isinstance(w, RoundCard):
+                    card = w
+                elif area is None and isinstance(w, ScrollArea):
+                    area = w
+                if card is not None and area is not None:
+                    break
                 w = w.master
+        except Exception:
+            pass
+        try:
+            if card is not None:
+                card.refresh()
+        except Exception:
+            pass
+        try:
+            if area is not None:
+                area.refresh_layout()
         except Exception:
             pass
 
@@ -491,26 +517,66 @@ class App:
         # 每一次都会把"还没走完"的中间画面推上屏（旧像素还残留在让出来的区域里），
         # 屏幕上就同时出现新旧两套内容 = 花屏。闸门一关，中间态一帧都不上屏。
         with self._paused_paint():
-            # 先内后外：嵌套卡片没有自己的布局入口，父卡量到的会是它们的旧请求高度。
-            for card in list(getattr(self, "_extra_cards", [])):
-                if card is not None:
-                    try:
-                        card.refresh()
-                    except Exception:
-                        pass
-            for card in (getattr(self, "_left_card", None),
-                         getattr(self, "_right_card", None)):
-                if card is not None:
-                    try:
-                        card.refresh()
-                    except Exception:
-                        pass
-            area = getattr(self, "_main_scroll", None)
-            if area is not None:
+            self._relayout_pass()
+            # v2.3.52：补一次**收敛**重排。首屏右卡会被裁掉 13px（真机取证：
+            # 自然高度 530、实际只给到 517），因为 ScrollArea._relayout 量
+            # ``natural = inner.winfo_reqheight()`` 时，卡片内的自动换行标签还没按
+            # 最终列宽重排完，读到的是偏小的旧值 → 把画布 window item 钉死在 517 →
+            # 外层 grid 的行也就只有 517 → 右卡（sticky="new"，高度全看自然高度）
+            # 被压掉 13px，多半是信任卡/商业区那几行，用户看着像"右卡内容被遮挡"。
+            #
+            # 判据不能用"卡片实际高< 卡片请求高"：那一刻卡片自己的请求高也还是旧值
+            # （实测 517 vs 517），会误判成没被裁而跳过补排（栽过一次的坑）。
+            # 真正可靠的是**滚动区钉死的高度 vs 它内容此刻的自然高度** —— 前者是
+            # 上一次量到的快照，后者会随后续重排涨上来，差值 >0 就说明还欠一次。
+            # 只在欠的时候才补那一次，避免每次都多跑一遍 update_idletasks
+            # （那正是 v2.3.49 启动卡顿 30s 的来源）。
+            if self._area_needs_more_height():
+                self._relayout_pass()
+
+    def _relayout_pass(self):
+        """一轮重新测量：先内后外（嵌套卡片没有自己的布局入口）。"""
+        # 先内后外：嵌套卡片没有自己的布局入口，父卡量到的会是它们的旧请求高度。
+        for card in list(getattr(self, "_extra_cards", [])):
+            if card is not None:
                 try:
-                    area.refresh_layout()
+                    card.refresh()
                 except Exception:
                     pass
+        for card in (getattr(self, "_left_card", None),
+                     getattr(self, "_right_card", None)):
+            if card is not None:
+                try:
+                    card.refresh()
+                except Exception:
+                    pass
+        area = getattr(self, "_main_scroll", None)
+        if area is not None:
+            try:
+                area.refresh_layout()
+            except Exception:
+                pass
+
+    def _area_needs_more_height(self):
+        """滚动区钉死的高度是否已经小于其内容此刻的自然高度（欠一次重排）。
+
+        收敛判据（v2.3.52）。``ScrollArea._relayout`` 会把画布 window item 的高度
+        钉成 ``max(内容自然高度, 视口高)``；若它是在自动换行重排完成**之前**量的，
+        就会钉在偏小的旧值上，之后内容自然高度涨上来、这个快照却不再更新 →
+        外层 grid 的行高偏小 → 右卡底部被裁。两者出现差值就是欠排。
+
+        留 1px 容差避开 Tk 整数取整抖动；取不到就返回 False（不额外重排，宁可
+        少排也不要引入新的启动开销）。
+        """
+        area = getattr(self, "_main_scroll", None)
+        if area is None:
+            return False
+        try:
+            pinned = area.inner.winfo_height()
+            natural = area.inner.winfo_reqheight()
+        except Exception:
+            return False
+        return natural > pinned + 1
 
     # ------------------------------------------------------------ 基础工具
     def tr(self, key: str, *args):

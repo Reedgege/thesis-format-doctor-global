@@ -145,6 +145,73 @@ def test_collapse_toggles_visibility(ui):
     assert ui._adv_body.winfo_manager() == ""
 
 
+def test_first_screen_cards_not_clipped(ui):
+    """首屏左右两卡都不得"实际高度 < 请求高度"（内容被圆角矩形裁掉）。
+
+    v2.3.52 真机取证到的真缺陷：首屏右卡自然高度 530、实际只给到 517，底部
+    13px（信任卡/商业区那几行）被裁 —— 用户看着就是"右卡内容被遮挡"。
+    根因在 ``_auto_wrap._refresh_card``：换行重排后只刷新了卡片，没刷新外层
+    ``ScrollArea``，后者把画布 window item 高度钉死在旧快照上（517），
+    外层 grid 行高随之偏小。补一次 ``area.refresh_layout()`` 即收敛。
+
+    这里钉死"首屏即正确"，避免又退回"要用户点一下/拖一下窗口才恢复"。
+    """
+    from src.ui import theme
+
+    # 让首屏布局彻底收敛（与真实启动一致的 pump 次数）
+    for _ in range(8):
+        ui.root.update_idletasks()
+        ui.root.update()
+
+    for name, card in (("left", ui._left_card), ("right", ui._right_card)):
+        h = card._cv.winfo_height()
+        req = card._cv.winfo_reqheight()
+        assert h + 1 >= req, (
+            "%s 卡首屏被裁：实际 %d < 请求 %d（内容被圆角矩形切掉）" % (name, h, req))
+        # 顺带钉住：内容区必须完整放进卡片里
+        need = card.inner.winfo_reqheight() + 2 * theme.CARD_PAD_Y
+        assert h + 1 >= need, (
+            "%s 卡首屏内容区放不下：卡片 %d < 需要 %d" % (name, h, need))
+
+
+def test_import_paper_remeasures_right_card(ui, tmp_path):
+    """导入论文后**右卡**必须跟着长高（把左卡那条对称地钉住）。
+
+    老板 2026-10-04 报的两条同源：左卡在 Advanced 展开后没变高、右卡在导入论文后
+    高度也没变高，内容都被圆角矩形裁掉、滚不到。导入论文会让右卡多出进度条
+    （``_sync_ui_state`` 里 ``_progress`` 被 pack），属于"内容尺寸变了但不触发
+    ``<Configure>``"，必须靠 ``_refresh_rows → _sync_ui → _relayout_all`` 重新测量。
+
+    左卡那条回归线在 ``test_advanced_toggle_remeasures_card_and_scrollregion``，
+    但右卡此前**没有任何用例钉住**"导入后长高"——机制在、修过，却没测试兜底，
+    下一版再有人动 ``_relayout_all`` 就可能悄悄回归而不被发现。这里补上。
+    """
+    from src.ui import theme
+
+    docx = _make_docx(tmp_path / "thesis.docx")
+
+    # 先钉住"导入前"的基线：进度条此刻是隐藏的（空态不摆，见 _sync_ui_state）。
+    assert ui._progress.winfo_manager() == "", "空态不该挂进度条"
+    before = ui._right_card._cv.winfo_reqheight()
+
+    # 走真实导入路径（与 _pick_docx / _on_dropped_files 完全一致）。
+    ui.docx_path.set(str(docx))
+    ui._on_input_changed()
+    ui.root.update_idletasks()
+
+    assert ui._progress.winfo_manager() == "pack", "选了论文后进度条应出现"
+    need = ui._right_card.inner.winfo_reqheight() + 2 * theme.CARD_PAD_Y
+    assert ui._right_card._cv.winfo_reqheight() >= need, \
+        "右卡请求高度没跟上（内容会被圆角矩形裁掉）：%d < %d" % (
+            ui._right_card._cv.winfo_reqheight(), need)
+    assert ui._right_card._cv.winfo_reqheight() > before, \
+        "导入前后右卡请求高度没变化：%d -> %d" % (
+            before, ui._right_card._cv.winfo_reqheight())
+
+    region = str(ui._main_scroll._cv.cget("scrollregion")).split()
+    assert int(region[3]) >= need, "scrollregion 没覆盖导入后新增内容：%s" % region
+
+
 # ------------------------------------------------- v2.3.32 重绘闸门（防花屏）
 def test_paint_gate_nests_and_always_reopens(ui):
     """重绘闸门必须能嵌套、且**异常路径也要开回来**。
