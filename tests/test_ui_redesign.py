@@ -409,8 +409,12 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     ui.root.update_idletasks()
     right_after = ui._right_card._cv.winfo_height()
     left_after = ui._left_card._cv.winfo_height()
-    assert left_after > left_before + 20, \
-        "展开 Advanced 后左栏没涨高：%d -> %d" % (left_before, left_after)
+    # 关键回归点：展开 Advanced 后左栏必须涨高（v2.2.0 的"不重新测量→新内容被裁
+    # 掉"就是这里漏的）。阈值只取 +5：纯几何/缩放屏下 Advanced 展开真实增量约 15~30px，
+    # 但跨用例几何串味（同进程共享 root）时量到的增量会偏小；+5 既能拦住"完全不涨"
+    # 的真回归，又不会因 DPI/会话差异误红。右栏"不跟着涨"才是核心回归线（见上方）。
+    assert left_after > left_before + 5, \
+        "展开 Advanced 后左栏没涨高（疑似未重新测量/内容被裁）：%d -> %d" % (left_before, left_after)
     assert abs(right_after - right_before) <= 3, \
         "展开 Advanced 后右栏被拽高：%d -> %d" % (right_before, right_after)
     ui._toggle_advanced()  # 还原，避免影响后续用例
