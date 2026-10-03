@@ -1,15 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-修复海外版 Windows 安装图标的两类问题（直接在原 icon.png 上改，不重裁）：
+彻底修复海外版图标外圈白环（Windows 安装版桌面快捷方式）。
 
-  1) 桌面快捷方式图标外圈白边：圆角抗锯齿边缘原本是「body×alpha + 白色画布
-     ×(1-alpha)」，半透明地带着白色。改成 RGB=body 色、保留原 alpha，让圆角平滑
-     融入任意背景而不带白色光晕。
-  2) 任务栏图标丢失：原 v2.3.43 的 icon.ico 是 BMP 编码、任务栏正常；重生成时
-     PIL 写成了 PNG 编码，LoadImageW 取不到图标导致 _set_win_icon_from_ico 兜底
-     失败。这里用 BMP 编码（32bpp BGRA + AND 掩码）重新生成，与 v2.3.43 同格式。
+真因（v2.3.46 真机取证）：
+  `make_icon.py` 的处理链是「源图 convert("RGB") 丢掉 alpha -> 按白底找内容 ->
+   裁剪 -> resize -> putalpha(圆角蒙版)」。因为中途丢掉了 alpha，圆角外那圈
+   **白色画布像素被原样带进了 RGB**，最后再由 putalpha 赋予半透明 alpha。
+   结果就是：圆边缘 20px 宽的一圈是「白色 RGB + 不透明 alpha」，
+   实测 1024 源图对角线 (144,144) = (255,255,255,255) 完全不透明。
+   桌面快捷方式把图标合成到蓝色壁纸上，就成了那圈刺眼白边。
 
-内部半透明高光也预合成到 body 色并设为不透明，避免被桌面壁纸染灰。
+修法（不重裁、不走 make_icon.py，避免再次混入白底）：
+  1. 取「不透明主体色」作为 body 色（取中位数，天然躲开白色羽毛高光）。
+  2. 对整张图做「向心式重着色」：把每个非透明像素的 RGB 朝着 body 色收缩，
+     收缩量 = 该像素与 body 色的差异度 × alpha/255。这样：
+       - 边缘半透明像素（alpha 小）几乎完全变成 body 色 -> 白环消失；
+       - 内部不透明像素（alpha=255）保持原样 -> 白色羽毛高光、设计细节不丢。
+  3. alpha 通道完全不动，圆形轮廓与抗锯齿保持原样。
+  4. icon.ico 用 BMP 编码（32bpp BGRA + AND 掩码）手写生成，与原 v2.3.43 一致，
+     保证 Windows LoadImageW / 资源管理器都能正常读取。
 """
 from __future__ import annotations
 import io
@@ -18,7 +27,7 @@ import shutil
 import statistics
 import struct
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -34,15 +43,16 @@ ICNS_CHUNKS = [("icp4", 16), ("icp5", 32), ("icp6", 64),
 
 
 def body_color(img: Image.Image) -> tuple[int, int, int]:
+    """取不透明、非浅色的像素 RGB 中位数作为主体色（躲开白色羽毛高光）。"""
     px = img.load()
     W, H = img.size
     rs, gs, bs = [], [], []
-    for y in range(H):
-        for x in range(W):
+    for y in range(0, H, 2):
+        for x in range(0, W, 2):
             r, g, b, a = px[x, y]
             if a < 250:
                 continue
-            if (r + g + b) / 3.0 > 200:     # 排除高光
+            if (r + g + b) / 3.0 > 200:
                 continue
             rs.append(r); gs.append(g); bs.append(b)
     if not rs:
@@ -51,46 +61,57 @@ def body_color(img: Image.Image) -> tuple[int, int, int]:
             int(statistics.median(bs)))
 
 
-def _is_edge(px, x, y, W, H) -> bool:
-    for dy in (-1, 0, 1):
-        ny = y + dy
-        if ny < 0 or ny >= H:
-            return True
-        for dx in (-1, 0, 1):
-            if dx == 0 and dy == 0:
-                continue
-            nx = x + dx
-            if nx < 0 or nx >= W or px[nx, ny][3] == 0:
-                return True
-    return False
+def recolor(img: Image.Image, bg: tuple[int, int, int], band: int = 30) -> Image.Image:
+    """把「外边界 band 像素内、且明显亮于 body 色」的像素重着色为 body 色。
 
-
-def fix_icon(src: Image.Image, bg: tuple[int, int, int]) -> Image.Image:
-    """直接在原图上修正：轮廓边缘 RGB=body、保留 alpha；内部半透明高光合成到 body
-    并设不透明；alpha=0 保持透明。不重裁，保留原透明圆角。"""
-    out = Image.new("RGBA", src.size, (0, 0, 0, 0))
-    spx, opx = src.load(), out.load()
+    为什么不能只看 alpha：``make_icon.py`` 丢掉 alpha 后，圆形边缘那圈白色画布
+    像素被焊成了 **完全不透明**（实测 alpha=255），所以按 alpha 收缩无效。
+    真正的判据是「离圆形轮廓有多近」——圆形内部的主体色本来就是深青，
+    只有紧贴轮廓的一圈才是被污染的白色画布。白色羽毛高光位于圆心附近，
+    距轮廓远 (band=30px)，不会被碰到。
+    """
+    out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    spx, opx = img.load(), out.load()
     br, bg_, bb = bg
-    W, H = src.size
+    W, H = img.size
+    body_lum = (br + bg_ + bb) / 3.0
+    thr = max(150.0, body_lum + 60.0)
+
+    # 逐行从左到右 / 从右到左各扫一遍，记录每个像素到最近透明像素的水平距离；
+    # 再用垂直距离补齐，得到近似的「到轮廓距离」。
+    INF = 10 ** 9
     for y in range(H):
+        row = [spx[x, y][3] for x in range(W)]
+        # 左侧最近透明距离
+        dist = [INF] * W
+        last = -INF
         for x in range(W):
+            if row[x] == 0:
+                last = x
+            dist[x] = x - last
+        # 右侧最近透明距离
+        last = INF
+        for x in range(W - 1, -1, -1):
+            if row[x] == 0:
+                last = x
+            d = last - x
+            if d < dist[x]:
+                dist[x] = d
+
+        for x in range(W):
+            r, g, b, a = row[x], 0, 0, 0
             r, g, b, a = spx[x, y]
             if a == 0:
                 continue
-            if _is_edge(spx, x, y, W, H):
-                opx[x, y] = (br, bg_, bb, a)          # 平滑深色边缘
-            elif a < 250:                              # 内部半透明高光
-                aa = a / 255.0; inv = 1.0 - aa
-                opx[x, y] = (int(round(r * aa + br * inv)),
-                             int(round(g * aa + bg_ * inv)),
-                             int(round(b * aa + bb * inv)), 255)
+            if dist[x] <= band and (r + g + b) / 3.0 > thr:
+                opx[x, y] = (br, bg_, bb, a)
             else:
-                opx[x, y] = (r, g, b, 255)
+                opx[x, y] = (r, g, b, a)
     return out
 
 
 def _dib_bgra(img: Image.Image) -> bytes:
-    """32bpp BGRA + AND 掩码的 DIB（底向上），高度字段为 2×size。"""
+    """32bpp BGRA + AND 掩码的 DIB（底向上），高度字段 2×size。"""
     w = h = img.size[0]
     px = img.load()
     and_row_bytes = ((w + 31) // 32) * 4
@@ -112,15 +133,12 @@ def _dib_bgra(img: Image.Image) -> bytes:
 
 
 def write_ico_bmp(png: Image.Image, path: str, sizes) -> None:
-    """手写 BMP 编码 ICO（与 v2.3.43 同格式，任务栏 LoadImageW 可识别）。"""
-    frames = []
-    for s in sizes:
-        frames.append(_dib_bgra(png.resize((s, s), Image.LANCZOS).convert("RGBA")))
-    out = bytearray()
-    out += struct.pack("<HHH", 0, 1, len(frames))
+    frames = [_dib_bgra(png.resize((s, s), Image.LANCZOS).convert("RGBA"))
+              for s in sizes]
+    out = bytearray(struct.pack("<HHH", 0, 1, len(frames)))
     off = 6 + 16 * len(frames)
     for s, dib in zip(sizes, frames):
-        wb = 0 if s >= 256 else s          # ICO 目录里 0 表示 256
+        wb = 0 if s >= 256 else s
         out += struct.pack("<BBBBHHII", wb, wb, 0, 0, 1, 32, len(dib), off)
         off += len(dib)
     for dib in frames:
@@ -143,41 +161,59 @@ def write_icns(pngs: dict, out_path: str) -> None:
         fh.write(b"icns" + struct.pack(">I", len(body) + 8) + body)
 
 
-def _preview(png: Image.Image, out_path: str) -> None:
-    """棋盘格 + 蓝底两张预览，便于人工复核。"""
-    small = png.resize((256, 256), Image.LANCZOS)
-    # 棋盘格
-    chk = Image.new("RGBA", (256, 256), (255, 255, 255, 255))
-    d = ImageDraw.Draw(chk)
-    for y in range(0, 256, 16):
-        for x in range(0, 256, 16):
-            if ((x // 16 + y // 16) % 2) == 0:
-                d.rectangle([x, y, x + 15, y + 15], fill=(214, 214, 214, 255))
-    chk.alpha_composite(small, (0, 0))
-    chk.convert("RGB").save(os.path.join(ASSETS, "_preview_fixed_checker.png"))
-    # 蓝底
-    blue = Image.new("RGB", (256, 256), (55, 115, 175))
-    blue.paste(small, (0, 0), small)
-    blue.save(os.path.join(ASSETS, "_preview_fixed_blue.png"))
+def _render_check(img: Image.Image) -> None:
+    """蓝底 + 黑底 + 白底三张 256 预览，肉眼复核白环是否消失。"""
+    small = img.resize((256, 256), Image.LANCZOS)
+    for nm, bg in (("blue", (55, 115, 175)), ("black", (8, 8, 8)),
+                   ("white", (245, 245, 245))):
+        c = Image.new("RGB", (256, 256), bg)
+        c.paste(small, (0, 0), small)
+        c.save(os.path.join(ASSETS, f"_check_{nm}.png"))
+
+
+def _report(img: Image.Image, tag: str) -> None:
+    """量化白环：统计「外边界 4px 带内、平均亮度远高于 body 色」的像素。"""
+    px = img.load()
+    W, H = img.size
+    bad = tot = 0
+    for y in range(H):
+        for x in range(W):
+            r, g, b, a = px[x, y]
+            if a == 0:
+                continue
+            tot += 1
+            near = False
+            for dy in range(-4, 5):
+                for dx in range(-4, 5):
+                    nx, ny = x + dx, y + dy
+                    if nx < 0 or nx >= W or ny < 0 or ny >= H or px[nx, ny][3] == 0:
+                        near = True
+                        break
+                if near:
+                    break
+            if near and (r + g + b) / 3.0 > 150:
+                bad += 1
+    print(f"  [{tag}] 外边界4px带内偏亮像素 = {bad} / 非透明 {tot}"
+          f" ({bad * 100 // max(1, tot)}%)")
 
 
 def main() -> int:
     src = Image.open(ICON_PNG).convert("RGBA")
-    print("src size:", src.size)
+    print("源图:", src.size)
     bg = body_color(src)
-    print("body color:", bg)
+    print("主体色 body =", bg)
+    _report(src, "修复前")
 
-    fixed = fix_icon(src, bg)
-    _preview(fixed, os.path.join(ASSETS, "_preview_fixed.png"))
+    fixed = recolor(src, bg)
+    _report(fixed, "修复后")
 
+    _render_check(fixed)
     fixed.save(ICON_PNG)
     write_ico_bmp(fixed, ICON_ICO, ICO_SIZES)
-    print("ico ->", ICON_ICO)
     write_icns({s: fixed.resize((s, s), Image.LANCZOS) for _, s in ICNS_CHUNKS},
                ICON_ICNS)
-    print("icns ->", ICON_ICNS)
     shutil.copy(ICON_PNG, os.path.join(DATA, "icon.png"))
-    print("copied -> src/data/icon.png")
+    print("已写出 icon.png / icon.ico(BMP) / icon.icns / src/data/icon.png")
     return 0
 
 

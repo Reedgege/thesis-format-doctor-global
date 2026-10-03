@@ -1,6 +1,6 @@
 [project]
 name = "paperformatpro"
-version = "2.3.46"
+version = "2.3.47"
 description = "PaperFormat Pro - offline, safe overseas thesis format checker & fixer (docs never leave your machine)"
 readme = "README.md"
 requires-python = ">=3.10"

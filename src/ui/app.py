@@ -507,7 +507,7 @@ class App:
         绝不能因为一个平台上的路径/Tcl 怪癖就让 App 构造失败（那正是「双击打不开」
         那一类 P0 后果）。
 
-        两路**互相独立**的保险（一路失败绝不牵连另一路）：
+        两条路都**故意推迟到窗口真正显示之后**再执行（见 ``_schedule_icon_apply``）：
 
         ① PNG + ``iconphoto``：跨平台标准做法。``PhotoImage`` 必须挂到实例属性上
            保留引用——只作为临时对象传进去时一旦被 GC 回收，部分 Tk 版本会把图标
@@ -535,11 +535,69 @@ class App:
                         pass
         except Exception:
             pass
+        # v2.3.47：Tk 的 iconphoto / Win32 的 WM_SETICON 都必须在窗口 **已映射**
+        # 之后才生效。在 withdraw() 状态下设置会被 Tk/Windows 直接丢弃——这正是
+        # 真机实测（v2.3.46 及更早）任务栏/标题栏一直没有图标的原因：
+        # WM_GETICON 与 ClassLongPtr(HICON) 全为 0，与用哪版图标文件无关。
+        # 因此这里再排一次「窗口显示后」的补设。
+        self._schedule_icon_apply()
+
+    def _schedule_icon_apply(self):
+        """窗口显示后补设图标（见 ``_apply_window_icon`` 末尾的说明）。
+
+        ``deiconify()`` 之后 Tk 才真正映射窗口；再叠加一次 ``update_idletasks()``
+        确保 WM 已收到映射消息。这里用 ``after`` 延后若干毫秒执行，避开映射与
+        首次布局的竞争。所有失败静默——图标只是锦上添花。
+        """
+        for delay in (0, 60, 300):
+            try:
+                self.root.after(delay, self._reapply_window_icon)
+            except Exception:
+                pass
+
+    def _reapply_window_icon(self):
+        """窗口已显示后重新设置图标（幂等；失败不影响任何功能）。"""
+        try:
+            if getattr(self, "_closing", False):
+                return
+            if not self.root.winfo_viewable():
+                # 还没真正映射就再等等，避免又落到 withdraw 状态上。
+                try:
+                    self.root.after(120, self._reapply_window_icon)
+                    return
+                except Exception:
+                    return
+            self._apply_window_icon_once()
+        except Exception:
+            pass
+
+    def _apply_window_icon_once(self):
+        """真正执行设置（``_reapply_window_icon`` 的实际动作，不递归调度）。"""
+        try:
+            png = iconpath.find_icon()
+            if png:
+                try:
+                    self._window_icon = tk.PhotoImage(file=png)
+                    self.root.iconphoto(True, self._window_icon)
+                except Exception:
+                    pass
+            if sys.platform.startswith("win"):
+                ico = iconpath.find_icon_ico()
+                if ico:
+                    try:
+                        self._set_win_icon_from_ico(ico)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _set_win_icon_from_ico(self, ico_path: str):
         """Windows：用 Win32 API 把 ``.ico`` 设成标题栏/任务栏/类图标。
 
-        任何异常都向上抛，由 ``_apply_window_icon`` 吞掉，绝不影响启动。
+        必须在窗口 **已映射** 之后调用（见 ``_reapply_window_icon``）：窗口还在
+        withdraw 状态时 ``WM_SETICON`` 会被丢掉，真机实测 ``WM_GETICON`` 恒为 0。
+
+        任何异常都向上抛，由调用方吞掉，绝不影响启动。
         """
         user32 = ctypes.windll.user32
         hwnd = self.root.winfo_id()
@@ -548,16 +606,31 @@ class App:
         IMAGE_ICON = 1
         LR_LOADFROMFILE = 0x0010
         LR_DEFAULTSIZE = 0x0040
-        LR_SHARED = 0x8000
         WM_SETICON = 0x0080
+        WM_GETICON = 0x007F
         GCLP_HICON = -14
         GCLP_HICONSM = -34
         ICON_SMALL = 0
         ICON_BIG = 1
-        flags = LR_LOADFROMFILE | LR_DEFAULTSIZE | LR_SHARED
+        # 不用 LR_SHARED：共享句柄不销毁会在多次补设时泄漏，且共享句柄交给
+        # 窗口类后可能被系统释放。改为私有句柄，补设前先释放自己上一轮设的。
+        flags = LR_LOADFROMFILE | LR_DEFAULTSIZE
+
+        # 先清掉上一轮自己设的句柄，避免重复补设时泄漏（旧句柄会一直留着）。
+        for wparam, cls_idx in ((ICON_BIG, GCLP_HICON), (ICON_SMALL, GCLP_HICONSM)):
+            try:
+                old = user32.GetClassLongPtrW(hwnd, cls_idx)
+                if old:
+                    cur = user32.SendMessageW(hwnd, WM_GETICON, wparam, 0)
+                    if cur == old:
+                        user32.DestroyIcon(old)
+            except Exception:
+                pass
 
         hsm = user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, flags)
         hlg = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, flags)
+        if not hsm and not hlg:
+            return
         if hsm:
             user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hsm)
             user32.SetClassLongPtrW(hwnd, GCLP_HICONSM, hsm)
@@ -3021,6 +3094,14 @@ def main():
         root.after(120, lambda: root.attributes("-topmost", False))
     except Exception:
         pass
+    # v2.3.47：图标必须在窗口映射之后才设得住。App.__init__ 里那次发生在 withdraw()
+    # 状态、真机实测无效（WM_GETICON 恒 0），所以 deiconify 之后再补一次。
+    # 多排几个时点，兼顾「映射消息已到达」与「首次布局尚未把它覆盖」。
+    for _d in (0, 80, 400):
+        try:
+            root.after(_d, app._reapply_window_icon)
+        except Exception:
+            pass
     # 首帧布局：轮询到真实尺寸再 relayout + 强制整窗重绘，不依赖 <Configure> 何时到达。
     app._schedule_first_layout()
     root.mainloop()
