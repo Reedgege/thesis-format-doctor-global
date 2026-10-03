@@ -773,31 +773,91 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile) -> dict:
 # ---------------------------------------------------------------------------
 # 预览（现状 → 目标 diff，不落盘）
 # ---------------------------------------------------------------------------
+# i18n：修正预览是「用户可见的 GUI 文案」，必须随界面语言走。海外版默认英文，
+# 不能因为引擎是中国团队写的就硬编码中文（老板 2026-10-04 硬要求：英文环境零中文）。
+# GUI 把当前 self.lang 透传进来；引擎不反向依赖 ui 包，对齐标签本地内置一份。
 
-def _diff_line(label: str, cur, exp, unit: str) -> str | None:
-    """生成一行 diff；无变化返回 None。"""
+_DIM_LABELS = {
+    "en": {
+        "margin_top": "Top margin", "margin_bottom": "Bottom margin",
+        "margin_left": "Left margin", "margin_right": "Right margin",
+        "font_family": "Body font", "font_size": "Font size",
+        "line_spacing": "Line spacing", "body_alignment": "Body alignment",
+        "first_line_indent": "First-line indent", "space_after": "Space after paragraph",
+        "ref_hanging": "Reference hanging indent", "ref_numbering": "Reference numbering",
+    },
+    "zh": {
+        "margin_top": "上页边距", "margin_bottom": "下页边距",
+        "margin_left": "左页边距", "margin_right": "右页边距",
+        "font_family": "正文字体", "font_size": "正文字号",
+        "line_spacing": "行距", "body_alignment": "正文对齐",
+        "first_line_indent": "正文首行缩进", "space_after": "段后间距",
+        "ref_hanging": "参考文献悬挂缩进", "ref_numbering": "参考文献编号",
+    },
+}
+_ALIGN_ZH = {"left": "左对齐", "justify": "两端对齐", "center": "居中", "right": "右对齐"}
+_UNREC = {"en": "unrecognized", "zh": "未识别"}
+_UNKNOWN = {"en": "unknown", "zh": "未知"}
+_NO_CHANGE = {
+    "en": "This document already matches the target format — no changes needed.",
+    "zh": "当前文档已符合目标格式，无需修正。",
+}
+_NOTES_TMPL = {
+    "en": "Note: text inside tables ({n} paragraph(s)) is not modified; only body "
+          "paragraph formatting is fixed this run.",
+    "zh": "说明：表格内的文字（共 {n} 段）不会被修改；本遍仅修正正文段落格式。",
+}
+
+
+def _lang_of(lang):
+    return lang if lang in ("en", "zh") else "en"
+
+
+def _dim_label(lang, key):
+    return _DIM_LABELS[_lang_of(lang)].get(key, key)
+
+
+def _align_text(lang, v):
+    """对齐值 → 显示名（按语言）。"""
+    if _lang_of(lang) == "zh":
+        return _ALIGN_ZH.get(str(v), str(v) if v is not None else _UNKNOWN["zh"])
+    return ALIGN_LABEL.get(str(v), str(v) if v is not None else _UNKNOWN["en"])
+
+
+def _diff_line(label: str, cur, exp, unit: str, lang="en") -> str | None:
+    """生成一行 diff；无变化返回 None。文案随语言走。"""
+    L = _lang_of(lang)
     if exp is None:
         return None
     if cur is None:
-        return f"{label}：将设为 {exp}{unit}"
+        return f"{label}：将设为 {exp}{unit}" if L == "zh" else f"{label}: set to {exp}{unit}"
     try:
         same = abs(float(cur) - float(exp)) <= 1e-6
     except (TypeError, ValueError):
         same = str(cur) == str(exp)
     if same:
         return None
-    return f"{label}：{cur}{unit} → {exp}{unit}"
+    if L == "zh":
+        return f"{label}：{cur}{unit} → {exp}{unit}"
+    return f"{label}: {cur}{unit} → {exp}{unit}"
 
 
-def _compute_changes(prof, target: TargetProfile) -> list:
-    """根据实测画像算出「真正会发生变化」的格式修正项（可能为空列表）。"""
+def _compute_changes(prof, target: TargetProfile, lang="en") -> list:
+    """根据实测画像算出「真正会发生变化」的格式修正项（可能为空列表）。
+
+    ``lang`` 决定每行 diff 的文案语言（"en" / "zh"），由 GUI 透传当前界面语言，
+    保证英文界面不泄漏中文（见模块顶部标签表）。
+    """
+    L = _lang_of(lang)
     lines: list = []
     page = target.page or {}
 
     # —— 页边距 ——
-    for key, side, label in _MARGIN_KEYS:
+    for key, side, _label in _MARGIN_KEYS:
         if page.get(key) is not None:
-            line = _diff_line(label, prof.margins.get(side), float(page[key]), "″")
+            dim = key[:-3] if key.endswith("_in") else key
+            line = _diff_line(_dim_label(L, dim), prof.margins.get(side),
+                              float(page[key]), '"', lang)
             if line:
                 lines.append(line)
 
@@ -805,11 +865,16 @@ def _compute_changes(prof, target: TargetProfile) -> list:
     if page.get("font_family"):
         cur_f = prof.font_family
         if (cur_f or "").lower() != str(page["font_family"]).lower():
-            lines.append(f"正文字体：{cur_f or '未知'} → {page['font_family']}")
-    line = _diff_line("正文字号", prof.font_size_pt, page.get("font_size_pt"), "pt")
+            if L == "zh":
+                lines.append(f"正文字体：{cur_f or '未知'} → {page['font_family']}")
+            else:
+                lines.append(f"Body font: {cur_f or 'unknown'} → {page['font_family']}")
+    line = _diff_line(_dim_label(L, "font_size"), prof.font_size_pt,
+                      page.get("font_size_pt"), "pt", lang)
     if line:
         lines.append(line)
-    line = _diff_line("行距", prof.line_spacing, page.get("line_spacing"), "x")
+    line = _diff_line(_dim_label(L, "line_spacing"), prof.line_spacing,
+                      page.get("line_spacing"), "x", lang)
     if line:
         lines.append(line)
 
@@ -817,14 +882,18 @@ def _compute_changes(prof, target: TargetProfile) -> list:
     if page.get("body_alignment"):
         cur_a = prof.body_alignment
         if cur_a != page["body_alignment"]:
-            lines.append("正文对齐：{} → {}".format(
-                ALIGN_LABEL.get(cur_a, cur_a or "未知"),
-                ALIGN_LABEL.get(str(page["body_alignment"]), page["body_alignment"])))
-    line = _diff_line("正文首行缩进", prof.first_line_indent_in,
-                      page.get("first_line_indent_in"), "″")
+            if L == "zh":
+                lines.append("正文对齐：{} → {}".format(
+                    _align_text("zh", cur_a), _align_text("zh", page["body_alignment"])))
+            else:
+                lines.append("Body alignment: {} → {}".format(
+                    _align_text("en", cur_a), _align_text("en", page["body_alignment"])))
+    line = _diff_line(_dim_label(L, "first_line_indent"), prof.first_line_indent_in,
+                      page.get("first_line_indent_in"), '"', lang)
     if line:
         lines.append(line)
-    line = _diff_line("段后间距", prof.space_after_pt, page.get("space_after_pt"), "pt")
+    line = _diff_line(_dim_label(L, "space_after"), prof.space_after_pt,
+                      page.get("space_after_pt"), "pt", lang)
     if line:
         lines.append(line)
 
@@ -836,50 +905,61 @@ def _compute_changes(prof, target: TargetProfile) -> list:
             need_hang = (cur_hang is None
                          or abs(float(cur_hang) - float(want_hang)) > 1e-6)
             if need_hang:
-                cur_txt = "未识别" if cur_hang is None else f"{cur_hang}″"
-                lines.append(f"参考文献悬挂缩进：{cur_txt} → {want_hang}″")
+                cur_txt = _UNREC[L] if cur_hang is None else f"{cur_hang}\""
+                if L == "zh":
+                    lines.append(f"参考文献悬挂缩进：{cur_txt} → {want_hang}\"")
+                else:
+                    lines.append(f"Reference hanging indent: {cur_txt} → {want_hang}\"")
         if target.reference_numbered:
             missing = [t for t in prof.reference_entries if t.strip()
                        and not _has_leading_number(t)]
             if missing:
-                lines.append(
-                    f"参考文献编号：为 {len(missing)} 条未编号条目补 [n] 顺序编码"
-                    f"（{target.reference_style}）")
+                n = len(missing)
+                if L == "zh":
+                    lines.append(
+                        f"参考文献编号：为 {n} 条未编号条目补 [n] 顺序编码"
+                        f"（{target.reference_style}）")
+                else:
+                    ent = "entry" if n == 1 else "entries"
+                    lines.append(
+                        f"Reference numbering: add [n] sequential code to {n} "
+                        f"unnumbered {ent} ({target.reference_style})")
 
     return lines
 
 
-def _notes(prof) -> list:
-    """非修正类提示（不算「会变的项」，不影响是否消耗试用）。"""
+def _notes(prof, lang="en") -> list:
+    """非修正类提示（不算「会变的项」，不影响是否消耗试用）。文案随语言走。"""
     notes: list = []
     n = getattr(prof, "table_paragraph_count", 0) or 0
     if n:
-        notes.append(f"Note: text inside tables ({n} paragraph(s)) is not modified; only body paragraph formatting is fixed this run.")
+        notes.append(_NOTES_TMPL[_lang_of(lang)].format(n=n))
     return notes
 
 
-def compute_changes(input_path: str, target: TargetProfile) -> list:
+def compute_changes(input_path: str, target: TargetProfile, lang="en") -> list:
     """返回真正会发生的格式修正项（不含提示语、不含「无需修正」占位）。
 
     供调用方判断「文档是否已合规」——已合规时不应生成副本、不应消耗试用额度。
+    ``lang`` 决定返回文案的语言（"en" / "zh"）。
 
     raises: DocxReadError
     """
     prof = read_docx(input_path)
-    return _compute_changes(prof, target)
+    return _compute_changes(prof, target, lang)
 
 
-def preview_fix(input_path: str, target: TargetProfile) -> list:
+def preview_fix(input_path: str, target: TargetProfile, lang="en") -> list:
     """返回将进行的格式修正项（现状 → 目标），不修改任何文件。
 
     只列出「实际会发生变化」的项；已经符合的项不再列出，避免误导。
-    读取不到实测值时标注「将设为」。
+    读取不到实测值时标注「将设为」。文案随语言走。
 
     raises: DocxReadError（文档无法读取）
     """
     prof = read_docx(input_path)
-    lines = _compute_changes(prof, target)
-    tail = _notes(prof)
+    lines = _compute_changes(prof, target, lang)
+    tail = _notes(prof, lang)
     if not lines:
-        return ["当前文档已符合目标格式，无需修正。"] + tail
+        return [_NO_CHANGE[_lang_of(lang)]] + tail
     return lines + tail

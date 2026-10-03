@@ -2993,7 +2993,7 @@ class App:
         preview_text = ""
         try:
             target = self._build_target()
-            changes = compute_changes(docx, target)
+            changes = compute_changes(docx, target, self.lang)
 
             if not changes:
                 # 已合规：不触发门禁、也不弹模态框（规格 states 要行内提示）

@@ -241,9 +241,12 @@ def test_preview_lists_only_real_changes(tmp_path):
     p.paragraph_format.line_spacing = 1.0
     doc.save(str(src))
     target = TargetProfile(page={"margin_top_in": 1.0, "line_spacing": 2.0})
-    text = "\n".join(preview_fix(str(src), target))
-    assert "页边距" not in text, "已符合的项不应出现在预览里"
-    assert "行距" in text and "→" in text, "行距变化应显示为「现状 → 目标」"
+    text = "\n".join(preview_fix(str(src), target, lang="en"))
+    assert "margin" not in text.lower(), "已符合的页边距项不应出现在预览里"
+    assert "Line spacing" in text and "→" in text, "行距变化应显示为「现状 → 目标」"
+    # 中文回归线：显式传 zh 时才是中文
+    text_zh = "\n".join(preview_fix(str(src), target, lang="zh"))
+    assert "行距" in text_zh and "→" in text_zh
 
 
 # ---------------------------------------------------------------------------

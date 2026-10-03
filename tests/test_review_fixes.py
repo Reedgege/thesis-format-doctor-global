@@ -422,14 +422,21 @@ def test_compute_changes_empty_when_conforming(tmp_path):
 
 def test_preview_reference_line_only_when_needed(tmp_path):
     src = _make_ref_doc(tmp_path / "pv.docx")
-    # 悬挂缩进已符合 + 非编号制 → 不应出现参考文献行
+    # 悬挂缩进已符合 + 非编号制 → 不应出现参考文献行（英文默认 + 中文显式双覆盖）
     joined = "\n".join(preview_fix(src, TargetProfile(
         reference_style="APA", reference_hanging_indent_in=0.0,
-        reference_numbered=False)))
-    assert "参考文献" not in joined, f"已符合的参考文献项不应列出：{joined}"
-    # 编号制且条目未编号 → 应列出编号改动
-    joined2 = "\n".join(preview_fix(src, _numbered_target()))
-    assert "参考文献编号" in joined2
+        reference_numbered=False), lang="en"))
+    assert "Reference" not in joined, f"已符合的参考文献项不应列出：{joined}"
+    joined_zh = "\n".join(preview_fix(src, TargetProfile(
+        reference_style="APA", reference_hanging_indent_in=0.0,
+        reference_numbered=False), lang="zh"))
+    assert "参考文献" not in joined_zh, f"已符合的参考文献项不应列出：{joined_zh}"
+    # 编号制且条目未编号 → 应列出编号改动（英文默认）
+    joined2 = "\n".join(preview_fix(src, _numbered_target(), lang="en"))
+    assert "Reference numbering" in joined2
+    # 中文回归线：显式传 zh 时才是中文
+    joined2_zh = "\n".join(preview_fix(src, _numbered_target(), lang="zh"))
+    assert "参考文献编号" in joined2_zh
 
 
 def _fix_args(docx, **kw):

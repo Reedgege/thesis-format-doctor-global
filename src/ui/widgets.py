@@ -222,16 +222,27 @@ class RoundCard(tk.Frame):
         （Codex 2026-09-12 P0-2 指出的正是这条路径：展开 Advanced options 后
         最下面一行不可达。）
 
-        ⚠️ 严禁在 refresh 里调用 ``update_idletasks()``：它会**同步**把整棵几何树上
-        所有挂起的 ``<Configure>`` 一次性触发，而 ``<Configure>`` 回调
+        ⚠️ 严禁在 refresh 里**无条件**调用 ``update_idletasks()``：它会**同步**把整棵
+        几何树上所有挂起的 ``<Configure>`` 一次性触发，而 ``<Configure>`` 回调
         （``App._auto_wrap._apply`` → ``_refresh_card`` → 又调 ``refresh``）会回头再
         调，跨多张 RoundCard 在同一次几何更新里无限级联 —— 实测启动卡 30~50s。
+        所以构建期（窗口 ``withdraw``，1px 占位几何）必须跳过它（见下方 ``winfo_viewable``
+        守卫），否则 v2.3.50 之前的启动卡顿复发。
 
-        这里只做「读请求尺寸 → 调画布请求尺寸 → 重画」三步，**不主动推动整棵树的
-        几何更新**。真正的尺寸收敛交给上层 ``_relayout_all`` 或自然 ``<Configure>``
-        事件：它们会先 ``update_idletasks()`` 把 ``<Configure>`` 全部跑完（此时
-        ``_apply`` 已把 wraplength 设好），再让我们测量，顺序天然正确，且不会递归。
+        但运行期（窗口已映射、几何稳定）**必须**先 ``update_idletasks()`` 把刚
+        pack/unpack 的子控件请求尺寸算准，再测量 —— 否则量到的是旧高度。这是
+        v2.3.50 删掉这行后引入的回归：高级选项展开新增整行、导入论文后进度条/状态行
+        出现，都属于「非换行类」内容变化，不会触发 ``_auto_wrap`` 的换行宽度回调去
+        重测，卡片于是量到旧请求高度 → 圆角矩形裁掉新内容、滚不到（老板 2026-10-04
+        报"左右卡展开/导入后没变高、内容被遮挡"）。运行期几何已稳定，update_idletasks
+        只把尺寸算准一次即收敛（宽度不变 → _apply 早退，不会无限级联）。
         """
+        # v2.3.51：运行期先 settle 再测量；构建期（withdrawn）跳过，避免启动反馈环。
+        if self.winfo_viewable():
+            try:
+                self.inner.update_idletasks()
+            except Exception:
+                pass
         try:
             self._sync_request()
         except Exception:
