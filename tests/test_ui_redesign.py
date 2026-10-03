@@ -155,7 +155,15 @@ def test_first_screen_cards_not_clipped(ui):
     外层 grid 行高随之偏小。补一次 ``area.refresh_layout()`` 即收敛。
 
     这里钉死"首屏即正确"，避免又退回"要用户点一下/拖一下窗口才恢复"。
+
+    ⚠️ 必须 ``_mapped`` 守卫：本用例断言的是**实际像素高度**（``winfo_height``），
+    只有窗口真正映射到屏幕才有意义。CI（无桌面会话）下窗口从未映射，实际高度会停在
+    1，而请求高度是真实值 → 必然误红。与 ``test_two_cards_equal_width_...`` 等
+    同文件里所有几何用例一致：拿不到真实几何就 skip，而不是假装失败。
     """
+    if not _mapped(ui.root):
+        pytest.skip("窗口未映射，拿不到真实几何")
+
     from src.ui import theme
 
     # 让首屏布局彻底收敛（与真实启动一致的 pump 次数）
@@ -208,8 +216,12 @@ def test_import_paper_remeasures_right_card(ui, tmp_path):
         "导入前后右卡请求高度没变化：%d -> %d" % (
             before, ui._right_card._cv.winfo_reqheight())
 
-    region = str(ui._main_scroll._cv.cget("scrollregion")).split()
-    assert int(region[3]) >= need, "scrollregion 没覆盖导入后新增内容：%s" % region
+    # scrollregion 是画布真实渲染后才有的值：未映射的窗口（CI 无桌面会话）下不可靠，
+    # 只在拿到真实几何时才断言（上面的 reqheight 断言在任何环境下都成立）。
+    if _mapped(ui.root):
+        region = str(ui._main_scroll._cv.cget("scrollregion")).split()
+        if len(region) >= 4:
+            assert int(region[3]) >= need, "scrollregion 没覆盖导入后新增内容：%s" % region
 
 
 # ------------------------------------------------- v2.3.32 重绘闸门（防花屏）

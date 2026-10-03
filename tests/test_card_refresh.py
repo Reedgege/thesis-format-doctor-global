@@ -27,10 +27,24 @@ except Exception:  # pragma: no cover
 @pytest.fixture(scope="module")
 def viewable_root():
     """建一个真正可见的 Tk 根窗口；不可见则整模块 skip。"""
-    root = tk.Tk()
-    root.geometry("820x640")
-    root.deiconify()
-    root.update_idletasks()
+    # v2.3.53：建窗口必须容错。CI（无桌面会话 / 已有其它 Tk 根）下 ``tk.Tk()``
+    # 可能直接抛 TclError —— 不做处理就是一条**硬 error**（把整个 CI 变红、卡住出包），
+    # 而这里要表达的语义是"环境不具备就跳过"，与 test_ui_redesign 的
+    # ``_tk_session`` 一致：取不到 Tk 就 skip，不是失败。
+    try:
+        root = tk.Tk()
+    except Exception as e:  # pragma: no cover - 仅在异常环境下命中
+        pytest.skip("Tk 不可用：%s" % e)
+    try:
+        root.geometry("820x640")
+        root.deiconify()
+        root.update_idletasks()
+    except Exception as e:  # pragma: no cover
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        pytest.skip("窗口初始化失败：%s" % e)
     if not root.winfo_viewable():
         root.destroy()
         pytest.skip("无可见显示环境（headless），跳过卡片几何测试")
