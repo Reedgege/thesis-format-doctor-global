@@ -285,6 +285,16 @@ def _auto_wrap(label: tk.Label, container, padx: int):
     def _apply(_e=None):
         if state["busy"]:
             return
+        # v2.3.50：窗口还没真正显示（main() 先 withdraw 再建 UI，构建期几何是 1px 占位值）
+        # 此刻算出来的 wraplength 毫无意义，还会和 refresh 互相追着跑、跨多张 RoundCard
+        # 在同一次 update_idletasks 里无限级联，把启动从图标修复后的 ~10s 又拖回去。
+        # 没映射之前直接跳过，等 deiconify 后的真实 <Configure> / _schedule_first_layout
+        # 再统一收口，一次收敛。
+        try:
+            if not container.winfo_viewable():
+                return
+        except Exception:
+            pass
         try:
             w = container.winfo_width() - 2 * padx
             if w <= 80 or w == state["wl"]:
@@ -588,7 +598,16 @@ class App:
 
         绑定见 ``App.__init__``：deiconify() 触发 <Map>，此时窗口已可见，设置必生效。
         窗口被最小化再还原、或重新 deiconify 时 <Map> 会再次触发，重设幂等无害。
+
+        ⚠️ v2.3.49 修复启动卡 30s 的根因：``<Map>`` 事件会沿 bindtag 链**冒泡**到根
+        窗口，于是构建期每个子控件被 pack/grid 映射时，都会触发根上这个 ``<Map>``
+        绑定，导致 ``_apply_window_icon_once`` 被调用约 100 次（每次含 tk.PhotoImage
+        + Win32 LoadImageW，约 0.3s），累计 30s+。只有「根窗口自身」的 ``<Map>``
+        才是真可见，必须忽略所有 ``event.widget is not self.root`` 的冒泡事件。
         """
+        # 忽略子控件冒泡上来的 <Map>：只认根窗口自己的映射事件。
+        if _evt is not None and getattr(_evt, "widget", None) is not self.root:
+            return
         try:
             if getattr(self, "_closing", False):
                 return
@@ -597,12 +616,18 @@ class App:
             pass
 
     def _apply_window_icon_once(self):
-        """真正执行设置（``_reapply_window_icon`` 的实际动作，不递归调度）。"""
+        """真正执行设置（``_reapply_window_icon`` 的实际动作，不递归调度）。
+
+        ``_window_icon`` 只创建一次并缓存：根窗口的 ``<Map>`` 在最小化/还原、重新
+        deiconify 时会再次触发，复用已加载的 PhotoImage 即可，避免重复读文件
+        （见 ``_on_window_mapped`` 的 v2.3.49 启动卡顿修复说明）。
+        """
         try:
             png = iconpath.find_icon()
             if png:
                 try:
-                    self._window_icon = tk.PhotoImage(file=png)
+                    if getattr(self, "_window_icon", None) is None:
+                        self._window_icon = tk.PhotoImage(file=png)
                     self.root.iconphoto(True, self._window_icon)
                 except Exception:
                     pass

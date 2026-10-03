@@ -213,7 +213,7 @@ class RoundCard(tk.Frame):
 
     # ---------------------------------------------------------------- 对外
     def refresh(self):
-        """内容尺寸可能变了 → **重新测量**并重画。
+        """内容尺寸可能变了 → **重新测量并重画**。
 
         为什么必须显式调：``inner`` 是画布里的 window item，它的宽高由我们钉死
         （见 ``_relayout``），所以"只往里面加内容"时**不会**触发 ``inner.<Configure>``，
@@ -222,24 +222,16 @@ class RoundCard(tk.Frame):
         （Codex 2026-09-12 P0-2 指出的正是这条路径：展开 Advanced options 后
         最下面一行不可达。）
 
-        先 ``update_idletasks`` 让刚 pack 的子控件把请求尺寸算出来，再测量。
+        ⚠️ 严禁在 refresh 里调用 ``update_idletasks()``：它会**同步**把整棵几何树上
+        所有挂起的 ``<Configure>`` 一次性触发，而 ``<Configure>`` 回调
+        （``App._auto_wrap._apply`` → ``_refresh_card`` → 又调 ``refresh``）会回头再
+        调，跨多张 RoundCard 在同一次几何更新里无限级联 —— 实测启动卡 30~50s。
+
+        这里只做「读请求尺寸 → 调画布请求尺寸 → 重画」三步，**不主动推动整棵树的
+        几何更新**。真正的尺寸收敛交给上层 ``_relayout_all`` 或自然 ``<Configure>``
+        事件：它们会先 ``update_idletasks()`` 把 ``<Configure>`` 全部跑完（此时
+        ``_apply`` 已把 wraplength 设好），再让我们测量，顺序天然正确，且不会递归。
         """
-        # v2.3.31 修复"花屏"：不再在循环里反复 `update_idletasks` 强制刷屏。
-        #
-        # 旧逻辑每轮都「调画布尺寸 → 立即刷屏 → 才重画圆角」，刷屏那一刻画布已经
-        # 变高/变宽、圆角矩形却还按旧尺寸，中间帧被真实画到屏幕上，造成闪屏/花屏/
-        # 内容叠影。改成只做几何计算、调请求尺寸，最后 `_relayout` 按当前实际尺寸画
-        # 一次；若父布局因此给了新尺寸，<Configure> 会再触发一次重画，两帧都是
-        # "尺寸与图形匹配"的正确画面，只是完整刷新而非残影。
-        #
-        # 保留 inner.update_idletasks 一次：让子控件（特别是 _auto_wrap 标签）在测量前
-        # 先把请求尺寸算出来；_sync_request 按测到的高设置画布请求尺寸；_relayout 里
-        # 先同步 inner 宽高再画。若因换行高度还有变化，下一轮 <Configure>/refresh 会
-        # 自然补上，不需要在同一事件里强刷多帧。
-        try:
-            self.inner.update_idletasks()
-        except Exception:
-            pass
         try:
             self._sync_request()
         except Exception:
@@ -435,10 +427,16 @@ class ScrollArea(tk.Frame):
         与 ``RoundCard.refresh`` 同理：``inner`` 的尺寸被钉死，往里加内容不会触发
         ``<Configure>``，所以必须由外部在 pack/unpack/换文案之后主动喊一声。
         """
-        try:
-            self.inner.update_idletasks()
-        except Exception:
-            pass
+        # v2.3.50：构建期窗口还是 withdrawn（1px 不稳定几何），一次同步 update_idletasks()
+        # 会把所有挂起的 <Configure> 强制跑完，触发 _auto_wrap._apply → _refresh_card →
+        # refresh 反馈环。没真正显示前量尺寸没意义，跳过同步重排；deiconify 后
+        # _schedule_first_layout 会再调一次 _relayout_all，那时几何稳定、一次收敛。
+        # （_auto_wrap._apply 自身也有 viewable 守卫，双保险。）
+        if self.winfo_viewable():
+            try:
+                self.inner.update_idletasks()
+            except Exception:
+                pass
         try:
             self._relayout()
         except Exception:
@@ -655,7 +653,18 @@ class RoundButton(tk.Frame):
                 self.pack_forget()
         except Exception:
             pass
-        # 卡片高度由内容驱动，显隐后要让外层 RoundCard 重新量一次
+        # 卡片高度由内容驱动，显隐后要让外层 RoundCard 重新量一次。
+        # ⚠️ v2.3.49 修复启动卡顿：这里**不能同步**调 update_idletasks() —— 构建期
+        # 窗口还 withdrawn、几何未稳定，一次同步 update_idletasks 会强制把半成型布局
+        # 全量重排，触发 <Configure>↔resize 反馈环（每次 refresh 又排新的 <Configure>），
+        # 实测启动卡 10s+。改成推迟到 idle：那时窗口已 deiconify、尺寸稳定，重排一两轮
+        # 即收敛。运行时切显隐同理，延后一帧无感。
+        try:
+            self.after_idle(self._safe_update_idletasks)
+        except Exception:
+            pass
+
+    def _safe_update_idletasks(self):
         try:
             self.update_idletasks()
         except Exception:
