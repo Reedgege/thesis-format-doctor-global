@@ -30,7 +30,7 @@
 
 设计：
 - 中台调用带浏览器 UA，避免 Cloudflare 1010 拦截。
-- 心跳 3 天（HEARTBEAT_DAYS），仅当服务器返回 revoked/expired 才锁。
+- 心跳：启动 + 每次修正都向中台核对吊销/过期（方向 A，撤销即时生效）；仅服务器明确 revoked/expired 才锁，离线宽限保留。
 - 单元测试 monkeypatch 掉三个中台调用与状态路径，离线可跑。
 
 不变量：
@@ -56,8 +56,6 @@ from pathlib import Path
 API_BASE = "https://api.reedskill.com"
 PRODUCT = "global"        # 海外版产品 id（中台 ensureProduct 自动建行）
 TRIAL_FIX_LIMIT = 1       # 修正：1 次免费试用（产品模型 B：查免费、修正 1 次免费、之后付费）
-HEARTBEAT_DAYS = 3        # 心跳宽限；超过仅当服务器返回 revoked/expired 才锁
-
 _P_ACTIVATE = "/api/activate"
 _P_HEARTBEAT = "/api/heartbeat"
 _P_TRIAL = "/api/trial"
@@ -422,6 +420,31 @@ def _safe_heartbeat(code, machine) -> dict | None:
         return None
 
 
+def _apply_heartbeat_revocation(state: dict, fp: str) -> bool:
+    """对在线激活码做一次心跳吊销核对。返回 True 表示已被锁（revoked/expired）。
+
+    方向 A：撤销即时生效——后台一停用，下次启动或下次点修正即锁。
+    fail-soft：网络不可达（_safe_heartbeat 返回 None）不锁、不报错（离线宽限）。
+    服务器可达且仍 active 时刷新本地 last_heartbeat（便于诊断与兜底窗口）。
+    """
+    hb = _safe_heartbeat(state.get("code"), fp)
+    if hb and hb.get("status") in ("revoked", "expired"):
+        state["activated"] = False
+        state["revoked"] = True
+        try:
+            save_state(state)
+        except Exception:
+            pass
+        return True
+    if hb:  # 可达且 active：刷新戳
+        state["last_heartbeat"] = int(time.time())
+        try:
+            save_state(state)
+        except Exception:
+            pass
+    return False
+
+
 def _safe_trial_sync(machine: str, claim: bool = False) -> dict | None:
     try:
         return _trial_sync(machine, claim)
@@ -642,31 +665,17 @@ def _require_fix_entitlement() -> dict:
                            "Please re-enter your activation code once to restore it: paste an offline code directly, or connect online for an online code.",
                 "remaining_trial": 0}
 
-    # ② 已激活：心跳 + 吊销/过期检查（服务器明确 revoked/expired 才锁；离线宽限）
+    # ② 已激活：每次都向中台核对吊销/过期（方向 A：撤销即时生效）。
+    #    服务器明确 revoked/expired 才锁；网络不可达（_safe_heartbeat 返回 None）
+    #    走离线宽限、不锁。离线激活码已在 ①-b 提前返回，不会到这里。
     if state.get("activated"):
-        age = time.time() - float(state.get("last_heartbeat") or 0)
-        if age > HEARTBEAT_DAYS * 86400:
-            hb = _safe_heartbeat(state.get("code"), fp)
-            if hb and hb.get("status") in ("revoked", "expired"):
-                state["activated"] = False
-                state["revoked"] = True
-                try:
-                    save_state(state)
-                except Exception:
-                    pass
-            elif hb:
-                state["last_heartbeat"] = int(time.time())
-                try:
-                    save_state(state)
-                except Exception:
-                    pass
-        if state.get("activated"):
-            return {"allowed": True, "reason": "activated",
-                    "message": f"Activated ({state.get('kind') or 'lifetime'})",
-                    "remaining_trial": None}
-        return {"allowed": False, "reason": "revoked",
-                "message": "Your license has been revoked or expired. Please re-enter your activation code.",
-                "remaining_trial": 0}
+        if _apply_heartbeat_revocation(state, fp):
+            return {"allowed": False, "reason": "revoked",
+                    "message": "Your license has been revoked or expired. Please re-enter your activation code.",
+                    "remaining_trial": 0}
+        return {"allowed": True, "reason": "activated",
+                "message": f"Activated ({state.get('kind') or 'lifetime'})",
+                "remaining_trial": None}
 
     # ③ 未激活：试用额度（中台优先、本地兜底、损坏/被篡改 fail-closed）
     trial_used = bool(state.get("trial_fix_used"))
@@ -695,6 +704,26 @@ def _require_fix_entitlement() -> dict:
             "remaining_trial": 1}
 
 
+def refresh_license_on_launch() -> dict:
+    """App 启动调用（建议在后台线程，非阻塞）：对在线激活码核对吊销/过期。
+
+    fail-soft：离线激活码（Ed25519）或网络不可达都不锁，仅返回当前本地状态。
+    返回 {checked, activated, revoked, locked}。GUI 据此决定是否弹「已吊销」提示。
+    """
+    state = load_state()
+    if not (state.get("activated") and not state.get("offline")):
+        return {"checked": False,
+                "activated": bool(state.get("activated")),
+                "revoked": bool(state.get("revoked")),
+                "locked": False}
+    fp = _machine_fingerprint()
+    locked = _apply_heartbeat_revocation(state, fp)
+    return {"checked": True,
+            "activated": bool(state.get("activated")),
+            "revoked": bool(state.get("revoked")),
+            "locked": locked}
+
+
 def record_fix_used() -> bool:
     """修正成功后调用：标记试用已用 + 心跳 + 中台登记。
 
@@ -706,7 +735,6 @@ def record_fix_used() -> bool:
         state = load_state()
         if not state.get("activated"):
             state["trial_fix_used"] = True
-        state["last_heartbeat"] = int(time.time())
         save_state(state)
     except Exception:
         ok = False

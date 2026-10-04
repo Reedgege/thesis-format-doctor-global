@@ -34,6 +34,7 @@ from __future__ import annotations
 import os
 import sys
 import ctypes
+import threading
 import tkinter as tk
 import traceback
 import webbrowser
@@ -1046,6 +1047,28 @@ class App:
         # 首帧量到的可能是 1px 内容高度，圆角矩形会被画成残框/被裁切；等布局落定再
         # refresh 一次，确保外框完整（见 RoundCard.refresh 的 P0-2 说明）。
         self.root.after_idle(lambda: self._closing or self._relayout_all())
+        # 启动即核对在线激活码吊销状态（后台线程，非阻塞；撤销即时生效，方向 A）
+        threading.Thread(target=self._refresh_license_at_launch, daemon=True).start()
+
+    # ------------------------------------------------------------ 授权：启动心跳
+    def _refresh_license_at_launch(self):
+        """后台线程：启动即向中台核对在线激活码吊销/过期（fail-soft，不阻塞首屏）。"""
+        try:
+            res = lic.refresh_license_on_launch()
+        except Exception:
+            return
+        if res.get("locked"):
+            self.root.after(0, self._on_license_revoked_at_launch)
+
+    def _on_license_revoked_at_launch(self):
+        msg = ("Your license has been revoked or expired. "
+               "Please re-enter your activation code to continue using fixes.")
+        try:
+            self._set_status(msg, "err")
+            self._set_bar("err")
+        except Exception:
+            pass
+        messagebox.showwarning("License revoked", msg)
 
     # ------------------------------------------------------------ 背景 / 顶栏
     def _sync_columns(self, e=None):

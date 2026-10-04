@@ -176,15 +176,92 @@ def test_machine_mismatch_rebinds_when_online(tmp_license, monkeypatch):
 
 
 def test_server_revoked_locks(tmp_license, monkeypatch):
-    """中台明确返回 revoked → 锁死（心跳超期时才查）。"""
+    """中台明确返回 revoked → 锁死（方向 A：撤销即时生效，即使本地戳很新也查）。"""
     _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
                   trial_fix_used=True, machine=lic._machine_fingerprint(),
-                  last_heartbeat=0)        # 远超 3 天宽限
+                  last_heartbeat=int(time.time()))   # 本地戳很新，证明不再等 3 天
     monkeypatch.setattr(lic, "_safe_heartbeat",
                         lambda code, machine: {"ok": True, "status": "revoked"})
     g = lic.require_fix_entitlement()
     assert g["allowed"] is False
     assert g["reason"] == "revoked"
+
+
+def test_entitlement_pings_even_with_fresh_stamp(tmp_license, monkeypatch):
+    """方向 A 回归：本地戳很新时也照样发心跳（旧实现会跳过，导致撤销滞后）。
+
+    这正是「后台停用却一直能用」的根因——旧代码只在戳超过 3 天才查，而
+    record_fix_used 每次修正都续命戳，活跃用户永远不查。
+    """
+    calls = {"n": 0}
+    def hb(code, machine):
+        calls["n"] += 1
+        return {"ok": True, "status": "active"}
+    monkeypatch.setattr(lic, "_safe_heartbeat", hb)
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint(),
+                  last_heartbeat=int(time.time()))
+    g = lic.require_fix_entitlement()
+    assert g["allowed"] is True
+    assert calls["n"] == 1   # 即便戳很新，也发了一次心跳
+
+
+def test_refresh_on_launch_revoked_locks(tmp_license, monkeypatch):
+    """启动核对：在线码已被吊销 → 返回 locked=True 且本地状态被锁。"""
+    monkeypatch.setattr(lic, "_safe_heartbeat",
+                        lambda code, machine: {"ok": True, "status": "revoked"})
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    res = lic.refresh_license_on_launch()
+    assert res["checked"] is True
+    assert res["locked"] is True
+    assert lic.load_state()["activated"] is False
+    assert lic.load_state()["revoked"] is True
+
+
+def test_refresh_on_launch_active_ok(tmp_license, monkeypatch):
+    """启动核对：在线码仍 active → 不锁。"""
+    monkeypatch.setattr(lic, "_safe_heartbeat",
+                        lambda code, machine: {"ok": True, "status": "active"})
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    res = lic.refresh_license_on_launch()
+    assert res["checked"] is True
+    assert res["locked"] is False
+    assert lic.load_state()["activated"] is True
+
+
+def test_refresh_on_launch_offline_no_network(tmp_license, monkeypatch):
+    """离线激活码：启动核对不触网、不锁（Ed25519 隐私路径）。"""
+    def _must_not_call(code, machine):
+        raise AssertionError("offline license must not heartbeat")
+    monkeypatch.setattr(lic, "_safe_heartbeat", _must_not_call)
+    _sealed_state(activated=True, code="OFFLINE-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint(),
+                  offline=True)
+    res = lic.refresh_license_on_launch()
+    assert res["checked"] is False
+    assert res["locked"] is False
+
+
+def test_refresh_on_launch_skips_unactivated(tmp_license, monkeypatch):
+    """未激活：启动核对直接跳过（由试用逻辑处理，不触网）。"""
+    def _must_not_call(code, machine):
+        raise AssertionError("unactivated must not heartbeat")
+    monkeypatch.setattr(lic, "_safe_heartbeat", _must_not_call)
+    _sealed_state(activated=False, trial_fix_used=False)
+    res = lic.refresh_license_on_launch()
+    assert res["checked"] is False
+    assert res["locked"] is False
+
+
+def test_record_fix_used_does_not_extend_heartbeat(tmp_license):
+    """方向 A：修正成功不再续命本地心跳戳（否则活跃用户永不重新核对吊销）。"""
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint(),
+                  last_heartbeat=12345)
+    assert lic.record_fix_used() is True
+    assert lic.load_state()["last_heartbeat"] == 12345
 
 
 def test_server_trial_used_locks(tmp_license, monkeypatch):
