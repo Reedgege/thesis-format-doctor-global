@@ -535,6 +535,26 @@ STRINGS: dict = {
              "The build is not code-signed yet, so SmartScreen flags it. Click More info → Run anyway. "
              "The executable is built from the public source of this project."),
         ],
+
+        # —— 反馈窗口（规格：顶栏「Feedback」入口；Worker /api/feedback → 邮件） ——
+        "link_feedback": "Feedback",
+        "fb_title": "Feedback",
+        "fb_intro": "Found a bug, or have an idea? Tell us — we read every message.",
+        "fb_email": "Your email (so we can reply)",
+        "fb_email_hint": "Optional, but we can't reply without it.",
+        "fb_message": "Your message",
+        "fb_message_hint": "What went wrong, or what you'd like to see.",
+        "fb_privacy": "We only use your email to reply to this feedback.",
+        "fb_submit": "Send feedback",
+        "fb_cancel": "Cancel",
+        "fb_invalid_email": "Please enter a valid email address.",
+        "fb_empty": "Please write a few words first.",
+        "fb_sending": "Sending…",
+        "fb_sent": "Thanks! Your feedback is on its way.",
+        "fb_sent_title": "Feedback sent",
+        "fb_failed_title": "Couldn't send",
+        "fb_mailto_fallback": ("Couldn't reach the server. We've opened your email app with a "
+                               "pre-filled message — just press send."),
     },
 
     "zh": {
@@ -775,6 +795,25 @@ STRINGS: dict = {
              "程序尚未做代码签名，所以会被 SmartScreen 标注。点「详细信息」→「仍要运行」即可。"
              "可执行文件由本项目的公开源码构建。"),
         ],
+
+        # —— 反馈窗口（规格：顶栏「Feedback」入口；Worker /api/feedback → 邮件） ——
+        "link_feedback": "反 馈",
+        "fb_title": "意见反馈",
+        "fb_intro": "遇到 bug，或有什么好点子？告诉我们 —— 每一条留言我们都会看。",
+        "fb_email": "你的邮箱（方便我们回复）",
+        "fb_email_hint": "选填，但没它我们没法回复你。",
+        "fb_message": "反馈内容",
+        "fb_message_hint": "哪里不对、或你希望加什么功能。",
+        "fb_privacy": "我们仅用你的邮箱回复这条反馈。",
+        "fb_submit": "提交反馈",
+        "fb_cancel": "取消",
+        "fb_invalid_email": "请填写有效的邮箱地址。",
+        "fb_empty": "请先写几句反馈。",
+        "fb_sending": "提交中…",
+        "fb_sent": "已收到，谢谢你的反馈！",
+        "fb_sent_title": "反馈已发送",
+        "fb_failed_title": "发送失败",
+        "fb_mailto_fallback": "没能连上服务器，已为你打开邮件客户端并填好内容 —— 直接点发送即可。",
     },
 }
 

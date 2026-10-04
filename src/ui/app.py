@@ -34,9 +34,14 @@ from __future__ import annotations
 import os
 import sys
 import ctypes
+import json
+import re
 import threading
 import tkinter as tk
 import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 import webbrowser
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
@@ -1291,6 +1296,10 @@ class App:
         nav = tk.Frame(cv, bg=theme.BG)
         self._link(nav, self.tr("link_help"),
                    self._help_dialog).pack(side="right")
+        self._nav_sep(nav)
+        # v2.3.60：反馈入口紧挨 Help（老板 2026-10-04 定，低摩擦、易发现）
+        self._link(nav, self.tr("link_feedback"),
+                   self._feedback_dialog).pack(side="right")
         self._nav_sep(nav)
         self._link(nav, self.tr("link_about"),
                    self._about_dialog).pack(side="right")
@@ -2846,6 +2855,141 @@ class App:
         tk.Label(inner, text=tr("about_footer"), bg=PAPER, fg=MUTED,
                  font=self.F["F_FOOT"]).pack(padx=padx, pady=(16, 18))
 
+    # ------------------------------------------------------------ 反馈窗口
+    # 提交到 Worker /api/feedback → 邮件；断网 / 失败则回落 mailto: 开邮件客户端。
+    FEEDBACK_ENDPOINT = "https://api.reedskill.com/api/feedback"
+
+    @staticmethod
+    def _is_valid_email(email: str) -> bool:
+        """宽松够用的邮箱格式校验（仅反馈收集用，不做严格 RFC 校验）。"""
+        if not email or "@" not in email:
+            return False
+        return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email) is not None
+
+    @staticmethod
+    def _feedback_post(email: str, message: str, version: str) -> bool:
+        """POST 到 Worker /api/feedback；任何异常 / 非 2xx / 服务端 ok=false
+        一律返回 False（fail-soft，交给 _feedback_deliver 走 mailto 兜底）。"""
+        payload = {"email": email or "", "message": message,
+                   "app": "paperformatpro", "version": version or ""}
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                App.FEEDBACK_ENDPOINT, data=data, method="POST",
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "PaperFormatPro/%s" % (version or "")})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if not (200 <= getattr(resp, "status", 0) < 300):
+                    return False
+                try:
+                    body = json.loads(resp.read().decode("utf-8"))
+                except Exception:
+                    return True  # 2xx 但无法解析：保守按已送达处理
+                return bool(body.get("ok", True))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _feedback_mailto(email: str, message: str) -> None:
+        """兜底：开邮件客户端，内容预填好（from 行 + 正文）。"""
+        addr = i18n.BRAND_EMAIL
+        body = message if not email else "From: %s\n\n%s" % (email, message)
+        try:
+            webbrowser.open("mailto:%s?subject=%s&body=%s" % (
+                addr,
+                urllib.parse.quote("PaperFormat Pro feedback"),
+                urllib.parse.quote(body)))
+        except Exception:
+            pass
+
+    @classmethod
+    def _feedback_deliver(cls, email: str, message: str, version: str) -> tuple:
+        """纯函数：裁决反馈提交结果，返回 ``(status, detail)``。
+
+        status ∈ {"invalid_email", "empty", "sent", "mailto"}
+
+        - 邮箱非必填；但若填了且格式不对 → ``invalid_email``
+        - 反馈内容必填，空 → ``empty``
+        - 网络可达且 2xx → ``sent``
+        - 否则回落 ``mailto`` 兜底（开邮件客户端）→ ``mailto``
+        """
+        email = (email or "").strip()
+        message = (message or "").strip()
+        if email and not cls._is_valid_email(email):
+            return ("invalid_email", "")
+        if not message:
+            return ("empty", "")
+        if cls._feedback_post(email, message, version):
+            return ("sent", "")
+        cls._feedback_mailto(email, message)
+        return ("mailto", "")
+
+    def _feedback_dialog(self):
+        tr = self.tr
+        F = self.F
+        win = ModalShell(self.root, tr("fb_title"), width=560, height=520)
+        self._track(win)
+        body = win.content
+
+        tk.Label(body, text=tr("fb_intro"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_SMALL"], anchor="w", justify="left",
+                 wraplength=480).pack(fill="x")
+
+        # —— 邮箱（选填）——
+        tk.Label(body, text=tr("fb_email"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_LABEL"], anchor="w").pack(fill="x", pady=(14, 4))
+        email_var = tk.StringVar()
+        ttk.Entry(body, textvariable=email_var, width=48,
+                  font=F["F_BODY"]).pack(fill="x")
+        tk.Label(body, text=tr("fb_email_hint"), bg=theme.SURFACE, fg=theme.TEXT_3,
+                 font=F["F_FOOT"], anchor="w").pack(fill="x", pady=(3, 0))
+
+        # —— 反馈内容（必填）——
+        tk.Label(body, text=tr("fb_message"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_LABEL"], anchor="w").pack(fill="x", pady=(14, 4))
+        msg = tk.Text(body, width=48, height=6, font=F["F_BODY"],
+                      relief="solid", bd=1, highlightthickness=0,
+                      wrap="word", bg=theme.SURFACE, fg=theme.TEXT)
+        msg.pack(fill="x")
+
+        # —— 隐私说明（一行，GDPR 友好的弱提示）——
+        tk.Label(body, text=tr("fb_privacy"), bg=theme.SURFACE, fg=theme.TEXT_3,
+                 font=F["F_FOOT"], anchor="w", justify="left",
+                 wraplength=480).pack(fill="x", pady=(10, 0))
+
+        # —— 行内状态（成功绿 / 错误红，不弹窗打断）——
+        status_var = tk.StringVar(value="")
+        status_lbl = tk.Label(body, textvariable=status_var, bg=theme.SURFACE,
+                              fg=theme.ERROR, font=F["F_FOOT"], anchor="w",
+                              wraplength=480)
+        status_lbl.pack(fill="x", pady=(6, 0))
+
+        def _submit():
+            status_var.set("")
+            email = email_var.get().strip()
+            message = msg.get("1.0", "end").strip()
+            result, _ = App._feedback_deliver(email, message, self.version)
+            if result == "invalid_email":
+                status_var.set(tr("fb_invalid_email"))
+                status_lbl.config(fg=theme.ERROR)
+                return
+            if result == "empty":
+                status_var.set(tr("fb_empty"))
+                status_lbl.config(fg=theme.ERROR)
+                return
+            if result == "sent":
+                status_var.set(tr("fb_sent"))
+                status_lbl.config(fg=theme.SUCCESS)
+                win.after(1000, lambda: self._close_one(win))
+                return
+            # mailto 兜底
+            status_var.set(tr("fb_mailto_fallback"))
+            status_lbl.config(fg=theme.TEXT_2)
+
+        win.add_primary_action(tr("fb_submit"), command=_submit)
+        win.add_cancel_action(tr("fb_cancel"))
+        self._fit_modal(win, 560)
+
     # ------------------------------------------------------------ 升级 / 激活（合并弹窗）
     def _upgrade_dialog(self):
         """升级 / 购买 / 激活 合并弹窗（规格 COMMERCIAL UI）。
@@ -3197,14 +3341,17 @@ class App:
                 gate_no_go = self._gate_message(gate)
                 self._set_status(gate_no_go, "err")
                 self._set_bar("err")
-                return
-
-            preview_text = (
-                tr("preview_header") + "\n"
-                + "\n".join("  · " + line for line in changes)
-                + "\n\n" + tr("preview_trial", self._gate_message(gate)))
-            self._set_report(preview_text,
-                             summary_spec=("report_summary_fix", (len(changes),)))
+                # 注意：此处绝不能再 return。旧代码在这里 return 会直接
+                # 退出整个函数，导致下方的「授权不足」分支（弹合并激活窗
+                # 引导购买）永不执行 —— 用户只看到红状态栏、却找不到买码入口。
+                # 正确做法：try 正常结束 → finally 解除忙态 → 再弹窗。
+            else:
+                preview_text = (
+                    tr("preview_header") + "\n"
+                    + "\n".join("  · " + line for line in changes)
+                    + "\n\n" + tr("preview_trial", self._gate_message(gate)))
+                self._set_report(preview_text,
+                                 summary_spec=("report_summary_fix", (len(changes),)))
         except DocxReadError as e:
             self._fail(tr("msg_read_error_title"), str(e))
             return
