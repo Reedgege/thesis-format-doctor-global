@@ -472,6 +472,15 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     """
     if not _mapped(ui.root):
         pytest.skip("窗口未映射，拿不到真实几何")
+    # v2.3.57：必须先把界面跑到「真实启动后的稳定态」再量。App.__init__ 末尾用
+    # ``after_idle(_relayout_all)`` 把两栏列宽钉成相等、把自动换行标签的 wraplength
+    # 算准——这一步只有在事件循环真正转起来（真实启动 / root.update()）才会发生。
+    # 本 fixture 不跑事件循环，若只 update_idletasks() 则界面停在「列宽未均分、右卡
+    # 偏窄、标签未换行」的中间态；此时去量 right_before，等下面 _toggle_advanced
+    # 触发的 _relayout_all 把列宽均分+标签换行后，右卡高度跟着变，断言就被「假回归」
+    # 打红。真实使用里启动即稳定，左右卡互不干扰（实测 530->530 不动）。这里用
+    # root.update() 复刻真实启动的收口，让 before/after 都站在同一稳定态上量。
+    ui.root.update()
     ui.root.update_idletasks()
     lw, lh = ui._left_card._cv.winfo_width(), ui._left_card._cv.winfo_height()
     rw, rh = ui._right_card._cv.winfo_width(), ui._right_card._cv.winfo_height()
