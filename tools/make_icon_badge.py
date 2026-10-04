@@ -25,6 +25,8 @@ from PIL import Image, ImageOps
 PNG_SIZE = 1024
 SAFE_FIT = 0.84                          # 84% 安全区，圆角/阴影不会被裁
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+
+
 ICNS_CHUNKS = [
     ("icp4", 16), ("icp5", 32), ("icp6", 64),
     ("ic07", 128), ("ic08", 256), ("ic09", 512), ("ic10", 1024),
@@ -46,11 +48,12 @@ def write_icns(pngs: dict, out_path: str) -> None:
         fh.write(b"icns" + struct.pack(">I", len(body) + 8) + body)
 
 
-def make_badge_icon(src_path: str, out_dir: str, name: str = "icon") -> None:
+def make_badge_icon(src_path: str, out_dir: str, name: str = "icon",
+                    fit: float = SAFE_FIT) -> None:
     os.makedirs(out_dir, exist_ok=True)
     src = Image.open(src_path).convert("RGBA")
     # 统一缩放到安全区内，保持比例，允许放大/缩小
-    fit_size = int(PNG_SIZE * SAFE_FIT)
+    fit_size = int(PNG_SIZE * fit)
     scaled = ImageOps.contain(src, (fit_size, fit_size), Image.LANCZOS)
     # 居中贴到 1024×1024 透明画布
     canvas = Image.new("RGBA", (PNG_SIZE, PNG_SIZE), (0, 0, 0, 0))
@@ -84,6 +87,8 @@ def main(argv=None) -> int:
     ap.add_argument("src", nargs="?", help="源 PNG（带透明背景的圆形徽章）")
     ap.add_argument("--outdir", default="assets", help="输出目录")
     ap.add_argument("--name", default="icon", help="输出文件名（不含扩展名）")
+    ap.add_argument("--fit", type=float, default=SAFE_FIT,
+                    help="内容占画布比例（默认 %.2f，1.0=撑满不留边）" % SAFE_FIT)
     ap.add_argument("--copy-source", default="assets/logo_badge.png",
                       help="把源图复制到仓库的哪个路径（留档/CI 复用）")
     args = ap.parse_args(argv)
@@ -100,7 +105,7 @@ def main(argv=None) -> int:
     shutil.copy2(src, repo_src)
     print("source copied ->", repo_src)
 
-    make_badge_icon(repo_src, outdir, args.name)
+    make_badge_icon(repo_src, outdir, args.name, fit=args.fit)
     return 0
 
 
