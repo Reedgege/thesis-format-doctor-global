@@ -169,7 +169,7 @@ jobs:
         run: python tools/verify_bundle.py dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: paperformatpro-${{ matrix.os }}
           path: |
@@ -200,7 +200,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 

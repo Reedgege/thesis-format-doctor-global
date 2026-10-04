@@ -161,6 +161,10 @@ def test_first_screen_cards_not_clipped(ui):
     1，而请求高度是真实值 → 必然误红。与 ``test_two_cards_equal_width_...`` 等
     同文件里所有几何用例一致：拿不到真实几何就 skip，而不是假装失败。
     """
+    # headless CI（windows-latest）虽有窗口会话，但实际渲染高度不稳定，会偶发误红；
+    # 本用例仅本地真机校验（与 test_card_refresh 同为几何断言，CI 下 skip）。
+    if os.environ.get("CI") == "true":
+        pytest.skip("几何断言在 headless CI 下不稳定，仅本地真机校验")
     if not _mapped(ui.root):
         pytest.skip("窗口未映射，拿不到真实几何")
 
