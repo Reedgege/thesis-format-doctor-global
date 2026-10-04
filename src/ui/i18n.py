@@ -356,6 +356,12 @@ STRINGS: dict = {
         "gate_needs_reactivation": "We detected an older license file (activated before this upgrade). Re-enter your activation code once to restore it: paste an offline code directly, or sign in online for an online code.",
         "gate_revoked": "Your license was revoked or expired. Please re-enter your activation code.",
         "gate_state_error": "Your license status could not be read or saved, so we can't start a fix right now. Please retry, or contact support if it keeps happening.",
+        # 启动一次性核验（授权 + 版本）的状态机文案
+        "launch_offline": "Network unavailable — fixes still work (offline mode).",
+        "upd_title": "A new version is available",
+        "upd_body": "Version %s is out (you have %s).",
+        "upd_btn": "Update",
+        "upd_later": "Later",
         # v2.3.16：右卡常驻「下一步」引导条（随状态机更新，治"向导性不够好"）
         "guide_pick": "Next: drop your .docx here, then click “Check formatting”.",
         "guide_check": "Next: click “Check formatting” to scan your document.",
@@ -616,6 +622,12 @@ STRINGS: dict = {
         "gate_needs_reactivation": "检测到旧版授权文件（本次升级前激活的）。请重新输入一次激活码即可恢复：离线码直接粘贴，在线码需联网。",
         "gate_revoked": "授权已被吊销或已过期，请重新输入激活码。",
         "gate_state_error": "授权状态读取或写入失败，暂时无法进行修正。请重试；若持续出现请联系客服。",
+        # 启动一次性核验（授权 + 版本）的状态机文案
+        "launch_offline": "未能联网 —— 修正仍可使用（离线模式）。",
+        "upd_title": "有新版本可用",
+        "upd_body": "已发布 %s（你当前是 %s）。",
+        "upd_btn": "更新",
+        "upd_later": "以后再说",
         # v2.3.16：右卡常驻「下一步」引导条（随状态机更新，治"向导性不够好"）
         "guide_pick": "下一步：把 Word 文档拖到这里，然后点击「检查格式」。",
         "guide_check": "下一步：点击「检查格式」开始扫描文档。",

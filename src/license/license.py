@@ -14,7 +14,15 @@
       → {ok:true, type, expires_at, status, uses_total, uses_used}
       | {ok:false, error: "invalid_code"|"revoked"|"expired"|"already_used"|"missing_fields"}
 - ``POST /api/heartbeat``  {product, code, machine_code}
-      → {ok:true, status: "active"|"revoked"|"expired", expires_at}
+      → {ok:true, status: "active"|"revoked"|"expired", expires_at,
+         latest_version?, download_url?, min_version?}
+      （latest_version 等版本字段为可选；缺失时客户端按「无更新」降级处理）
+
+中台真实接口契约（与国内版共用同一套 Worker，已核对源码）：
+- ``GET /api/version``      （无需授权，公共端点，供试用 / 离线用户取更新提示）
+      → {latest_version, download_url, min_version?}
+      **该端点需在中台部署后生效**；未部署时返回非 JSON（网关 HTML）或 404，
+      本模块按「服务器不可达」处理（降级为无更新，不阻塞启动）。
 - ``POST /api/trial``      {product, machine_code, claim}
       → {ok:true, trial_used: bool, first: bool}
       **试用额度端点：需在共享中台部署后才生效**，见 `server_patch/README.md`。
@@ -71,6 +79,10 @@ LICENSE_FILE = Path.home() / ".paperformatpro" / "license.json"
 LICENSE_FILE_LEGACY = Path.home() / ".thesis-format-doctor-global" / "license.json"
 
 _USER_AGENT = "Mozilla/5.0 PaperFormatPro/2.0"
+
+# 启动一次性核验通过后的「内存可信标志」：置位后，本次会话内修正不再发心跳。
+# 用户决策：启动核对一次即可，有效状态就不再打扰网络（见 _require_fix_entitlement ②）。
+_launch_verified_active = False
 
 
 def _license_file() -> Path:
@@ -453,6 +465,77 @@ def _safe_trial_sync(machine: str, claim: bool = False) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# 版本公告（公共端点，无需激活码；未部署则降级为「无更新」）
+# ---------------------------------------------------------------------------
+_P_VERSION = "/api/version"
+
+
+def _parse_version_tuple(v: str) -> tuple:
+    """把 ``"2.3.58"`` 解析成 ``(2, 3, 58)`` 用于比较；非法段按 0 处理。"""
+    out = []
+    for part in (v or "").split("."):
+        try:
+            out.append(int(part))
+        except Exception:
+            out.append(0)
+    return tuple(out) if out else (0,)
+
+
+def _current_version_tuple() -> tuple:
+    try:
+        from .. import versioninfo
+        return _parse_version_tuple(versioninfo.app_version())
+    except Exception:
+        return (0,)
+
+
+def _check_latest_version() -> dict | None:
+    """公共版本端点（无需授权）；失败软降级为 None。
+
+    与心跳不同，它不需要激活码，因此试用 / 离线用户也能拿到更新提示。
+    端点未部署或网络不可达时返回 None（上层按「无更新」处理，绝不阻塞启动）。
+    """
+    if _forced_offline():
+        return None
+    url = API_BASE.rstrip("/") + _P_VERSION
+    req = urllib.request.Request(
+        url, method="GET", headers={"User-Agent": _USER_AGENT})
+    prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(4)
+    try:
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            return json.loads(resp.read().decode("utf-8", "ignore"))
+    except Exception:
+        return None
+    finally:
+        socket.setdefaulttimeout(prev)
+
+
+def _version_info_from(hb: dict | None = None, public: dict | None = None) -> dict:
+    """合并心跳 / 公共端点的版本字段；缺失则 update_available=False。"""
+    src: dict = {}
+    if public:
+        src.update(public)
+    if hb:
+        src.update(hb)            # 心跳字段优先
+    latest = src.get("latest_version") or src.get("version")
+    url = src.get("download_url")
+    min_v = src.get("min_version")
+    update_available = False
+    if latest:
+        try:
+            update_available = _parse_version_tuple(latest) > _current_version_tuple()
+        except Exception:
+            update_available = False
+    return {
+        "latest_version": latest,
+        "download_url": url,
+        "min_version": min_v,
+        "update_available": update_available,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 公开 API
 # ---------------------------------------------------------------------------
 
@@ -594,6 +677,7 @@ def _entitlement_on_error(e: Exception) -> dict:
 
 
 def _require_fix_entitlement() -> dict:
+    global _launch_verified_active
     state = load_state()
     fp = _machine_fingerprint()
 
@@ -665,14 +749,21 @@ def _require_fix_entitlement() -> dict:
                            "Please re-enter your activation code once to restore it: paste an offline code directly, or connect online for an online code.",
                 "remaining_trial": 0}
 
-    # ② 已激活：每次都向中台核对吊销/过期（方向 A：撤销即时生效）。
+    # ② 已激活：启动已一次性核验过（内存可信标志）→ 直接放行，修正时不再触网
+    #    （用户决策：启动核对一次即可，有效状态就不再打扰网络）。
+    #    启动未核验（如离线启动 / 核验线程还没回）→ 本次补一次心跳；
     #    服务器明确 revoked/expired 才锁；网络不可达（_safe_heartbeat 返回 None）
     #    走离线宽限、不锁。离线激活码已在 ①-b 提前返回，不会到这里。
     if state.get("activated"):
+        if _launch_verified_active:
+            return {"allowed": True, "reason": "activated",
+                    "message": f"Activated ({state.get('kind') or 'lifetime'})",
+                    "remaining_trial": None}
         if _apply_heartbeat_revocation(state, fp):
             return {"allowed": False, "reason": "revoked",
                     "message": "Your license has been revoked or expired. Please re-enter your activation code.",
                     "remaining_trial": 0}
+        _launch_verified_active = True
         return {"allowed": True, "reason": "activated",
                 "message": f"Activated ({state.get('kind') or 'lifetime'})",
                 "remaining_trial": None}
@@ -705,32 +796,71 @@ def _require_fix_entitlement() -> dict:
 
 
 def refresh_license_on_launch() -> dict:
-    """App 启动调用（建议在后台线程，非阻塞）：对在线激活码核对吊销/过期。
+    """App 启动调用（后台线程，非阻塞）：一次核对授权 + 版本（方向 A + 启动一次性验证）。
 
-    fail-soft：离线激活码（Ed25519）或网络不可达都不锁，仅返回当前本地状态。
-    返回 {checked, activated, revoked, locked}。GUI 据此决定是否弹「已吊销」提示。
+    返回 {checked, activated, revoked, locked, offline, network_unreachable,
+          version:{latest_version, download_url, min_version, update_available}}。
+    - 离线激活码（Ed25519）：offline=True，不锁（离线宽限）；版本信息来自公共端点。
+    - 在线激活码：心跳核对吊销；active → 置位内存可信标志（之后修正免心跳）；带回版本信息。
+    - 网络不可达：network_unreachable=True，离线宽限不锁（GUI 据此给「未能联网」提示）。
+    - 未激活（试用）：不做授权核对（无码可核），但公共版本端点仍给更新提示。
     """
+    global _launch_verified_active
     state = load_state()
-    if not (state.get("activated") and not state.get("offline")):
-        return {"checked": False,
-                "activated": bool(state.get("activated")),
+    version = _version_info_from(public=_check_latest_version())  # 公共端点，人人可用
+
+    if not state.get("activated"):
+        return {"checked": False, "activated": False,
                 "revoked": bool(state.get("revoked")),
-                "locked": False}
-    fp = _machine_fingerprint()
-    locked = _apply_heartbeat_revocation(state, fp)
-    return {"checked": True,
-            "activated": bool(state.get("activated")),
-            "revoked": bool(state.get("revoked")),
-            "locked": locked}
+                "locked": False, "offline": False,
+                "network_unreachable": False, "version": version}
+
+    if state.get("offline"):
+        # 离线授权：永不触网（隐私），本地可信、不锁；版本信息来自公共端点（通了就用）。
+        return {"checked": False, "activated": True,
+                "revoked": False, "locked": False, "offline": True,
+                "network_unreachable": False, "version": version}
+
+    hb = _safe_heartbeat(state.get("code"), _machine_fingerprint())
+    if hb is None:
+        # 网络不可达：离线宽限，不锁；版本信息已尝试（可能也无）。
+        _launch_verified_active = False
+        return {"checked": False, "activated": True,
+                "revoked": False, "locked": False, "offline": True,
+                "network_unreachable": True, "version": version}
+    if hb.get("status") in ("revoked", "expired"):
+        state["activated"] = False
+        state["revoked"] = True
+        try:
+            save_state(state)
+        except Exception:
+            pass
+        _launch_verified_active = False
+        return {"checked": True, "activated": False, "revoked": True,
+                "locked": True, "offline": False,
+                "network_unreachable": False,
+                "version": _version_info_from(hb, version)}
+    # active
+    state["last_heartbeat"] = int(time.time())
+    try:
+        save_state(state)
+    except Exception:
+        pass
+    _launch_verified_active = True
+    return {"checked": True, "activated": True, "revoked": False,
+            "locked": False, "offline": False,
+            "network_unreachable": False,
+            "version": _version_info_from(hb, version)}
 
 
 def record_fix_used() -> bool:
-    """修正成功后调用：标记试用已用 + 心跳 + 中台登记。
+    """修正成功后调用：标记试用已用 + 中台登记（仅未激活用户）。
 
     **绝不抛异常**（否则会出现「修正稿已生成但未计次」，用户可反复白嫖）。
-    返回是否成功落盘。
+    返回是否成功落盘。已激活用户（启动已核验过、修正时不再联网）跳过中台登记。
     """
     ok = True
+    state = None
     try:
         state = load_state()
         if not state.get("activated"):
@@ -738,7 +868,8 @@ def record_fix_used() -> bool:
         save_state(state)
     except Exception:
         ok = False
-    _safe_trial_sync(_machine_fingerprint(), claim=True)
+    if state is not None and not state.get("activated"):
+        _safe_trial_sync(_machine_fingerprint(), claim=True)
     return ok
 
 

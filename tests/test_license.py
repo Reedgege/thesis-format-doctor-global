@@ -63,6 +63,10 @@ def tmp_license(tmp_path, monkeypatch):
     # 默认：中台不可达（返回 None 表示离线宽限），各测试按需覆盖
     monkeypatch.setattr(lic, "_safe_trial_sync", lambda machine, claim=False: None)
     monkeypatch.setattr(lic, "_safe_heartbeat", lambda code, machine: None)
+    # 版本公告：默认离线（不触网），需要版本路径的用例显式覆盖
+    monkeypatch.setattr(lic, "_check_latest_version", lambda: None)
+    # 启动一次性可信标志：每用例重置，避免跨用例串扰
+    monkeypatch.setattr(lic, "_launch_verified_active", False)
     return p
 
 
@@ -264,6 +268,88 @@ def test_record_fix_used_does_not_extend_heartbeat(tmp_license):
     assert lic.load_state()["last_heartbeat"] == 12345
 
 
+def test_refresh_on_launch_carries_version_fields(tmp_license, monkeypatch):
+    """启动核对：心跳/公共端点带回的版本字段要落到返回里，并正确判定有更新。"""
+    monkeypatch.setattr(lic, "_check_latest_version",
+                        lambda: {"latest_version": "9.9.9",
+                                  "download_url": "https://paperformatpro.com/download",
+                                  "min_version": "1.0.0"})
+    monkeypatch.setattr(lic, "_safe_heartbeat",
+                        lambda code, machine: {"ok": True, "status": "active"})
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    res = lic.refresh_license_on_launch()
+    assert res["checked"] is True
+    assert res["locked"] is False
+    ver = res["version"]
+    assert ver["latest_version"] == "9.9.9"
+    assert ver["download_url"] == "https://paperformatpro.com/download"
+    assert ver["update_available"] is True       # 9.9.9 > 当前 2.3.58
+
+
+def test_refresh_on_launch_version_absent_degrades(tmp_license, monkeypatch):
+    """版本字段缺失/解析失败 → 降级为无更新，绝不抛异常（后端未部署时也能跑）。"""
+    monkeypatch.setattr(lic, "_check_latest_version", lambda: None)
+    monkeypatch.setattr(lic, "_safe_heartbeat",
+                        lambda code, machine: {"ok": True, "status": "active"})
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    res = lic.refresh_license_on_launch()
+    assert res["version"]["update_available"] is False
+    assert res["version"]["latest_version"] is None
+
+
+def test_refresh_on_launch_sets_trusted_flag_when_active(tmp_license, monkeypatch):
+    """启动核验 active → 置位内存可信标志，供修正路径免心跳。"""
+    monkeypatch.setattr(lic, "_check_latest_version", lambda: None)
+    monkeypatch.setattr(lic, "_safe_heartbeat",
+                        lambda code, machine: {"ok": True, "status": "active"})
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    lic.refresh_license_on_launch()
+    assert lic._launch_verified_active is True
+
+
+def test_trusted_flag_skips_per_fix_heartbeat(tmp_license, monkeypatch):
+    """启动已核验（标志置位）→ 修正时不再发心跳，直接放行（用户决策：只核对一次）。"""
+    calls = {"n": 0}
+    def hb(code, machine):
+        calls["n"] += 1
+        return {"ok": True, "status": "active"}
+    monkeypatch.setattr(lic, "_safe_heartbeat", hb)
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    lic._launch_verified_active = True   # 模拟启动已核验
+    g = lic.require_fix_entitlement()
+    assert g["allowed"] is True
+    assert calls["n"] == 0, "启动已核验过，修正时不应再发心跳"
+
+
+def test_record_fix_used_skips_trial_sync_when_activated(tmp_license, monkeypatch):
+    """已激活用户：修正成功不应再向中台登记试用额度（避免每次修正都触网）。"""
+    calls = {"n": 0}
+    def cnt(machine, claim=False):
+        calls["n"] += 1
+        return None
+    monkeypatch.setattr(lic, "_safe_trial_sync", cnt)
+    _sealed_state(activated=True, code="MY-CODE", kind="lifetime",
+                  trial_fix_used=True, machine=lic._machine_fingerprint())
+    assert lic.record_fix_used() is True
+    assert calls["n"] == 0, "激活用户不应在每次修正时同步试用额度"
+
+
+def test_record_fix_used_syncs_trial_when_not_activated(tmp_license, monkeypatch):
+    """未激活用户：修正成功仍要向中台登记试用额度（保持既有行为）。"""
+    calls = {"n": 0}
+    def cnt(machine, claim=False):
+        calls["n"] += 1
+        return None
+    monkeypatch.setattr(lic, "_safe_trial_sync", cnt)
+    _sealed_state(activated=False, trial_fix_used=False)
+    assert lic.record_fix_used() is True
+    assert calls["n"] == 1
+
+
 def test_server_trial_used_locks(tmp_license, monkeypatch):
     """本地被删/丢失，但中台记得该机器已用过试用 → 依然锁。"""
     monkeypatch.setattr(lic, "_safe_trial_sync",
@@ -286,6 +372,7 @@ def test_no_network_endpoints_stale():
     assert lic._P_ACTIVATE == "/api/activate"
     assert lic._P_HEARTBEAT == "/api/heartbeat"
     assert lic._P_TRIAL == "/api/trial"
+    assert lic._P_VERSION == "/api/version"
     assert "/api/auth" not in lic._P_ACTIVATE + lic._P_HEARTBEAT
 
 

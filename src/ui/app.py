@@ -1050,25 +1050,120 @@ class App:
         # 启动即核对在线激活码吊销状态（后台线程，非阻塞；撤销即时生效，方向 A）
         threading.Thread(target=self._refresh_license_at_launch, daemon=True).start()
 
-    # ------------------------------------------------------------ 授权：启动心跳
+    # ------------------------------------------------------------ 授权：启动一次性核验（授权 + 版本）
     def _refresh_license_at_launch(self):
-        """后台线程：启动即向中台核对在线激活码吊销/过期（fail-soft，不阻塞首屏）。"""
+        """后台线程：启动即向中台核对授权 + 版本（fail-soft，不阻塞首屏）。"""
         try:
             res = lic.refresh_license_on_launch()
         except Exception:
             return
-        if res.get("locked"):
-            self.root.after(0, self._on_license_revoked_at_launch)
+        # 回到 UI 线程分状态处理（5 态状态机）
+        self.root.after(0, lambda: self._on_launch_check(res))
 
-    def _on_license_revoked_at_launch(self):
-        msg = ("Your license has been revoked or expired. "
-               "Please re-enter your activation code to continue using fixes.")
-        try:
-            self._set_status(msg, "err")
+    def _on_launch_check(self, res):
+        """启动核验结果分状态处理（5 态状态机）。
+
+        - locked（吊销/过期）→ 提醒 + 激活窗口（合并升级/激活窗，含激活码输入框）
+        - network_unreachable → 软提示「未能联网」，不锁、可继续用
+        - 有更新且未失效 → 软横幅（可关，记住忽略版本）
+        - 有效 + 最新 → 真静默（什么都不做）
+        """
+        tr = self.tr
+        version = res.get("version") or {}
+        if res.get("locked"):
+            self._set_status(tr("gate_revoked"), "err")
             self._set_bar("err")
+            # 直接打开合并的升级/激活窗（含激活码输入框）
+            self._upgrade_dialog()
+            return
+        if res.get("network_unreachable"):
+            self._set_status(tr("launch_offline"), "warn")
+        if version.get("update_available") and not res.get("locked"):
+            self._show_update_banner(version.get("latest_version"),
+                                     version.get("download_url"))
+
+    # ------------------------------------------------------------ 启动版本更新软横幅
+    def _show_update_banner(self, latest, url):
+        """启动发现新版本：非模态软横幅（可关，记住忽略版本）。"""
+        if not latest:
+            return
+        # 已忽略过这个版本 → 不再烦
+        if self._dismissed_version() == latest:
+            return
+        tr = self.tr
+        try:
+            win = tk.Toplevel(self.root)
+            win.withdraw()                 # 先隐藏，定位后再显示，避免闪一下
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.configure(bg=theme.SURFACE)
+            pad = 12
+            tk.Label(win, text="⬆  " + tr("upd_title"), bg=theme.SURFACE,
+                     fg=theme.PRIMARY, font=self.F["F_LABEL"]).pack(
+                side="top", anchor="w", padx=pad, pady=(pad, 2))
+            body = tr("upd_body") % (latest, self.version)
+            tk.Label(win, text=body, bg=theme.SURFACE, fg=theme.TEXT_2,
+                     font=self.F["F_SUBTITLE"], anchor="w", justify="left",
+                     wraplength=360).pack(side="top", anchor="w", padx=pad, pady=(0, 8))
+            row = tk.Frame(win, bg=theme.SURFACE)
+            row.pack(side="top", anchor="w", padx=pad, pady=(0, pad))
+            RoundButton(row, text=tr("upd_btn"), command=lambda: self._open_update(url),
+                        style="primary", font=self.F["F_BTN_S"], height=30,
+                        padx=14).pack(side="left")
+            tk.Button(row, text=tr("upd_later"), bg=theme.SURFACE,
+                      fg=theme.TEXT_3, font=self.F["F_FOOT"], bd=0,
+                      command=lambda: self._dismiss_update(win, latest)).pack(
+                side="left", padx=(10, 0))
+            # 定位到主窗顶部居中
+            self.root.update_idletasks()
+            rx = self.root.winfo_rootx()
+            ry = self.root.winfo_rooty()
+            rw = self.root.winfo_width()
+            win.update_idletasks()
+            ww = win.winfo_reqwidth()
+            win.geometry("+%d+%d" % (rx + max(0, (rw - ww) // 2), ry + 8))
+            win.deiconify()
         except Exception:
             pass
-        messagebox.showwarning("License revoked", msg)
+
+    def _open_update(self, url):
+        try:
+            webbrowser.open(url or i18n.BRAND_BUY_URL)
+        except Exception:
+            pass
+
+    def _dismiss_update(self, win, latest):
+        try:
+            self._set_dismissed_version(latest)
+        except Exception:
+            pass
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    def _dismissed_version(self):
+        try:
+            p = os.path.join(os.path.expanduser("~"), ".paperformatpro",
+                             "update_skip.json")
+            if os.path.isfile(p):
+                import json as _json
+                with open(p, "r", encoding="utf-8") as fh:
+                    return _json.load(fh).get("dismissed_version")
+        except Exception:
+            pass
+        return None
+
+    def _set_dismissed_version(self, v):
+        try:
+            import json as _json
+            p = os.path.join(os.path.expanduser("~"), ".paperformatpro",
+                             "update_skip.json")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as fh:
+                _json.dump({"dismissed_version": v}, fh)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 背景 / 顶栏
     def _sync_columns(self, e=None):
@@ -3122,10 +3217,15 @@ class App:
         finally:
             self._set_busy(False)
 
-        # 授权不足：这是购买决策、不是报错，留在模态框里保证用户一定看见
+        # 授权不足：购买/重新激活决策 → 直接给合并激活窗（含购买+激活码），
+        # 保证用户一定看见；state_error 才用普通警告（那是程序故障，不是购买决策）。
         # （必须等忙态解除后再弹，否则模态框会挡住还没刷新的按钮状态）
         if gate_no_go:
-            messagebox.showwarning(tr("msg_need_activation_title"), gate_no_go)
+            reason = (gate or {}).get("reason")
+            if reason in ("revoked", "needs_reactivation", "trial_exhausted"):
+                self._upgrade_dialog()
+            else:
+                messagebox.showwarning(tr("msg_need_activation_title"), gate_no_go)
             return
 
         if not messagebox.askyesno(tr("msg_fix_confirm_title"),
