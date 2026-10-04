@@ -485,12 +485,17 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     # Advanced 时右栏高度必须稳定"这一真正会回归的硬条件（下方 toggle）。
     # 仅保留一个宽松上限，拦住右栏被异常撑爆（如误把大块内容塞进右卡）：
     assert rh <= lh + 300, "右栏异常高于左栏（疑似被异常撑高）：%d vs %d" % (rh, lh)
-    # 关键回归点：展开左栏 Advanced，右栏高度必须稳定（不跟着涨）
-    right_before = ui._right_card._cv.winfo_height()
+    # 关键回归点：展开左栏 Advanced，右栏**内容**高度必须稳定（不跟着涨）。
+    # 量 winfo_reqheight()（内容自然高度）而非 winfo_height()（分配/渲染高度）：
+    # 左卡展开只动左卡内容，右卡内容不变 → reqheight 必然稳定；而 winfo_height()
+    # 是滚动区/网格按视口给 canvas 分配的像素，headless/不同 DPI 下会因布局重算
+    # 抖动（CI 实测约 ±15px），并非内容真被"拽高"。reqheight 才量到本用例要钉的
+    # 真回归（右卡内容随左卡展开变化），且对渲染残差免疫。
+    right_before = ui._right_card._cv.winfo_reqheight()
     left_before = ui._left_card._cv.winfo_height()
     ui._toggle_advanced()
     ui.root.update_idletasks()
-    right_after = ui._right_card._cv.winfo_height()
+    right_after = ui._right_card._cv.winfo_reqheight()
     left_after = ui._left_card._cv.winfo_height()
     # 关键回归点：展开 Advanced 后左栏必须涨高（v2.2.0 的"不重新测量→新内容被裁
     # 掉"就是这里漏的）。阈值只取 +5：纯几何/缩放屏下 Advanced 展开真实增量约 15~30px，
