@@ -5,7 +5,6 @@ Usage:
   python -m src.main check thesis.docx --spec APA
   python -m src.main check thesis.docx --spec APA --template school-template.docx
   python -m src.main check thesis.docx --ai ai-filled-form.json
-  python -m src.main check thesis.docx --latex school-template.tex
   python -m src.main check thesis.docx --spec APA --json          # structured output
   python -m src.main fix   thesis.docx --spec APA [--out output.docx] [--preview] [--json]
   python -m src.main activate <code>
@@ -30,6 +29,7 @@ from .engine import checker, report as report_mod
 from .engine.docx_reader import DocxReadError
 from .engine.fixer import (
     compute_changes, fix_docx, preview_fix, same_file, unique_output_path,
+    _compute_changes,
 )
 from .engine.questionnaire import build_target
 from .engine.specs import SPEC_ORDER
@@ -101,7 +101,6 @@ def _build_target(args) -> "object":
         template=getattr(args, "template", None),
         ai=getattr(args, "ai", None),
         questionnaire=questionnaire,
-        latex=getattr(args, "latex", None),
     )
 
 
@@ -292,7 +291,7 @@ def cmd_fix(args):
     执行顺序有意为之（**先校验入参，再谈授权**）：
       1) 输入文件是否存在 → rc=2；
       2) ``--out`` 是否指向原件 → rc=2（参数错误，不该被报成「试用已用完」）；
-      3) 构建目标画像（spec/模板/问卷/AI/LaTeX 任一有问题 → rc=2）；
+      3) 构建目标画像（spec/模板/问卷/AI 任一有问题 → rc=2）；
       4) 预览（受门禁）；
       5) 已合规 → rc=0 且**不消耗试用、不触发门禁**（与 `check` 同级的免费体检）；
       6) 授权门禁 → rc=3；
@@ -311,7 +310,7 @@ def cmd_fix(args):
         print("Error: output path points to the same file as the input (original is not overwritten).", file=sys.stderr)
         return 2
 
-    # ③ 目标画像（含 spec / 模板 / 问卷 / AI / LaTeX 的读取与校验）
+    # ③ 目标画像（含 spec / 模板 / 问卷 / AI 的读取与校验）
     try:
         target = _build_target(args)
     except DocxReadError as e:
@@ -345,11 +344,14 @@ def cmd_fix(args):
 
     # ⑤ 已合规 → 不生成副本、不消耗试用额度、不触发门禁
     #    （与 check 同级：单纯读文档比对，无任何副作用，也告诉用户「不用花钱」）
+    #    先 run_check 一次，把 findings 留到 ⑦ 落盘时直接喂给 fix_docx，
+    #    保证「检查出来的」与「实际改的」是同一份结论（check→fix 单一真相源）。
     try:
-        changes = compute_changes(args.docx, target)
+        _chk_prof, _chk_findings = checker.run_check(args.docx, target)
     except DocxReadError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
+    changes = _compute_changes(_chk_prof, target, "en", findings=_chk_findings)
     if not changes:
         msg = "This document already meets the target format. No copy was generated and no trial credit was used."
         if as_json:
@@ -370,7 +372,8 @@ def cmd_fix(args):
     if not args.out:
         out = unique_output_path(out)   # 默认输出不覆盖上一次的修正稿
     try:
-        summary = fix_docx(args.docx, out, target)
+        summary = fix_docx(args.docx, out, target,
+                           findings=_chk_findings, spec=checker.resolve_spec(target))
     except DocxReadError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 2
@@ -435,22 +438,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("check", help="Run a format check from the command line")
     c.add_argument("docx", help="Path to the Word document to check")
-    c.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="Citation style (default APA)")
+    c.add_argument("--spec", default="APA-Student", choices=SPEC_ORDER, help="Citation style (default APA-Student)")
     c.add_argument("--template", help="School template docx (optional; page layout follows the school)")
     c.add_argument("--ai", help="AI-filled questionnaire config (YAML/JSON, optional)")
     c.add_argument("--questionnaire", help="Manually filled questionnaire JSON (optional)")
-    c.add_argument("--latex", help="LaTeX template path (optional, 5th source)")
     c.add_argument("--out", help="Report output path (.md or .docx; .json when used with --json)")
     c.add_argument("--json", action="store_true", help="Output structured results as JSON (for integration/automation)")
     c.set_defaults(func=cmd_check)
 
     f = sub.add_parser("fix", help="One-click fix (format only; first use free, then requires activation)")
     f.add_argument("docx", help="Path to the Word document to fix")
-    f.add_argument("--spec", default="APA", choices=SPEC_ORDER, help="Citation style (default APA)")
+    f.add_argument("--spec", default="APA-Student", choices=SPEC_ORDER, help="Citation style (default APA-Student)")
     f.add_argument("--template", help="School template docx (optional)")
     f.add_argument("--ai", help="AI-filled questionnaire config (YAML/JSON, optional)")
     f.add_argument("--questionnaire", help="Manually filled questionnaire JSON (optional)")
-    f.add_argument("--latex", help="LaTeX template path (optional)")
     f.add_argument("--out", help="Output path (default <name>_fixed.docx; auto-numbered if it already exists)")
     f.add_argument("--preview", action="store_true", help="Preview the changes only; do not write to disk")
     f.add_argument("--json", action="store_true", help="Output structured results as JSON (for integration/automation)")

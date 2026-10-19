@@ -14,7 +14,7 @@ from typing import Optional
 from .checker import ALIGN_LABEL, Finding, summarize
 from .docx_reader import DocumentProfile
 from .questionnaire import TargetProfile
-from .specs import get_spec
+from .specs import get_spec, spec_display
 
 ORIGIN_LABEL = {
     "spec": "General Spec",
@@ -23,8 +23,6 @@ ORIGIN_LABEL = {
     "user": "Questionnaire",
     "ai_import": "AI Import",
     "ai": "AI Import",
-    "latex_template": "LaTeX Template",
-    "latex": "LaTeX Template",
 }
 
 
@@ -35,7 +33,7 @@ class Report:
     conflicts: list = field(default_factory=list)     # (dimension, left desc, right desc)
     findings: list = field(default_factory=list)
     summary: dict = field(default_factory=dict)
-    notes: list = field(default_factory=list)         # questionnaire / LaTeX import notes
+    notes: list = field(default_factory=list)         # questionnaire / AI import notes
     markdown: str = ""
 
 
@@ -45,12 +43,31 @@ _DIM_LABEL = {
     "font_family": "Body font", "font_size_pt": "Body font size",
     "line_spacing": "Line spacing", "heading_levels": "Heading levels",
     "body_alignment": "Body alignment", "first_line_indent_in": "Body first-line indent",
+    "header_distance_in": "Header distance from top",
     "space_after_pt": "Space after paragraph",
+    "columns": "Column layout",
     "reference_style": "Reference format", "reference_hanging_indent_in": "Reference hanging indent",
     "reference_numbered": "Reference numbering",
 }
 
 _ALIGN_LABEL = ALIGN_LABEL  # single source of truth lives in checker
+
+# 能力边界 / 已知限制（跨风格通用；报告固定区块，提示用户哪些做不了）。
+# 海外版全英文铁律：本区块面向客户，必须英文，不得出现中文。
+KNOWN_LIMITATIONS = [
+    "Heading levels 2–5 are only auto-detected when Word Heading styles are applied. "
+    "If you formatted sub-headings with manual bold/larger font (no Heading style), "
+    "the tool leaves them as-is and does not re-level them.",
+    "In-text citation ↔ reference-list correspondence is NOT verified. "
+    "The tool checks reference formatting only, not whether every citation has a matching entry.",
+    "Complex formulas / equations are NOT processed.",
+    "Complex tables (multi-level headers, merged/split cells) are NOT processed. "
+    "Three-line tables only receive the conservative treatment: vertical lines removed, "
+    "with the top, header-bottom and bottom rules kept.",
+    "Cross-references (figures/tables/sections) are NOT processed.",
+    "Reference alphabetical ordering is advisory only (shown as a hint); the tool does "
+    "not reorder your entries, since that changes content.",
+]
 
 
 def _fmt_val(key: str, v) -> str:
@@ -58,7 +75,7 @@ def _fmt_val(key: str, v) -> str:
         return "—"
     if key in ("margin_top_in", "margin_bottom_in", "margin_left_in",
                "margin_right_in", "reference_hanging_indent_in",
-               "first_line_indent_in"):
+               "first_line_indent_in", "header_distance_in"):
         return f'{v}"'
     if key == "font_size_pt":
         return f"{v}pt"
@@ -157,7 +174,7 @@ def build_report(docx_path: str, target: TargetProfile,
     lines.append("# PaperFormat Pro · Format Check Report")
     lines.append("")
     lines.append(f"- Document: `{docx_path}`")
-    lines.append(f"- Spec: {rep.meta['spec_key']}  ·  Source: {rep.meta['source']}")
+    lines.append(f"- Spec: {spec_display(rep.meta['spec_key'])}  ·  Source: {rep.meta['source']}")
     s = rep.summary
     lines.append(f"- Summary: Pass {s.get('pass',0)} · Info {s.get('info',0)} · Warning {s.get('warn',0)} · Fail {s.get('fail',0)}")
     lines.append("")
@@ -205,6 +222,16 @@ def build_report(docx_path: str, target: TargetProfile,
             lines.append(f"- **{dim}**: {left} → {right}")
         lines.append("")
 
+    # —— 能力边界 / 已知限制（固定区块）——
+    lines.append(f"## {_sec_no()}. Capability Boundary / Known Limitations")
+    lines.append("")
+    lines.append("> The following are out of scope by design. Items the tool cannot fix are "
+                 "reported here so you can handle them manually.")
+    lines.append("")
+    for lim in KNOWN_LIMITATIONS:
+        lines.append(f"- {lim}")
+    lines.append("")
+
     lines.append(f"## {_sec_no()}. Detailed Findings")
     lines.append("")
     order = {"fail": 0, "warn": 1, "info": 2, "pass": 3}
@@ -239,7 +266,7 @@ def build_docx_report(rep: "Report", out_path: str) -> str:
     meta = rep.meta
     s = rep.summary or {}
     doc.add_paragraph(f"Document: {meta.get('docx', '')}")
-    doc.add_paragraph(f"Spec: {meta.get('spec_key', '')}  ·  Source: {meta.get('source', '')}")
+    doc.add_paragraph(f"Spec: {spec_display(meta.get('spec_key', '') or 'Other')}  ·  Source: {meta.get('source', '')}")
     doc.add_paragraph(
         f"Summary: Pass {s.get('pass', 0)} · Info {s.get('info', 0)} · "
         f"Warning {s.get('warn', 0)} · Fail {s.get('fail', 0)}"
@@ -296,7 +323,18 @@ def build_docx_report(rep: "Report", out_path: str) -> str:
             r.bold = True
             p.add_run(f"{left} → {right}")
 
-    # —— Section 4: Detailed Findings ——
+    # —— Section: Capability Boundary / Known Limitations (fixed block) ——
+    doc.add_heading(f"{_sec_no()}. Capability Boundary / Known Limitations", level=1)
+    lim_note = doc.add_paragraph()
+    lnr = lim_note.add_run(
+        "The following are out of scope by design. Items the tool cannot fix are reported "
+        "here so you can handle them manually."
+    )
+    lnr.italic = True
+    for lim in KNOWN_LIMITATIONS:
+        doc.add_paragraph(lim, style="List Bullet")
+
+    # —— Section: Detailed Findings ——
     doc.add_heading(f"{_sec_no()}. Detailed Findings", level=1)
     order = {"fail": 0, "warn": 1, "info": 2, "pass": 3}
     sev_tag = {"pass": "PASS", "warn": "WARN", "fail": "FAIL", "info": "INFO"}

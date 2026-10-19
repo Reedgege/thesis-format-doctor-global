@@ -92,8 +92,6 @@ ICON_NAME_MAP = {
     "citation": "citation_style",
     "bank": "university_template",  # University template 字段行
     "university": "university_template",
-    "code": "latex_template",       # LaTeX template 字段行
-    "latex": "latex_template",
     "gear": "advanced_options",     # Advanced options 折叠条标题
     "sliders": "review_and_fix",    # Review & Fix 标题（用户补生成的 PNG）
     # 顶部隐私 / 右侧信任区
@@ -114,7 +112,6 @@ ICON_DEFAULT_SIZE = {
     "citation_style": 26,
     "advanced_options": 26,
     "university_template": 26,
-    "latex_template": 26,
     "questionnaire": 26,
     "import_config": 26,
     "thesis_local_privacy": 22,

@@ -19,7 +19,7 @@ import sys
 
 from docx import Document
 from docx.shared import Pt, Inches
-from docx.enum.text import WD_LINE_SPACING
+from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -235,3 +235,47 @@ def test_apa_missing_year_warn(tmp_path):
     prof, findings = checker.run_check(str(docx), target)
     ref = [f for f in findings if f.dimension == "reference"][0]
     assert ref.severity == "warn", f"缺年份应 warn，实际 {ref.severity}"
+
+
+def test_apa_reference_heading_bold_centered(tmp_path):
+    """APA 7th 要求 'References' 标题粗体+居中于页顶（Purdue OWL general_format）。
+
+    分三种情形：(a) 手动段落未粗体未居中 → info 提示；(b) 手动段落已粗体+居中 → 无问题；
+    (c) 用 Heading 样式承载（官方样例即如此）→ 信任样式，判 pass，绝不误伤金标准论文。"""
+    # (a) 手动 'References'：未粗体、未居中
+    doc = Document()
+    doc.add_paragraph("Body text.")
+    doc.add_paragraph("References")
+    doc.add_paragraph("Smith, J. (2020). A book. Publisher.")
+    docx = tmp_path / "ref_plain.docx"
+    doc.save(str(docx))
+    prof, findings = checker.run_check(str(docx), target_from_spec("APA-Student"))
+    rh = [f for f in findings if f.dimension == "reference_heading"]
+    assert rh and rh[0].severity == "info", f"(a) 手动未格式化应 info，实际 {rh}"
+
+    # (b) 手动 'References'：已粗体+居中
+    doc = Document()
+    doc.add_paragraph("Body text.")
+    p = doc.add_paragraph("References")
+    for r in p.runs:
+        r.bold = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph("Smith, J. (2020). A book. Publisher.")
+    docx = tmp_path / "ref_ok.docx"
+    doc.save(str(docx))
+    prof, findings = checker.run_check(str(docx), target_from_spec("APA-Student"))
+    rh = [f for f in findings if f.dimension == "reference_heading"]
+    assert not any(f.severity in ("info", "warn", "fail") for f in rh), \
+        f"(b) 已格式化不应报问题，实际 {rh}"
+
+    # (c) Heading 样式承载的 'References'（官方样例形态）
+    doc = Document()
+    doc.add_paragraph("Body text.")
+    p = doc.add_paragraph("References")
+    p.style = doc.styles["Heading 1"]
+    doc.add_paragraph("Smith, J. (2020). A book. Publisher.")
+    docx = tmp_path / "ref_style.docx"
+    doc.save(str(docx))
+    prof, findings = checker.run_check(str(docx), target_from_spec("APA-Student"))
+    rh = [f for f in findings if f.dimension == "reference_heading"]
+    assert rh and rh[0].severity == "pass", f"(c) Heading 样式应 pass，实际 {rh}"

@@ -156,28 +156,32 @@ class ModalShell(tk.Toplevel):
             inner_h = max(ih, h - 2)
             self._cv.itemconfigure(self._win, width=inner_w, height=inner_h)
             self._cv.configure(scrollregion=(0, 0, inner_w, inner_h))
+            # 显隐用**两个不同阈值**（滞回带）：滚动条是 pack 进窗口右侧的，它一出现
+            # Canvas 就变窄 → 里面自动换行的文字重新折行 → 内容高度跟着变 → 又踩回
+            # 阈值另一侧 → 滚动条再消失……卡在临界点上会一直来回抽（用户看到的是
+            # "内容一直在抖/漂移"）。留 6px 的回差，一旦定了就咬住不动。
             if ih > h + 2:
                 if not self._sb.winfo_ismapped():
                     self._sb.pack(side="right", fill="y")
-            else:
+            elif ih < h - 6:
                 if self._sb.winfo_ismapped():
                     self._sb.pack_forget()
+            # 落在 [h-6, h+2] 回差带里：维持现状，不动作
         except Exception:
             pass
         finally:
             self._relaying = False
 
     def _on_scroll(self, first: str, last: str):
-        """Canvas 的 yscrollcommand 回调：同步滚动条并隐藏/显示。"""
+        """Canvas 的 yscrollcommand 回调：**只**同步滚动条位置。
+
+        显隐的唯一权威是 ``_sync_scroll``（它才知道内容自然高度 vs 可视高度）。
+        旧版这里也自己 pack/pack_forget 一遍滚动条 —— 两处各判一次、判据还不一样
+        （这边看 yview 比例，那边看像素高），必然互相拆台：内容刚好卡在临界高度时
+        滚动条一会儿出来一会儿藏，Canvas 宽度跟着变，整个弹窗内容左右晃。
+        """
         try:
             self._sb.set(first, last)
-            f, l = float(first), float(last)
-            if f <= 0.0 and l >= 1.0:
-                if self._sb.winfo_ismapped():
-                    self._sb.pack_forget()
-            else:
-                if not self._sb.winfo_ismapped():
-                    self._sb.pack(side="right", fill="y")
         except Exception:
             pass
 
@@ -190,6 +194,19 @@ class ModalShell(tk.Toplevel):
         return "break"
 
     # ---------------------------------------------------------------- 对外
+    def refresh_layout(self):
+        """内容改动后强制重算滚动区与滚动条（不依赖 ``<Configure>`` 是否派发）。
+
+        调用方往 ``content`` 里加完内容、或改动了内容高度之后调用它，保证
+        ``scrollregion`` 等于内容此刻的自然高度 —— 否则会出现「内容被裁且滚不到」
+        （小屏幕上内容超出可视区时尤其明显）。幂等、开销很小。
+        """
+        try:
+            self.update_idletasks()
+            self._sync_scroll(self._cv.winfo_width(), self._cv.winfo_height())
+        except Exception:
+            pass
+
     @property
     def content(self) -> tk.Frame:
         """内容容器：调用方把正文 pack/grid 进来（标题与按钮栏由本类负责）。"""

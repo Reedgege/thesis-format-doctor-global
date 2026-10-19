@@ -1,6 +1,6 @@
 """海外版 v2.3.19「× 清除」按钮回归测试（tkinter，真起窗口）。
 
-钉住论文 / 学校模板 / LaTeX / AI 配置 四个导入行的小「✕」清除行为：
+钉住论文 / 学校模板 / AI 配置 三个导入行的小「✕」清除行为：
 · 选中后对应 ✕ 出现；
 · 点 ✕ 清空该选择（StringVar 置空）；
 · 已做的检查/修正结论随之作废、回到初始态；
@@ -90,16 +90,10 @@ def test_template_clear_preserves_other_inputs(ui):
     assert not _visible(ui._tpl_clear), "清空后模板 ✕ 应隐藏"
 
 
-def test_latex_and_ai_clear(ui):
-    ui.latex_template.set("C:/tmp/main.tex")
+def test_ai_clear(ui):
     ui.ai_json.set("C:/tmp/ai.json")
     ui._refresh_rows()
-    assert _visible(ui._latex_clear), "选中 LaTeX 后 ✕ 应显示"
     assert _visible(ui._ai_clear), "选中 AI 配置后 ✕ 应显示"
-
-    ui._clear_input("latex")
-    assert ui.latex_template.get() == "", "LaTeX 应被清空"
-    assert not _visible(ui._latex_clear), "清空后 LaTeX ✕ 应隐藏"
 
     ui._clear_input("ai")
     assert ui.ai_json.get() == "", "AI 配置应被清空"

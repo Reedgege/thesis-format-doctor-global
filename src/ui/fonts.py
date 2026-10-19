@@ -73,8 +73,23 @@ class Fonts:
         self._apply_size()
 
     def _apply_size(self):
+        """按当前缩放系数重设全部字号（**跳过没变化的那些**）。
+
+        字号是 ``int(round(base*scale))`` 量化过的：拖动窗口时 ``_on_resize`` 每
+        ~2% 宽度就会喊一次 ``apply_scale``，但绝大多数步进算出来的**整数字号没变**。
+        旧版照样 ``configure(size=...)`` 一遍 —— tkinter 的命名 Font 一改就向所有
+        引用它的控件广播变更 → 全窗文字重新排版 → 卡片量高、滚动区重算 →
+        肉眼看就是"拖窗口时内容一直在抖"。这里先比再改，没有实际变化就一个都不动，
+        拖动过程只在跨过整数字号门槛时才真正重排一次。
+        """
         for f, base in self._fonts.values():
             try:
-                f.configure(size=max(MIN_SIZE, int(round(base * self._scale))))
+                size = max(MIN_SIZE, int(round(base * self._scale)))
+            except Exception:
+                continue
+            try:
+                if int(f.cget("size")) == size:
+                    continue        # 整数字号没变：不重设，不触发全窗重排
+                f.configure(size=size)
             except Exception:
                 pass

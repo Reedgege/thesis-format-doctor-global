@@ -613,7 +613,7 @@ def test_scroll_area_shows_bar_only_when_needed(_tk_session):
 
 
 def test_long_filename_does_not_cover_clear_button(ui):
-    """v2.3.33 回归：超长模板/LaTeX 文件名不得盖住右侧「✕」清除按钮。
+    """v2.3.33 回归：超长模板/AI 文件名不得盖住右侧「✕」清除按钮。
 
     旧实现文件名 label 用 ``expand=True`` 吸收全部宽度并溢出到右框，长文件名会盖住
     ✕；修复后拆成「左框(文件名) / 右框(✕+⌄)」两框，文件名被框宽裁住、动态加省略号，

@@ -9,6 +9,9 @@ _purpose: |-
   into concrete values following the fields below, producing a YAML with the same
   structure (the older JSON format is also supported). Then load it into PaperFormat Pro
   with "Import AI form".
+  The format requirements cover page layout (margins, body font, font size, line spacing,
+  first-line indent, paragraph spacing, and the column layout — single vs two-column),
+  heading levels, and the reference style.
 
 _how_to_fill: |-
   The AI should fill the format requirements as concrete values. Both structures are supported:
@@ -19,6 +22,13 @@ _how_to_fill: |-
   (2.0 = double, 1.5 = one-and-a-half, 1.0 = single).
   body_alignment must be one of left / justify / center / right
   (left = left-aligned, justify = justified).
+  header_distance_in is the distance from the top edge of the page to the header, in inches.
+  Only fill it if the requirement states it (MLA 9 uses 0.5); otherwise omit it.
+  columns is the page column layout and MUST be output as an integer:
+  1 = single column (the default for most theses and papers),
+  2 = two-column (typically an IEEE conference/journal template).
+  Try to determine it from the requirement; if the requirement says nothing about the
+  column layout, use 1 rather than omitting it.
 
 fields:
   - key: margin_top_in
@@ -62,6 +72,15 @@ fields:
     label: Space after paragraph
     unit: pt
     example: 0.0
+  - key: header_distance_in
+    label: Header distance from top
+    unit: in
+    example: 0.5
+  - key: columns
+    label: Columns
+    unit: ""
+    example: 1
+    allowed: [1, 2]
   - key: heading_levels
     label: Heading levels
     unit: levels
@@ -70,7 +89,7 @@ fields:
     label: Reference format
     unit: ""
     example: APA
-    allowed: [APA, MLA, Chicago, IEEE, Harvard]
+    allowed: [APA, MLA, IEEE]
   - key: reference_hanging_indent_in
     label: Reference hanging indent
     unit: in
@@ -91,6 +110,8 @@ example_filled:
   body_alignment: left
   first_line_indent_in: 0.5
   space_after_pt: 0.0
+  # header_distance_in: 0.5   # optional — only when the requirement states it (MLA 9)
+  columns: 1
   heading_levels: 5
   reference_style: APA
   reference_hanging_indent_in: 0.5

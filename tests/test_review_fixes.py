@@ -6,7 +6,7 @@
 - P0-2 输出路径按 realpath/normcase/samefile 判定，大小写与相对路径变体不得覆盖原件。
 - P1   标题保护覆盖 Title/伪标题/样式级 outlineLvl；不再改 Normal 字体名；
         字体采样排除标题段；rFonts eastAsia 兜底；
-        LaTeX 剥离注释、引用维度来源标注正确；五通道优先级与引用维度冲突登记；
+        四通道优先级与引用维度冲突登记；
         参考文献 Finding 带 source；CLI preview --json 走字节流。
 """
 
@@ -34,7 +34,6 @@ sys.path.insert(0, ROOT)
 from src.engine import checker
 from src.engine.docx_reader import read_docx, is_heading
 from src.engine.fixer import compute_changes, fix_docx, preview_fix, same_file
-from src.engine.latex_template import parse_latex_source
 from src.engine.questionnaire import TargetProfile, build_target
 from src.engine.specs import get_spec
 from src import main as cli
@@ -327,52 +326,36 @@ def test_east_asia_font_read(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# P1 LaTeX / 合并 / 检查
+# P1 合并 / 检查
 # ---------------------------------------------------------------------------
 
-def test_latex_comments_are_stripped():
-    src = "% \\doublespacing\n\\documentclass{article}\n% \\bibliographystyle{IEEEtran}\n"
-    t = parse_latex_source(src)
-    assert "line_spacing" not in t.page, "被注释掉的行距声明不得采信"
-    assert t.reference_style is None, "被注释掉的引用风格不得采信"
-
-
-def test_latex_escaped_percent_kept():
-    # \% 是转义的百分号，不是注释
-    src = "\\documentclass[12pt]{article}  % 12pt 正文\n"
-    t = parse_latex_source(src)
-    assert t.page.get("font_size_pt") == 12.0
-
-
-def test_latex_reference_resolution_label(tmp_path):
-    f = tmp_path / "s.cls"
-    f.write_text("\\bibliographystyle{IEEEtran}", encoding="utf-8")
-    t = build_target("APA", latex=str(f))
-    assert t.resolution.get("reference_style") == "latex_template", \
-        "LaTeX 提供的引用维度不得被标成「学校模板」"
-
-
-def test_channel_priority_template_beats_latex(tmp_path):
+def test_channel_priority_template_beats_ai(tmp_path):
     tpl = Document()
     for s in tpl.sections:
         s.left_margin = Inches(1.5)
     tpl.add_paragraph("Body.")
     tpl_path = tmp_path / "tpl.docx"
     tpl.save(str(tpl_path))
-    tex = tmp_path / "t.tex"
-    tex.write_text("\\usepackage[margin=1in]{geometry}", encoding="utf-8")
-    t = build_target("APA", template=str(tpl_path), latex=str(tex))
+    ai = tmp_path / "ai.json"
+    ai.write_text(json.dumps({"margin_left_in": 1.0}), encoding="utf-8")
+    t = build_target("APA", template=str(tpl_path), ai=str(ai))
     assert t.page.get("margin_left_in") == pytest.approx(1.5), \
-        "FR2 规定 template 优先级高于 latex"
+        "FR2 规定 template 优先级高于 ai"
+
+
+def test_channel_priority_ai_beats_questionnaire(tmp_path):
+    ai = tmp_path / "ai.json"
+    ai.write_text(json.dumps({"margin_top_in": 2.0}), encoding="utf-8")
+    t = build_target("APA", ai=str(ai), questionnaire={"margin_top_in": 1.0})
+    assert t.page.get("margin_top_in") == pytest.approx(2.0), \
+        "FR2 规定 ai 优先级高于 questionnaire"
 
 
 def test_reference_conflict_registered(tmp_path):
     ai = tmp_path / "ai.json"
     ai.write_text(json.dumps({"margin_top_in": 1.0, "reference_style": "IEEE"}),
                   encoding="utf-8")
-    tex = tmp_path / "t.tex"
-    tex.write_text("\\bibliographystyle{apacite}", encoding="utf-8")
-    t = build_target("APA", ai=str(ai), latex=str(tex))
+    t = build_target("APA", ai=str(ai), questionnaire={"reference_style": "APA"})
     dims = {c["dim"] for c in t.conflicts}
     assert "reference_style" in dims, "引用维度的来源冲突必须登记（此前会静默丢失）"
 
@@ -441,7 +424,7 @@ def test_preview_reference_line_only_when_needed(tmp_path):
 
 def _fix_args(docx, **kw):
     base = dict(docx=docx, spec="APA", preview=True, json=True, out=None,
-                template=None, ai=None, questionnaire=None, latex=None)
+                template=None, ai=None, questionnaire=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -485,7 +468,7 @@ def test_cli_preview_json_utf8_bytes(tmp_path):
     # （此前跑真实指纹会命中"该机器试用已用"，rc=3 假红）。
     env["TFD_FORCE_OFFLINE"] = "1"
     r = subprocess.run(
-        [sys.executable, "-m", "src.main", "fix", str(src), "--spec", "APA",
+        [sys.executable, "-m", "src.main", "fix", str(src), "--spec", "APA-Student",
          "--preview", "--json"],
         cwd=ROOT, env=env, capture_output=True)
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
@@ -584,7 +567,12 @@ def test_out_same_file_rejected_without_consuming_trial(tmp_path, monkeypatch):
 
 
 def test_report_section_numbers_are_dense(tmp_path):
-    """无「提示」无「冲突」时，章节号必须连续（一、二），不得出现「一之二」或跳号。"""
+    """无「提示」无「冲突」时，章节号仍须连续无跳号（1,2,3…），不得出现「一之二」或空洞。
+
+    注：报告固定含「Dimension Resolution / Capability Boundary / Detailed Findings」
+    等区块，故章节数不固定为 2；本测试只校验编号连续（无跳号、无重复）。
+    """
+    import re as _re
     from src.engine.docx_reader import read_docx
     from src.engine.report import build_report
     from src.engine.checker import run_check
@@ -599,15 +587,16 @@ def test_report_section_numbers_are_dense(tmp_path):
     _prof2, findings = run_check(str(src), target)
     md = build_report(str(src), target, prof, findings).markdown
 
-    heads = [ln for ln in md.splitlines() if ln.startswith("## ")]
-    assert heads[0].startswith("## 1."), heads
-    assert heads[1].startswith("## 2."), heads
+    sec_nos = [int(_re.match(r"## (\d+)\.", ln).group(1))
+               for ln in md.splitlines() if _re.match(r"## \d+\.", ln)]
+    assert sec_nos, "report must contain at least one numbered section"
+    assert sec_nos == list(range(1, len(sec_nos) + 1)), \
+        f"section numbers must be dense (1,2,3…), got {sec_nos}"
     assert "一之二" not in md
-    assert "## 3." not in md, "只有两段时不应出现三"
 
 
 def test_report_section_numbers_with_notes(tmp_path):
-    """有 notes（例如 LaTeX 空结果提示）时，编号顺延且冲突段继续顺延。"""
+    """有 notes（例如模板空结果提示）时，编号顺延且冲突段继续顺延。"""
     from src.engine.docx_reader import read_docx
     from src.engine.report import build_report
     from src.engine.checker import run_check
@@ -618,7 +607,7 @@ def test_report_section_numbers_with_notes(tmp_path):
     doc.save(str(src))
 
     target = TargetProfile(page={"margin_top_in": 1.0},
-                           notes=["LaTeX 未解析出可用的页面维度"])
+                           notes=["Template provided no usable page dimensions"])
     prof = read_docx(str(src))
     _p, fs = run_check(str(src), target)
     md = build_report(str(src), target, prof, fs).markdown

@@ -13,7 +13,7 @@ v2.2.0 按设计规格书重做视觉层（老板 2026-09-12 交办），**功�
   - 本文件         —— 布局骨架 + 交互状态机
 - 三步走（Prepare / Check / Fix）收成**一条极简进度条**（不再是横排步进圆点 / 竖排时间线）；
   1/3 计数、章节角标（Ⅰ·SELECT / Ⅱ·PROCESS）按规格删除。
-- 高级设置（学校模板 / LaTeX / 问卷 / 配置导入）统一收进 **Advanced options 折叠区**，
+- 高级设置（学校模板 / 问卷 / 配置导入）统一收进 **Advanced options 折叠区**，
   主界面只留必填的「引用规范 + 上传 Word」，落实渐进式披露。
 - 主按钮改成**上下文相关**：未选论文=置灰、就绪=Check formatting、
   出结果=Fix N issues、改完=Review changes（见 ``_sync_ui``）。
@@ -24,7 +24,7 @@ v2.2.0 按设计规格书重做视觉层（老板 2026-09-12 交办），**功�
 3. **品牌口径只留官网与邮箱**，不出现微信 / 公众号 / 小程序（海外用户不用）。
 
 功能面（不变）：
-  选规范 →（可选）学校模板 / LaTeX / 问卷 / 配置导入 → 选论文
+  选规范 →（可选）学校模板 / 问卷 / 配置导入 → 选论文
   → 运行体检（免费不限次）→ 一键修正（首次免费，之后需激活码）。
 GUI 与 CLI 共用同一套 engine，保证逻辑唯一、离线安全。
 """
@@ -48,11 +48,12 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..engine import checker, report as report_mod
 from ..engine.docx_reader import DocxReadError
-from ..engine.fixer import compute_changes, fix_docx, same_file
+from ..engine.fixer import compute_changes, fix_docx, same_file, _compute_changes
 from ..engine.questionnaire import (
     FIELD_RANGES, QUESTIONNAIRE_SCHEMA, TargetProfile, build_target,
+    apply_page_overrides,
 )
-from ..engine.specs import SPEC_ORDER
+from ..engine.specs import SPEC_ORDER, spec_display
 from ..license import license as lic
 from .. import versioninfo
 from . import i18n, iconpath, theme
@@ -170,13 +171,10 @@ _TEMPLATE_PATH = os.path.join(_HERE, "..", "data", "ai_questionnaire_template.ya
 
 _FIELD_RANGE = FIELD_RANGES
 
-# 引用规范下拉的展示名：引擎 key 不变（build_target 仍收 APA），
-# 仅把界面上的 APA 显示成设计稿的 "APA 7th edition"。
-_SPEC_DISPLAY = {"APA": "APA 7th edition"}
-
-
-def _spec_display(key: str) -> str:
-    return _SPEC_DISPLAY.get(key, key)
+# 引用规范下拉的展示名：引擎 key 已是分层后的 APA-Student / APA-Professional，
+# 这里只把界面展示名写清楚（学生版 / 专业版），其余风格用 key 本身。
+# 展示名统一取自 engine.specs.spec_display（与报告共用单一来源）。
+_spec_display = spec_display
 
 # 字段行左侧的小圆徽标：v2.3.17 起由 IconBadge 内部自动查找对应 PNG 图片；
 # 这里的名字仍是设计稿线描图标名，映射表在 src/ui/icon_loader.ICON_NAME_MAP。
@@ -185,7 +183,6 @@ _FIELD_ICONS = {
     "row_spec_title": "quote",
     "row_paper_title": "paper",
     "row_template_title": "bank",
-    "row_latex_title": "code",
 }
 
 
@@ -430,12 +427,17 @@ class App:
         self._status_spec = (None, "idle", "")   # 状态行最近一次内容（切语言后重渲染）
 
         # 输入源
-        self.spec_key = tk.StringVar(value="APA")
+        self.spec_key = tk.StringVar(value="APA-Student")
         self.school_template = tk.StringVar(value="")
-        self.latex_template = tk.StringVar(value="")
         self.ai_json = tk.StringVar(value="")
         self.docx_path = tk.StringVar(value="")
         self.questionnaire_data: dict = {}
+        # 6 选 1 来源：前 4 项带内置规范（spec_key 非空），后 2 项走无规范基线
+        self.source_mode = tk.StringVar(value="src_apa_student")
+        # 学校模板子下拉：引用 / 参考文献风格（默认留空=不检查引用）
+        self.school_ref_style = tk.StringVar(value="")
+        # 高级区是否可用（选内置规范时整片置灰）
+        self._adv_enabled = True
 
         _sw = root.winfo_screenwidth()
         _sh = root.winfo_screenheight()
@@ -1428,25 +1430,16 @@ class App:
         self._spacer(parent)
         self._hairline(parent)
 
-        # ② 引用规范（必选）—— 上传后的次要设置
-        self._build_field_spec(parent)
+        # ② 格式来源（必选）：6 选 1 互斥
+        self._build_source_selector(parent)
 
         self._spacer(parent)
         self._hairline(parent)
 
-        # ②-b 学校模板（可选）—— 提到高级选项之外、与其并列（v2.3.28 左卡对称：
-        # 论文 → 引用规范 → 学校模板 → 高级选项(收起) → 导出，与右卡结构呼应）
-        self._field_label(parent, "row_template_title", required=False)
-        self._helper(parent, "row_template_desc")
-        self._tpl_name, self._tpl_clear = self._select_field(
-            parent, "row_template_placeholder", self._pick_template,
-            on_clear=lambda: self._clear_input("template"))
-
-        self._spacer(parent)
-        self._hairline(parent)
-
-        # ③ 高级选项折叠区（默认收起，置于学校模板之下）
+        # ③ 高级选项折叠区：学校模板 / 自定义（选内置规范时整片置灰）
         self._build_advanced(parent)
+        # 初始化高级区可用态（与当前来源一致：默认内置规范 → 置灰折叠）
+        self._apply_source_mode(self.source_mode.get(), refresh=False)
 
         # ④ 导出 AI 模板：属于「导入配置」的一部分，放在配置区下方（v2.3.19 按钮重组：
         # 左卡=输入/配置，右卡=操作/结果）。它不是主操作，用次级按钮，不抢视觉主角。
@@ -1532,42 +1525,136 @@ class App:
         except Exception:
             pass
 
-    def _build_field_spec(self, parent):
-        """引用规范（必选）：下拉框 + 一行「Other 用法」轻提示。"""
+    def _build_source_selector(self, parent):
+        """格式来源（必选）：6 选 1 互斥。
+
+        前 4 项带内置规范（spec_key 非空，自动套用其规则）；后 2 项
+        （学校模板 / 自定义）走无规范基线，页面与引用完全由用户素材决定。
+        选内置规范时高级区整片置灰并折叠；选学校模板 / 自定义时高级区自动展开。
+        """
         F = self.F
-        row = self._field_label(parent, "row_spec_title", required=True)
-        # 设计稿里 Citation style 的下拉与标签**同行**右对齐（省一整行高度）
-        # 设计稿把默认规范显示成 "APA 7th edition"，但引擎 key 仍是 APA
-        # （build_target 只认 SPEC_ORDER 里的 key），这里只做展示层映射。
-        self._spec_disp = tk.StringVar(value=_spec_display(self.spec_key.get()))
-        self._spec_cb = ttk.Combobox(row, textvariable=self._spec_disp,
-                                     values=[_spec_display(k) for k in SPEC_ORDER],
-                                     state="readonly", font=F["F_BODY"], width=18)
-        self._spec_cb.pack(side="right")
-        self._spec_cb.bind("<<ComboboxSelected>>", self._on_spec_pick)
-        self._helper(parent, "row_spec_desc")
+        self._field_label(parent, "source_title", required=True)
+        # 6 选 1 互斥来源表：(spec_key 或 None, i18n 显示键)
+        self._source_map = [
+            ("APA-Student", "src_apa_student"),
+            ("APA-Professional", "src_apa_pro"),
+            ("MLA", "src_mla"),
+            ("IEEE", "src_ieee"),
+            (None, "src_school"),
+            (None, "src_custom"),
+        ]
+        disp_values = [self.tr(k) for _, k in self._source_map]
+        self._source_disp = tk.StringVar(value=self.tr(self.source_mode.get()))
+        self._source_cb = ttk.Combobox(parent, textvariable=self._source_disp,
+                                       values=disp_values, state="readonly",
+                                       font=F["F_BODY"], width=30)
+        self._source_cb.pack(fill="x", pady=(0, theme.ROW_GAP))
+        self._source_cb.bind("<<ComboboxSelected>>", self._on_source_pick)
+        self._helper(parent, "source_helper")
         # 下拉**弹出列表**的字体不受 widget 的 font 影响，得单独喂给 option 库，
         # 否则弹出来还是 Tk 默认字体（观感直接掉档）。
         try:
             self.root.option_add("*TCombobox*Listbox.font", F["F_BODY"])
         except Exception:
             pass
-        # 换引用规范会让上一次的体检结论失效（否则结论与所选规范对不上）
+        # 来源变化会让上一次的体检结论失效（否则结论与所选来源对不上）。
+        # 但**正常交互路径**（_on_source_pick）自己会在同一道重绘闸门里完成
+        # 「折叠/展开 + 作废旧结论 + 文本刷新 + 重测量」，这里若再跑一遍
+        # _on_input_changed，同一次选择就会触发两轮重排、两次上屏 →
+        # 中间帧出现「卡片被撕开 / 同一行字出现两遍」（花屏同类现象）。
+        # 故用 _applying_source 重入标志挡住重复的一遍；外部程序化改 source_mode
+        # 仍能享受这条兜底刷新。
         try:
-            self.spec_key.trace_add("write", lambda *a: self._on_input_changed())
+            self.source_mode.trace_add("write", lambda *a: self._on_source_trace())
         except Exception:
             pass
 
-    def _on_spec_pick(self, _e=None):
-        """下拉展示名 → 引擎 key（选 APA 7th edition 仍写回 APA）。"""
+    def _on_source_trace(self):
+        """source_mode 变化的兜底刷新（正常交互路径已被 _applying_source 挡住）。"""
+        if getattr(self, "_applying_source", False):
+            return
+        self._on_input_changed()
+
+    def _on_source_pick(self, _e=None):
+        """下拉展示名 → 来源模式键（再驱动 spec_key 与高级区可用态）。"""
         try:
-            disp = self._spec_disp.get()
+            disp = self._source_disp.get()
         except Exception:
             return
-        for k in SPEC_ORDER:
-            if _spec_display(k) == disp:
-                self.spec_key.set(k)
-                return
+        mode_key = None
+        for _, k in self._source_map:
+            if self.tr(k) == disp:
+                mode_key = k
+                break
+        if mode_key is None:
+            return
+        # 置重入标志：.set() 会触发 trace，但完整收口交给下面的 _apply_source_mode
+        # （一次操作只应该重排/上屏一次）。
+        self._applying_source = True
+        try:
+            self.source_mode.set(mode_key)
+            self._apply_source_mode(mode_key, refresh=True)
+        finally:
+            self._applying_source = False
+
+    def _apply_source_mode(self, mode_key, refresh=True):
+        """按来源模式设置 spec_key + 高级区可用 / 展开态。
+
+        - 内置规范（前 4 项）：spec_key 落盘、高级区整片置灰并折叠；
+        - 学校模板 / 自定义：spec_key 清空、高级区展开且可用。
+
+        refresh=False 用于初始构建期（不触发 _relayout_all，避免访问尚未建好的控件）；
+        用户交互时 refresh=True，再做完整重测量与刷新。
+        """
+        spec_key = None
+        for sk, k in self._source_map:
+            if k == mode_key:
+                spec_key = sk
+                break
+        self.spec_key.set(spec_key if spec_key is not None else "")
+        self._adv_enabled = spec_key is None
+
+        def _flip():
+            """折叠/展开高级区并刷新置灰态（纯显隐，不含测量）。"""
+            if spec_key is not None:
+                if getattr(self, "_adv_open", False):
+                    self._adv_body.pack_forget()
+                    self._adv_chev.config(text="▸")
+                    self._adv_open = False
+            else:
+                if not getattr(self, "_adv_open", False):
+                    self._adv_body.pack(fill="x", pady=(theme.SECTION_GAP, 0))
+                    self._adv_chev.config(text="▾")
+                    self._adv_open = True
+            self._paint_advanced_state()
+
+        if not refresh:
+            # 初始构建期：尚未建好全部控件，只做显隐，不触发测量。
+            _flip()
+            return
+        # 整段（显隐 + 作废旧结论 + 文本刷新 + 重测量）关在同一道重绘闸门里：
+        # 切来源会折叠/展开高级区，与 _toggle_advanced 属同一类花屏场景
+        # （实测中间帧会出现「卡片被撕开 / 同一行字出现两遍」）。
+        with self._paused_paint():
+            _flip()
+            # 来源变了 → 上一次的体检结论不再可信（与旧 trace 行为一致，但只做一次）
+            if getattr(self, "_checked_path", ""):
+                try:
+                    self._invalidate_results()
+                except Exception:
+                    pass
+            self._refresh_rows()      # 内部 _sync_ui → _relayout_all（可嵌套闸门）
+        # 出闸门后一次完整刷新，最终画面立刻上屏（不等事件循环）。
+        self._flush_frame()
+
+    def _paint_advanced_state(self):
+        """高级区可用态外观：可用=正常色，禁用=灰色（标题 + 箭头）。"""
+        if self._adv_enabled:
+            self._adv_title.config(fg=theme.TEXT)
+            self._adv_chev.config(fg=theme.SECONDARY)
+        else:
+            self._adv_title.config(fg=theme.TEXT_3)
+            self._adv_chev.config(fg=theme.TEXT_3)
 
     def _select_field(self, parent, placeholder_key: str, cmd, on_clear=None):
         """「下拉框外观 + 打开文件行为」的控件。
@@ -1670,59 +1757,105 @@ class App:
         self._adv_body = tk.Frame(bar.inner, bg=theme.SURFACE)
 
         # —— 高级格式设置（默认折叠，渐进式披露）——
-        # 学校模板已于 v2.3.28 提到高级选项之外（见 _build_left），此处仅留
-        # LaTeX 模板 / 格式问卷 / 导入配置（AI）。
-        # ① LaTeX 模板（可选）
-        self._field_label(self._adv_body, "row_latex_title", required=False)
-        self._helper(self._adv_body, "row_latex_desc")
-        self._latex_name, self._latex_clear = self._select_field(
-            self._adv_body, "row_latex_placeholder", self._pick_latex,
-            on_clear=lambda: self._clear_input("latex"))
-        self._spacer(self._adv_body)
-        self._hairline(self._adv_body)
-        # ③ 格式问卷
-        r1 = tk.Frame(self._adv_body, bg=theme.SURFACE)
+        # ① 学校模板：导入 .docx 模板，自动读其真实样式；子下拉选引用风格（默认不检查）。
+        # ② 自定义：手填问卷 / 导入 AI 填表 JSON。
+        # 选内置规范时整片置灰并折叠（_apply_source_mode 控制）；选学校模板 / 自定义时展开可用。
+        self._build_adv_school(self._adv_body)
+        self._build_adv_custom(self._adv_body)
+
+        for w in (hdr, self._adv_chev, self._adv_title):
+            w.bind("<Button-1>", lambda e: self._toggle_advanced())
+
+    def _build_adv_school(self, parent):
+        """高级区 ①：学校模板面板（两行）。
+
+        行1 导入 .docx 模板文件（读取真实样式）；行2 引用 / 参考文献风格子下拉，
+        默认「不检查引用」。来源为学校模板时由 _apply_source_mode 自动展开。
+        """
+        tr = self.tr
+        F = self.F
+        sec = tk.Frame(parent, bg=theme.SURFACE)
+        sec.pack(fill="x", pady=(4, 10))
+        self._school_frame = sec
+        h = tk.Frame(sec, bg=theme.SURFACE)
+        h.pack(fill="x")
+        IconBadge(h, "doc", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
+        tk.Label(h, text=tr("adv_school_title"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_SUBTITLE"], anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(sec, text=tr("adv_school_desc"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_HELP"], anchor="w", justify="left").pack(
+            fill="x", pady=(1, 6))
+        # 行1：导入模板文件
+        self._tpl_name, self._tpl_clear = self._select_field(
+            sec, "row_template_placeholder", self._pick_template,
+            on_clear=lambda: self._clear_input("template"))
+        # 行2：引用 / 参考文献风格
+        r2 = tk.Frame(sec, bg=theme.SURFACE)
+        r2.pack(fill="x", pady=(6, 0))
+        tk.Label(r2, text=tr("school_ref_title"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_HELP"], anchor="w").pack(side="left")
+        self._school_ref_cb = ttk.Combobox(
+            r2, textvariable=self.school_ref_style,
+            values=[tr("school_ref_none"), "APA", "MLA", "IEEE"],
+            state="readonly", font=F["F_BODY"], width=22)
+        self._school_ref_cb.pack(side="right")
+        # 默认「不检查引用」（用 ComboboxSelected 绑定而非 trace_add，避免构建期
+        # 程序化 set 误触发 _refresh_rows 访问尚未建好的控件）
+        self.school_ref_style.set(tr("school_ref_none"))
+        try:
+            self.root.option_add("*TCombobox*Listbox.font", F["F_BODY"])
+        except Exception:
+            pass
+        # 引用风格改变 → 旧结论失效 + 刷新（仅用户交互时触发）
+        self._school_ref_cb.bind(
+            "<<ComboboxSelected>>", lambda e: self._on_input_changed())
+
+    def _build_adv_custom(self, parent):
+        """高级区 ②：自定义面板（手填问卷 + AI 导入两入口）。"""
+        tr = self.tr
+        F = self.F
+        sec = tk.Frame(parent, bg=theme.SURFACE)
+        sec.pack(fill="x", pady=(0, 4))
+        self._custom_frame = sec
+        h = tk.Frame(sec, bg=theme.SURFACE)
+        h.pack(fill="x")
+        IconBadge(h, "sliders", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
+        tk.Label(h, text=tr("adv_custom_title"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_SUBTITLE"], anchor="w").pack(side="left", padx=(8, 0))
+        tk.Label(sec, text=tr("adv_custom_desc"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_HELP"], anchor="w", justify="left").pack(
+            fill="x", pady=(1, 6))
+        # 行1：手填问卷
+        r1 = tk.Frame(sec, bg=theme.SURFACE)
         r1.pack(fill="x", pady=(2, 7))
         c1 = tk.Frame(r1, bg=theme.SURFACE)
         c1.pack(side="left", fill="x", expand=True)
-        qhead = tk.Frame(c1, bg=theme.SURFACE)
-        qhead.pack(fill="x")
-        IconBadge(qhead, "questionnaire", size=theme.BADGE_SIZE,
-                  bg=theme.SURFACE).pack(side="left")
-        tk.Label(qhead, text=self.tr("row_questionnaire_title"), bg=theme.SURFACE,
-                 fg=theme.TEXT, font=F["F_SUBTITLE"], anchor="w").pack(
+        IconBadge(c1, "questionnaire", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
+        tk.Label(c1, text=tr("row_questionnaire_title"), bg=theme.SURFACE, fg=theme.TEXT,
+                 font=F["F_SUBTITLE"], anchor="w").pack(
                      side="left", padx=(8, 0), fill="x", expand=True)
-        tk.Label(c1, text=self.tr("row_questionnaire_desc"), bg=theme.SURFACE,
+        tk.Label(c1, text=tr("row_questionnaire_desc"), bg=theme.SURFACE,
                  fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
         self._q_name = tk.Label(c1, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                 font=F["F_HELP"], anchor="w")
         self._q_name.pack(fill="x", pady=(3, 0))
-        # v2.3.10：原 ttk Ghost.TButton 是系统灰方块，和主 CTA「Check formatting」
-        # 的圆角自绘风格割裂。改成 RoundButton(secondary)——白底/青绿字/蓝灰边，
-        # 圆角和 Check formatting 一致、但颜色更轻，不抢主 CTA 注意力；尺寸
-        # 与卡片底部 Upgrade 按钮对齐（height=28 / padx=12 / F_BTN_S）。
-        RoundButton(r1, text=self.tr("btn_questionnaire"),
-                     command=self._open_questionnaire, style="secondary",
-                     font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
-
-        # ② 导入配置（AI 填表 JSON）
-        r2 = tk.Frame(self._adv_body, bg=theme.SURFACE)
+        RoundButton(r1, text=tr("btn_questionnaire"),
+                    command=self._open_questionnaire, style="secondary",
+                    font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
+        # 行2：AI 导入
+        r2 = tk.Frame(sec, bg=theme.SURFACE)
         r2.pack(fill="x", pady=(0, 2))
         c2 = tk.Frame(r2, bg=theme.SURFACE)
         c2.pack(side="left", fill="x", expand=True)
-        ahead = tk.Frame(c2, bg=theme.SURFACE)
-        ahead.pack(fill="x")
-        IconBadge(ahead, "import_config", size=theme.BADGE_SIZE,
-                  bg=theme.SURFACE).pack(side="left")
-        tk.Label(ahead, text=self.tr("row_ai_title"), bg=theme.SURFACE, fg=theme.TEXT,
+        IconBadge(c2, "import_config", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
+        tk.Label(c2, text=tr("row_ai_title"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_SUBTITLE"], anchor="w").pack(
                      side="left", padx=(8, 0), fill="x", expand=True)
-        tk.Label(c2, text=self.tr("row_ai_desc"), bg=theme.SURFACE,
+        tk.Label(c2, text=tr("row_ai_desc"), bg=theme.SURFACE,
                  fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
         self._ai_name = tk.Label(c2, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                  font=F["F_HELP"], anchor="w")
         self._ai_name.pack(fill="x", pady=(3, 0))
-        # v2.3.19：AI 配置行的「✕」清除按钮（默认隐藏，选中后显示，置于 Import 左侧）
         self._ai_clear = tk.Label(r2, text="✕", bg=theme.SURFACE, fg=theme.TEXT_3,
                                   font=F["F_HELP"], cursor="hand2")
         self._ai_clear.pack(side="right", padx=(0, 8))
@@ -1730,16 +1863,15 @@ class App:
         self._ai_clear.bind("<Button-1>", lambda e: (self._clear_input("ai"), "break")[-1])
         self._ai_clear.bind("<Enter>", lambda e: self._ai_clear.config(fg=theme.ERROR))
         self._ai_clear.bind("<Leave>", lambda e: self._ai_clear.config(fg=theme.TEXT_3))
-        # v2.3.10：同上，Import 按钮改为 RoundButton(secondary)，与 Fill in 对齐。
-        RoundButton(r2, text=self.tr("btn_ai_import"),
-                     command=self._pick_ai_config, style="secondary",
-                     font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
-
-        for w in (hdr, self._adv_chev, self._adv_title):
-            w.bind("<Button-1>", lambda e: self._toggle_advanced())
+        RoundButton(r2, text=tr("btn_ai_import"),
+                    command=self._pick_ai_config, style="secondary",
+                    font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
 
     def _toggle_advanced(self):
         """展开 / 收起 Advanced options（返回展开后的状态，便于测试断言）。"""
+        # 选内置规范时高级区整片置灰，用户点击无效（来源切回学校/自定义才解锁）
+        if not getattr(self, "_adv_enabled", True):
+            return self._adv_open
         # v2.3.32：整段（显隐 + 重新测量）都关在闸门里 —— 实测展开/收起各有
         # 数百毫秒的中间帧，屏幕上会出现"同一行字出现两遍、卡片被撕开"的花屏。
         with self._paused_paint():
@@ -1995,10 +2127,18 @@ class App:
 
         ``_relayout_all()`` 不能省 —— 这里会随状态显隐结果明细、展开/收起 Advanced、
         切换结果明细，都是"内容尺寸变了但不触发 <Configure>"的操作（见该方法 docstring）。
+
+        v2.3.62：整段（按钮/进度条/结果明细的 pack-forget + 引导条换文案 + 重新测量）
+        关进**同一道**重绘闸门，出闸门只画一次最终画面。旧版没关闸，而中间调用的
+        ``_set_status`` / ``_set_report`` 各自又会 ``_relayout_all()`` 一次（每次
+        自带 thaw→RedrawWindow），于是一次状态切换要连画两三帧**互不相同的中间态**
+        —— 进度条压在引导条上、结果明细先出现再被挤走，就是老板报的"花屏/跳动"。
+        闸门可嵌套（深度计数），外面若已经关了闸，这里只加深一层、不提前解冻。
         """
-        self._sync_ui_state()
-        self._update_guidance()
-        self._relayout_all()
+        with self._paused_paint():
+            self._sync_ui_state()
+            self._update_guidance()
+            self._relayout_all()
 
     def _sync_ui_state(self):
         """主/次按钮、进度条、空状态的状态机（规格 states 段）。
@@ -2198,7 +2338,6 @@ class App:
             self._paper_name.config(text=tr("btn_select_doc"), fg=theme.PRIMARY)
             self._paper_sub.config(text=tr("paper_support"), fg=theme.TEXT_3)
         _sel(self._tpl_name, self.school_template.get(), "st_tpl_none")
-        _sel(self._latex_name, self.latex_template.get(), "st_latex_none")
         # 问卷的状态来自内存数据（不是文件路径），单独判
         if self.questionnaire_data:
             self._q_name.config(text=tr("st_q_set"), fg=theme.SUCCESS)
@@ -2218,8 +2357,9 @@ class App:
         # v2.3.19：各输入行的「✕」清除按钮——选中才显示，未选隐藏
         self._set_clear_visible(self._paper_clear, bool(self.docx_path.get()))
         self._set_clear_visible(self._tpl_clear, bool(self.school_template.get()))
-        self._set_clear_visible(self._latex_clear, bool(self.latex_template.get()))
         self._set_clear_visible(self._ai_clear, bool(self.ai_json.get()))
+        # 高级区可用态（选内置规范时置灰）随来源刷新
+        self._paint_advanced_state()
         self._sync_ui()
 
     def _invalidate_results(self):
@@ -2334,11 +2474,14 @@ class App:
     _WM_SETREDRAW = 0x000B
     _RDW_FLAGS = 0x0001 | 0x0004 | 0x0080 | 0x0100   # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW
 
-    def _paint_hwnds(self):
-        """顶层窗句柄（Tk 在 Windows 上会给顶层窗套一层 wrapper，两个都发一遍最稳）。"""
+    def _paint_hwnds(self, win=None):
+        """窗口句柄（Tk 在 Windows 上会给顶层窗套一层 wrapper，两个都发一遍最稳）。
+
+        ``win`` 传了就算那个窗口的（弹窗是独立 Toplevel，句柄与主窗无关）；不传默认主窗。
+        """
         out = []
         try:
-            h = self.root.winfo_id()
+            h = (win or self.root).winfo_id()
             if h:
                 out.append(h)
             p = ctypes.windll.user32.GetParent(h)
@@ -2347,6 +2490,29 @@ class App:
         except Exception:
             pass
         return out
+
+    def _freeze_win_paint(self, win, freeze: bool):
+        """冻结 / 解冻**指定窗口**的重绘，用完立刻解冻（不进深度计数）。
+
+        与 ``_freeze_paint`` 的分工：那个是主窗的**可嵌套**闸门（深度计数在
+        ``_paint_depth``）；弹窗（Toplevel）自带独立 HWND，主窗的闸门管不到它，
+        所以弹窗内的一次性显隐（如折叠面板展开）要单独冻一次。非 Windows 平台 no-op。
+        """
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            user32 = ctypes.windll.user32
+        except Exception:
+            return
+        for h in self._paint_hwnds(win):
+            try:
+                if freeze:
+                    user32.SendMessageW(h, self._WM_SETREDRAW, 0, 0)
+                else:
+                    user32.SendMessageW(h, self._WM_SETREDRAW, 1, 0)
+                    user32.RedrawWindow(h, None, None, self._RDW_FLAGS)
+            except Exception:
+                pass
 
     def _freeze_paint(self, freeze: bool):
         """关 / 开整窗重绘，**可嵌套**（闸门会一层套一层，见 `_toggle_advanced`）。
@@ -2403,6 +2569,12 @@ class App:
 
         安全说明：``update()`` 会派发待处理的输入事件，但调用点都在按钮回调里，
         且 ``_busy`` 会把 ``_run`` / ``_run_fix`` 的重入挡在门口。
+
+        ⚠️ **禁止在 ``with self._paused_paint():`` 块内调用本方法** —— 它会无条件
+        ``_thaw_paint()``（把深度计数清零并强制开闸重绘），等于把外层闸门撕开、
+        把中间态画上屏。这是**故意的**：它是异常路径的保险丝，万一某处抛异常把闸门
+        留在关闭态（窗口永远空白，比花屏严重得多），只有它能无条件救回来。
+        闸门内若需要推一帧，用 ``update_idletasks()``（只算几何、不上屏）。
         """
         self._thaw_paint()          # 万一是异常路径逃出来的，先解冻
         try:
@@ -2500,7 +2672,7 @@ class App:
 
     # ------------------------------------------------------------ ✕ 清除按钮（v2.3.19）
     def _clear_input(self, which):
-        """论文 / 模板 / LaTeX / AI 配置行的小「✕」清除——导入错了点叉号即清除、可重新导入。
+        """论文 / 模板 / AI 配置行的小「✕」清除——导入错了点叉号即清除、可重新导入。
 
         · 只清掉被点的那一项，保留其它输入；
         · 但已做的检查/修正结论随对应源消失而失效，故一并作废、回到 ready/初始态
@@ -2513,8 +2685,6 @@ class App:
             self.docx_path.set("")
         elif which == "template":
             self.school_template.set("")
-        elif which == "latex":
-            self.latex_template.set("")
         elif which == "ai":
             self.ai_json.set("")
         else:
@@ -2527,7 +2697,7 @@ class App:
     def _fit_field_label(self, lbl):
         """按 label 实际像素宽把完整文件名截断成「…」，保证不盖住右侧「✕ / ⌄」。
 
-        取代旧版固定 40 字符截断：窄面板（Advanced 里的 LaTeX 行）或更长文件名仍会
+        取代旧版固定 40 字符截断：窄面板（Advanced 里的输入行）或更长文件名仍会
         像素溢出、盖住清除按钮。此处量真实宽度、二分截到能装下的最长前缀 + 省略号；
         label 未布局好（宽 ≤ 1）时延到 idle 再量，避免量到 0 误判。
         """
@@ -2630,14 +2800,6 @@ class App:
                                        filetypes=[("Word", "*.docx"), ("All files", "*.*")])
         if p:
             self.school_template.set(p)
-            self._on_input_changed()
-
-    def _pick_latex(self):
-        p = filedialog.askopenfilename(
-            title=self.tr("row_latex_title"),
-            filetypes=[("LaTeX", "*.tex *.cls *.sty"), ("All files", "*.*")])
-        if p:
-            self.latex_template.set(p)
             self._on_input_changed()
 
     def _pick_ai_config(self):
@@ -3139,13 +3301,21 @@ class App:
                     style="secondary", font=F["F_BTN_S"], height=32, padx=12).pack(anchor="w")
 
         def _toggle():
-            if pane.winfo_ismapped():
-                pane.pack_forget()
-                marker.set("[+]")
-            else:
-                pane.pack(fill="x")
-                marker.set("[-]")
-            self._fit_modal(win, 600)
+            # 折叠/展开会同时改「内容自然高度」和「窗口高度」，中间态一旦上屏就是
+            # 「内容先跳到新位置、窗口还是旧高度」的那一帧 —— 肉眼看到的"弹窗抖一下/漂移"。
+            # 弹窗是独立 Toplevel，主窗的重绘闸门管不到它，这里单独冻一次，
+            # 显隐 + 重新定高 + 重算滚动区全部做完再整体画出来。
+            self._freeze_win_paint(win, True)
+            try:
+                if pane.winfo_ismapped():
+                    pane.pack_forget()
+                    marker.set("[+]")
+                else:
+                    pane.pack(fill="x")
+                    marker.set("[-]")
+                self._fit_modal(win, 600)      # 内含 refresh_layout（重算滚动区）
+            finally:
+                self._freeze_win_paint(win, False)
 
         head.bind("<Button-1>", lambda e: _toggle())
         mark_lbl.bind("<Button-1>", lambda e: _toggle())
@@ -3172,6 +3342,11 @@ class App:
             y = min(win.winfo_y(), bottom_limit - height - dy)
             y = max(8, y)
             win.geometry("%dx%d+%d+%d" % (width, height, win.winfo_x(), y))
+            # 尺寸定下来之后**必须**再同步一次滚动区：ModalShell 的滚动条是 pack 进
+            # 窗口右侧的，内容比可视区高就得立刻挂出来，否则末段内容被裁且滚不到
+            # （小屏幕上的典型"布局漂移"）。放在这里一刀收口，三个弹窗（反馈 / 购买激活 /
+            # 复核）以及折叠面板展开全部自动受益，不必在调用点各写一遍。
+            win.refresh_layout()
         except Exception:
             pass
 
@@ -3181,17 +3356,19 @@ class App:
 
     # ------------------------------------------------------------ 目标画像
     def _build_target(self) -> TargetProfile:
+        ref = self.school_ref_style.get()
+        # 默认「不检查引用」对应的显示串不是合法风格键，build_target 会忽略为 None
         return build_target(
             self.spec_key.get(),
             template=self.school_template.get() or None,
             ai=self.ai_json.get() or None,
             questionnaire=self.questionnaire_data or None,
-            latex=self.latex_template.get() or None,
+            reference_style=ref or None,
         )
 
     # ------------------------------------------------------------ 体检
     def _run(self):
-        """运行格式体检（免费不限次）：出结果后主按钮自动变成 Fix N issues。"""
+        """运行格式体检（免费不限次）：先弹「复核弹窗」让客户确认/改错，再跑检查。"""
         if self._busy:
             return
         tr = self.tr
@@ -3203,22 +3380,181 @@ class App:
             self._set_status(tr("state_missing_paper"), "err",
                              spec=("state_missing_paper", ()))
             return
+        target = self._build_target()
+        self._confirm_dialog(target)
+
+    def _confirm_dialog(self, target):
+        """共享复核弹窗：把各来源读到的格式值摊开给客户二次确认 / 改错 / 补漏。
+
+        四个类别（Page Layout / Headings / References / Style Rules）分组展示；
+        Page Layout 的标量字段可编辑（改错 / 补漏），其余只读展示。点「Run check」
+        才真正跑体检（_execute_check）。学校模板 / 手动问卷 / AI 三来源共用此弹窗。
+        """
+        tr = self.tr
+        F = self.F
+        win = ModalShell(self.root, tr("review_title"), width=680, height=720)
+        self._track(win)
+        body = win.content
+
+        tk.Label(body, text=tr("review_helper"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_SMALL"], anchor="w", justify="left",
+                 wraplength=620).pack(fill="x", pady=(0, 8))
+
+        # ModalShell 自身已内建滚动（_cv Canvas + 自动滚动条），content 直接承接
+        # 所有 section 即可，不要再嵌一层 _scroll_frame（否则 canvas-in-canvas 双滚动条）。
+        inner = body
+        warn_fg = getattr(theme, "GOLD", theme.TEXT_3)
+
+        # —— ① Page Layout（可编辑）——
+        self._review_section(inner, tr("review_page"), theme.SECTION_GAP)
+        page_vars = {}
+        label_en = {
+            "margin_top_in": "Top margin (in)", "margin_bottom_in": "Bottom margin (in)",
+            "margin_left_in": "Left margin (in)", "margin_right_in": "Right margin (in)",
+            "font_family": "Body font", "font_size_pt": "Body size (pt)",
+            "line_spacing": "Line spacing (x)", "body_alignment": "Body align",
+            "first_line_indent_in": "First-line indent (in)",
+            "space_after_pt": "Space after (pt)", "header_distance_in": "Header dist. (in)",
+        }
+        grid = tk.Frame(inner, bg=theme.SURFACE)
+        grid.pack(fill="x", padx=12, pady=(0, 8))
+        for i, key in enumerate(TargetProfile.PAGE_KEYS):
+            row, col = divmod(i, 3)
+            cell = tk.Frame(grid, bg=theme.SURFACE)
+            cell.grid(row=row, column=col, sticky="ew", padx=4, pady=3)
+            grid.columnconfigure(col, weight=1)
+            val = target.page.get(key)
+            tk.Label(cell, text=label_en.get(key, key), bg=theme.SURFACE, fg=theme.TEXT_2,
+                     font=F["F_FOOT"], anchor="w").pack(fill="x")
+            var = tk.StringVar(value=("" if val is None else str(val)))
+            ent = tk.Entry(cell, textvariable=var, font=F["F_BODY"], width=14,
+                          bg=theme.SURFACE, fg=theme.TEXT,
+                          highlightbackground=theme.BORDER, highlightthickness=1)
+            ent.pack(fill="x")
+            if val is None:
+                # 缺失：标黄提示客户确认 / 补填
+                ent.config(fg=warn_fg)
+            page_vars[key] = var
+
+        # 栏数（结构性维度，不在 PAGE_KEYS 的标量格里）：单选下拉，默认单栏。
+        # 用「显示名 ↔ 数值」显式映射，不把展示文案反解析成数字（i18n 文案改动也不会解析失败）。
+        one_txt = tr("review_one_column")
+        two_txt = tr("review_two_column")
+        _cur_cols = 2 if target.columns == 2 else 1
+        columns_var = tk.StringVar(value=(two_txt if _cur_cols == 2 else one_txt))
+        col_row = tk.Frame(inner, bg=theme.SURFACE)
+        col_row.pack(fill="x", padx=12, pady=(4, 8))
+        tk.Label(col_row, text=tr("review_columns"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_FOOT"], anchor="w").pack(side="left", padx=(0, 8))
+        ttk.Combobox(col_row, textvariable=columns_var, state="readonly", width=18,
+                     values=[one_txt, two_txt]).pack(side="left")
+
+        # —— ② Headings（只读，每级一行）——
+        self._review_section(inner, tr("review_headings"), theme.SECTION_GAP)
+        hfmt = target.heading_formats or {}
+        if hfmt:
+            head = tk.Frame(inner, bg=theme.SURFACE)
+            head.pack(fill="x", padx=12, pady=(0, 4))
+            cols = (tr("review_lvl"), tr("review_align"), tr("review_bold"),
+                    tr("review_italic"), tr("review_size"), tr("review_prefix"),
+                    tr("review_upper"))
+            for j, col in enumerate(cols):
+                tk.Label(head, text=col, bg=theme.SURFACE, fg=theme.TEXT_2,
+                         font=F["F_FOOT"], anchor="w").grid(
+                    row=0, column=j, sticky="w", padx=(0, 10))
+            r = 1
+            for lvl in sorted(int(k) for k in hfmt):
+                d = hfmt.get(str(lvl), hfmt.get(lvl, {}))
+                vals = [str(lvl),
+                        str(d.get("alignment", "")),
+                        tr("review_enabled") if d.get("bold") else tr("review_disabled"),
+                        tr("review_enabled") if d.get("italic") else tr("review_disabled"),
+                        str(d.get("size_pt", "")),
+                        str(d.get("number_prefix", "")),
+                        tr("review_enabled") if d.get("uppercase") else tr("review_disabled")]
+                for j, v in enumerate(vals):
+                    tk.Label(head, text=v, bg=theme.SURFACE, fg=theme.TEXT,
+                             font=F["F_SMALL"], anchor="w").grid(
+                        row=r, column=j, sticky="w", padx=(0, 10))
+                r += 1
+        else:
+            tk.Label(inner, text=tr("review_missing"), bg=theme.SURFACE, fg=warn_fg,
+                     font=F["F_HELP"], anchor="w").pack(fill="x", padx=12, pady=(0, 6))
+
+        # —— ③ References（只读）——
+        self._review_section(inner, tr("review_refs"), theme.SECTION_GAP)
+        ref_num = target.reference_numbered
+        ref_lines = [
+            "Reference style: %s" % (target.reference_style or tr("review_missing")),
+            "Hanging indent: %s" % (target.reference_hanging_indent_in
+                                    if target.reference_hanging_indent_in is not None else "—"),
+            "Numbered: %s" % (tr("review_enabled") if ref_num is True
+                              else (tr("review_disabled") if ref_num is False else "—")),
+        ]
+        for ln in ref_lines:
+            tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],
+                     anchor="w", justify="left").pack(fill="x", padx=12, pady=(0, 2))
+
+        # —— ④ Style Rules（只读，由 resolve_spec 解析）——
+        self._review_section(inner, tr("review_style"), theme.SECTION_GAP)
+        try:
+            spec = checker.resolve_spec(target)
+            style_lines = [
+                "Running head: %s" % (tr("review_enabled") if spec.running_head else tr("review_disabled")),
+                "Page number: %s" % (spec.page_number_position or "—"),
+                "References on new page: %s" % (tr("review_enabled") if spec.reference_new_page else tr("review_disabled")),
+                "Reference heading bold: %s" % (tr("review_enabled") if spec.reference_heading_bold else tr("review_disabled")),
+                "Font allowlist: %s" % (", ".join(spec.font_allowlist) if spec.font_allowlist else "—"),
+            ]
+        except Exception:
+            style_lines = [tr("review_missing")]
+        for ln in style_lines:
+            tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],
+                     anchor="w", justify="left").pack(fill="x", padx=12, pady=(0, 2))
+
+        def _on_confirm():
+            # 仅把用户真正改动过的 Page Layout 字段写回 target（其余保持原 resolution，
+            # 避免把规范软参考误升级为硬规则）——逻辑在 engine.apply_page_overrides，headless 可测。
+            edits = {key: var.get() for key, var in page_vars.items()}
+            # 栏数：显示名 → 数值；仅当与当前 target.columns 不同才写回（逻辑在 apply_page_overrides）
+            edits["columns"] = "2" if columns_var.get() == two_txt else "1"
+            apply_page_overrides(target, edits)
+            self._execute_check(target, win)
+
+        win.add_primary_action(tr("review_confirm"), command=_on_confirm)
+        win.add_cancel_action(tr("review_back"))
+        # 本弹窗内容最高（4 个分区 + 页面网格 + 栏数下拉 + 标题表 + 风格规则），
+        # 小屏幕上会超出可视区；_fit_modal 末尾已统一重算滚动区（内容被裁且滚不到的根治点）。
+        self._fit_modal(win, 680)
+
+    def _review_section(self, parent, title, pad):
+        """复核弹窗里的小节标题（带上方留白）。"""
+        tk.Label(parent, text=title, bg=theme.SURFACE, fg=theme.PRIMARY,
+                 font=self.F["F_LABEL"], anchor="w").pack(
+            fill="x", padx=12, pady=(pad, 4))
+
+    def _execute_check(self, target, win=None):
+        """真正跑体检（复核确认后调用）：原 _run 的检查逻辑。"""
+        if self._busy:
+            return
+        tr = self.tr
+        docx = self.docx_path.get()
+        if win is not None:
+            try:
+                self._close_one(win)
+            except Exception:
+                pass
         self._phase = "ready"
         self._set_busy(True)
         self._set_status(tr("status_checking"), "run")
         self._set_bar("run")
         # v2.3.32：把状态行/引导条的最后一次改动也画进去，再进阻塞的引擎调用。
-        # 少了这一下，屏幕上冻结的仍是"状态已变但没重绘"的坏帧（花屏）。
         self._flush_frame()
         try:
-            target = self._build_target()
             prof, findings = checker.run_check(docx, target)
             rep = report_mod.build_report(docx, target, prof, findings)
             self._last_report = rep
 
-            # 结果整理同样放在 try 内 + finally 收尾：这一段若抛异常而逃出去，
-            # `_busy` 会永远停在 True（RoundButton 的异常兜底是静默的），
-            # 主按钮永久显示 "Checking…"、次按钮永久隐藏 —— 只能重启进程。
             s = rep.summary or {}
             issues = int(s.get("warn", 0)) + int(s.get("fail", 0))
             self._last_issues = issues
@@ -3321,7 +3657,11 @@ class App:
         preview_text = ""
         try:
             target = self._build_target()
-            changes = compute_changes(docx, target, self.lang)
+            self._fix_findings = None
+            _chk_prof, _chk_findings = checker.run_check(docx, target)
+            self._fix_findings = _chk_findings
+            changes = _compute_changes(_chk_prof, target, self.lang,
+                                      findings=_chk_findings)
 
             if not changes:
                 # 已合规：不触发门禁、也不弹模态框（规格 states 要行内提示）
@@ -3397,7 +3737,8 @@ class App:
 
         self._set_busy(True)
         try:
-            fix_docx(docx, out, target)
+            fix_docx(docx, out, target,
+                     findings=self._fix_findings, spec=checker.resolve_spec(target))
             counted = lic.record_fix_used()
             self._last_output = out
             self._phase = "fixed"
