@@ -354,7 +354,9 @@ def test_gui_language_switch_rebuilds_and_persists(tmp_path, monkeypatch, tk_roo
     assert i18n.load_lang() == "zh"              # 偏好已落盘
 
     texts = _label_texts(tk_root)
-    assert "论 文 格 式 医 生" in texts
+    # 中文产品名 = 「文档格式先生」（命名铁律：海外/通用文档格式产品；「论文格式医生」是国内
+    # 论文专用产品的名字，本仓不得出现 —— 详见 test_ui_redesign 的同名断言）
+    assert "文 档 格 式 先 生" in texts
     assert "你的文档" in texts and "检查与修正" in texts
     # 状态保持：已选论文不能被语言切换清掉
     assert ui.docx_path.get() == r"C:\tmp\my thesis.docx"

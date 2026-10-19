@@ -91,7 +91,19 @@ def _patch_gates(monkeypatch, reason, allowed=False):
     monkeypatch.setattr(app_mod.lic, "require_fix_entitlement",
                         lambda: {"allowed": allowed, "reason": reason})
     # 返回非空改动，确保不会走「已合规」早退（那条分支本就不该弹激活窗）
-    monkeypatch.setattr(app_mod, "compute_changes", lambda *a, **k: ["x"])
+    #
+    # v2.3.62：_run_fix 改成「先 run_check 拿 findings → 再算改动」（check→fix 单一
+    # 真相源：预览与实际施加必须出自同一份 findings），于是它真的会去读 docx。
+    # 本文件只考**门禁分支**，stub 的 docx_path 又只是拿一个 .py 文件占位
+    # （`os.path.abspath(__file__)`），直接跑 run_check 会抛 DocxReadError →
+    # 走 _fail 分支 → 永远到不了门禁。所以引擎两个入口都 stub 掉：
+    #   · checker.run_check   → 假 profile + 空 findings
+    #   · _compute_changes    → 非空改动列表
+    # 注意 patch 的必须是 **_compute_changes**（_run_fix 实际引用的名字）；
+    # 旧版 patch 的 `compute_changes` 已不再被这条路径调用，patch 上去等于没生效。
+    monkeypatch.setattr(app_mod.checker, "run_check",
+                        lambda *a, **k: (types.SimpleNamespace(), []))
+    monkeypatch.setattr(app_mod, "_compute_changes", lambda *a, **k: ["x"])
 
 
 @pytest.mark.parametrize("reason", BUY_REASONS)

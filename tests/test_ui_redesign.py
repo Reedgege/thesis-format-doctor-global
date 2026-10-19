@@ -114,8 +114,23 @@ def test_advanced_toggle_remeasures_card_and_scrollregion(ui):
     """展开 Advanced options 后，卡片与滚动区都必须跟着长高。
 
     不重测的话新增的那两行被圆角矩形裁掉、滚动条也不出现 —— 用户看不到也滚不到。
+
+    v2.3.62：来源默认是内置规范（APA-Student），此时高级区**整片置灰且折叠**
+    （老板需求：选了规范就不该让客户再乱改高级项）。所以这里先把来源切到
+    「Custom」把高级区解锁，再验展开后的重新测量 —— 否则 _toggle_advanced
+    会被 _adv_enabled=False 直接挡掉，测的就不再是"展开后有没有重测"。
     """
     from src.ui import theme
+
+    ui._apply_source_mode("src_custom", refresh=True)
+    ui.root.update_idletasks()
+    assert ui._adv_enabled is True, "切到自定义后高级区应解锁"
+    # 切自定义会**自动展开**（见 _apply_source_mode），先折回折叠态，
+    # 这样下面量的才是"展开"这一步带来的真实增量。
+    if ui._adv_open:
+        ui._toggle_advanced()
+        ui.root.update_idletasks()
+    assert ui._adv_open is False
 
     before = ui._left_card._cv.winfo_reqheight()
     ui._toggle_advanced()
@@ -133,13 +148,38 @@ def test_advanced_toggle_remeasures_card_and_scrollregion(ui):
 
 
 def test_collapse_toggles_visibility(ui):
-    """winfo_manager() 判定 pack 状态：与窗口是否映射无关，CI 里也能断言。"""
+    """高级区：选内置规范时置灰不可展开；切自定义后解锁可展开。
+
+    winfo_manager() 判定 pack 状态：与窗口是否映射无关，CI 里也能断言。
+    v2.3.62 起「选规范 → 高级区整片置灰并折叠」是老板明确要求，本用例把这条
+    硬规则和"切自定义后能正常展开"一起钉住（旧版只测了后者）。
+    """
+    # ① 默认来源是内置规范 → 高级区锁定，点展开必须无效
+    assert ui._adv_enabled is False, "选内置规范时高级区应锁定"
     assert ui._adv_open is False
     assert ui._adv_body.winfo_manager() == ""
-    ui._toggle_advanced()
+    assert ui._toggle_advanced() is False, "规范态下高级区不该被展开"
+    assert ui._adv_body.winfo_manager() == "", "规范态下高级区不该挂出来"
+
+    # ② 切到自定义 → 解锁，并且**自动展开**（自定义来源下高级项就是主输入，
+    #    老板要求自动摊开；这一点和"选规范时自动折叠"是同一条规则的两面）
+    ui._apply_source_mode("src_custom", refresh=True)
     ui.root.update_idletasks()
-    assert ui._adv_open is True
+    assert ui._adv_enabled is True
+    assert ui._adv_open is True, "切到自定义应自动展开高级区"
     assert ui._adv_body.winfo_manager() == "pack"
+    # toggle 双向可用：折叠 → 再展开
+    assert ui._toggle_advanced() is False
+    assert ui._adv_body.winfo_manager() == ""
+    assert ui._toggle_advanced() is True
+    assert ui._adv_body.winfo_manager() == "pack"
+
+    # ③ 切回规范 → 重新折叠（用户在自定义里展开过，换规范不能把老状态留下来）
+    ui._apply_source_mode("src_apa_student", refresh=True)
+    ui.root.update_idletasks()
+    assert ui._adv_enabled is False
+    assert ui._adv_open is False, "切回规范后高级区应自动折叠"
+    assert ui._adv_body.winfo_manager() == ""
     ui._toggle_advanced()
     ui.root.update_idletasks()
     assert ui._adv_body.winfo_manager() == ""
@@ -290,7 +330,10 @@ def test_primary_button_state_machine(ui, tmp_path):
     assert ui._progress.winfo_manager() == "pack"
 
     # results：真跑一次体检
-    ui._run()
+    # v2.3.62：_run() 现在只负责把读到的参数摊给客户复核（_confirm_dialog），真正的
+    # 检查在 _execute_check 里。这里直接调后者 = 等价于点弹窗里的 Run check；
+    # 弹窗本身开没开、有没有栏数下拉，由 test_run_opens_review_dialog_before_check 钉。
+    ui._execute_check(ui._build_target())
     ui.root.update_idletasks()
     assert ui._phase == "results"
     assert isinstance(ui._last_issues, int)
@@ -351,7 +394,8 @@ def test_busy_state_is_released_when_result_processing_raises(ui, tmp_path, monk
             raise RuntimeError("boom")
 
     monkeypatch.setattr(ui_app.report_mod, "build_report", lambda *a, **k: _Boom())
-    ui._run()
+    # v2.3.62：_run() 只弹复核窗，真检查在 _execute_check（见上一条用例的说明）。
+    ui._execute_check(ui._build_target())
     ui.root.update_idletasks()
 
     assert ui._busy is False
@@ -370,7 +414,7 @@ def test_changing_document_invalidates_previous_result(ui, tmp_path):
 
     ui.docx_path.set(_make_docx(tmp_path / "a.docx"))
     ui._refresh_rows()
-    ui._run()
+    ui._execute_check(ui._build_target())     # v2.3.62：等价于点复核弹窗的 Run check
     ui.root.update_idletasks()
     assert ui._phase == "results"
     assert ui._checked_path.endswith("a.docx")
@@ -391,7 +435,7 @@ def test_language_round_trip_rerenders_status_and_summary(ui, tmp_path):
 
     ui.docx_path.set(_make_docx(tmp_path / "t.docx"))
     ui._refresh_rows()
-    ui._run()
+    ui._execute_check(ui._build_target())     # v2.3.62：等价于点复核弹窗的 Run check
     ui.root.update_idletasks()
     assert "Pass" in ui.summary_lbl.cget("text")
     en_status = ui.status_lbl.cget("text")
@@ -502,6 +546,16 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     # 真回归（右卡内容随左卡展开变化），且对渲染残差免疫。
     right_before = ui._right_card._cv.winfo_reqheight()
     left_before = ui._left_card._cv.winfo_height()
+    # v2.3.62：来源默认是内置规范，高级区此时是锁定的（置灰折叠）→ 先切自定义解锁，
+    # 否则 _toggle_advanced 不动作，"展开后左栏涨高"这条断言就等于没测。
+    # 注意切自定义会**自动展开**，所以先折回折叠态再取基线。
+    ui._apply_source_mode("src_custom", refresh=True)
+    ui.root.update()
+    if ui._adv_open:
+        ui._toggle_advanced()
+        ui.root.update()
+    left_before = ui._left_card._cv.winfo_height()
+    right_before = ui._right_card._cv.winfo_reqheight()
     ui._toggle_advanced()
     ui.root.update_idletasks()
     right_after = ui._right_card._cv.winfo_reqheight()
@@ -667,3 +721,73 @@ def test_long_filename_does_not_cover_clear_button(ui):
     lbl._full_text = "short.docx"
     ui._fit_field_label(lbl)
     assert not lbl["text"].endswith("…"), lbl["text"]
+
+
+# ------------------------------------------- 共享复核弹窗 + 中文品牌名（v2.3.62）
+def _descendants(widget, cls):
+    """递归收集某类子控件（弹窗里找 Combobox 用）。"""
+    out = []
+    for ch in widget.winfo_children():
+        if isinstance(ch, cls):
+            out.append(ch)
+        out.extend(_descendants(ch, cls))
+    return out
+
+
+def test_run_opens_review_dialog_with_columns(ui, tmp_path):
+    """点 Check 必须先弹「复核弹窗」把参数摊给客户确认，且**栏数**在这张弹窗里可选。
+
+    v2.3.62 起 `_run` 不再直接跑检查：先把各来源读到的格式值摊开让客户二次确认 / 改错 / 补漏，
+    点弹窗里的 Run check 才真正走 `_execute_check`。栏数是新增的结构性维度，老板明确要求
+    **三个入口都要有**（复核弹窗 / 手工问卷 / AI 导入导出），本用例钉住复核弹窗这一路。
+
+    另一层用意：确认弹窗打开时**没有**背地里先把检查跑完（_phase 必须还停在 ready），
+    否则用户改了参数也没用 —— 那是"假复核"。
+    """
+    from tkinter import ttk
+
+    from src.ui import i18n
+
+    ui.docx_path.set(_make_docx(tmp_path / "t.docx"))
+    ui._refresh_rows()
+    assert ui._phase == "ready"
+
+    ui._run()
+    ui.root.update_idletasks()
+
+    win = ui._popups[-1] if ui._popups else None
+    assert win is not None and win.winfo_exists(), "点 Check 应弹出复核弹窗"
+    # 弹窗开出来时检查还没跑（复核必须发生在检查之前）
+    assert ui._phase == "ready", "弹窗还没确认就把检查跑了 = 假复核"
+
+    one = i18n.t(ui.lang, "review_one_column")
+    two = i18n.t(ui.lang, "review_two_column")
+    combos = _descendants(win, ttk.Combobox)
+    values = [tuple(str(v) for v in c.cget("values")) for c in combos]
+    assert (one, two) in values, "复核弹窗没提供栏数下拉（单栏/双栏）：%r" % (values,)
+
+    ui._close_popups()
+    assert not ui._popups
+
+
+def test_chinese_app_title_is_mr_document_formatter():
+    """中文界面的产品名必须是「文档格式先生」，不得出现「论文格式医生 / 文档格式医生」。
+
+    命名铁律（老板 2026-10-18 / 2026-10-19 两次强调）：
+      · 本海外/通用文档格式产品中文名 = **文档格式先生**（= 英文 Mr. Document Formatter，
+        海外 brand PaperFormat Pro）；
+      · **论文格式医生**是国内**论文专用**产品（tfd-desktop / tfd-mentor）的名字，只在那个
+        仓库里用，本仓一律不得出现；
+      · **文档格式医生**是曾经误写的错名，同样禁止。
+    界面标题是最容易被客户看见的一处，所以在这里用断言钉死（比对时去掉排版用的空格）。
+    """
+    from src.ui import i18n
+
+    raw = i18n.STRINGS.get("zh", {}).get("app_title", "")
+    assert raw, "中文界面缺少 app_title"
+    title = raw.replace(" ", "")
+    assert title == "文档格式先生", "中文产品名写错了：%r" % raw
+    for bad in ("论文格式医生", "文档格式医生"):
+        assert bad not in title, "中文产品名混入了禁用字样 %r：%r" % (bad, raw)
+    # 英文那块是海外品牌名，不要被中文名污染
+    assert i18n.STRINGS.get("en", {}).get("app_title") == "PaperFormat Pro"

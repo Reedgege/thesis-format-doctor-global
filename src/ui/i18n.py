@@ -595,7 +595,10 @@ STRINGS: dict = {
         "link_about": "关 于",
         "lang_button": "英文",
         "lang_button_tip": "仅切换界面语言，不影响排版格式",
-        "app_title": "论 文 格 式 医 生",
+        # 中文名 = 文档格式先生（英文 Mr. Document Formatter / 海外 brand PaperFormat Pro）。
+        # ⚠️ 命名铁律：「论文格式医生」是**国内论文专用**产品（tfd-desktop / tfd-mentor）的名字，
+        # 本海外版是通用文档格式产品，中文界面一律写「文档格式先生」，不得混用。
+        "app_title": "文 档 格 式 先 生",
         "app_tagline": "学术格式，本可以更简单。",
         "privacy_line": "论文不离开这台电脑",
         "privacy_sub": "私密  ·  安全  ·  本机离线处理",
