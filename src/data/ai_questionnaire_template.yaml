@@ -1,14 +1,17 @@
 # AI fill-in template — PaperFormat Pro
 # Hand this file to any AI, have it fill in your school's format requirements as
-# concrete values following the fields below, then load it with "Import AI form".
+# concrete values following the fields below, then load it back with the "Import"
+# button (Format source → "Import configuration (AI)").
 # The template also works with the older JSON format.
 
 _purpose: |-
   Hand this file to any AI (GPT / Gemini / Claude, etc.) together with your school
   template or format-requirement document, and have the AI fill the format requirements
   into concrete values following the fields below, producing a YAML with the same
-  structure (the older JSON format is also supported). Then load it into PaperFormat Pro
-  with "Import AI form".
+  structure (the older JSON format is also supported).
+  Then load it back into PaperFormat Pro: set Format source to
+  "Import configuration (AI)" and press "Import". The other format sources ignore
+  this file, so pick that one first.
   The format requirements cover page layout (margins, body font, font size, line spacing,
   first-line indent, paragraph spacing, and the column layout — single vs two-column),
   heading levels, and the reference style.
@@ -29,6 +32,32 @@ _how_to_fill: |-
   2 = two-column (typically an IEEE conference/journal template).
   Try to determine it from the requirement; if the requirement says nothing about the
   column layout, use 1 rather than omitting it.
+  title_page_title_centered / title_page_title_bold / title_page_author_centered describe the
+  title page (the thesis title and the author/affiliation lines). They are true or false.
+  Omit any of them when the requirement says nothing about that property — do not guess,
+  because a guessed value will make the tool actively change the student's title page.
+  paper_size is the physical paper size and MUST be one of Letter / A4 / Legal / A5:
+  Letter = 8.5 x 11 in (United States, Canada), A4 = 210 x 297 mm
+  (Europe, China, Australia, most of Asia). This is NOT part of any citation style —
+  the same APA paper is printed on Letter in New York and on A4 in London. Only fill it
+  when the requirement/school states it; otherwise omit it (do not guess from the style).
+  page_number_position says WHERE the page number goes. It MUST be one of
+  top-right / bottom-center / bottom-right. Note that top-right means the top-right corner
+  of the HEADER (that is what APA and MLA ask for); bottom-center means centered in the
+  FOOTER, which is the common requirement in Chinese universities. Only fill it when the
+  requirement states it; otherwise omit it (do not infer it from the citation style).
+  heading_formats is where the per-level heading requirements go. It is a map keyed by
+  heading level (1 = top level). Each level accepts the same fields:
+    font_family, size_pt, bold, italic, uppercase, run_in, alignment, indent_in, number_prefix
+  - bold / italic / uppercase / run_in are true or false. Omit any of them when the
+    requirement says nothing about that property for that level (do not guess).
+  - alignment must be one of left / center / right / justify.
+  - indent_in is the first-line indent of that heading level, in inches (0 = flush left).
+  - number_prefix is the chapter-number style used by that level:
+    number "1." / roman "I." / upper_letter "A." / lower_letter "a)" /
+    lower_roman "i)" / number_paren "1)". Omit it when headings are not numbered.
+  heading_levels can be left out when heading_formats is present — the deepest level
+  filled in is used as the level count.
 
 fields:
   - key: margin_top_in
@@ -81,10 +110,51 @@ fields:
     unit: ""
     example: 1
     allowed: [1, 2]
+  - key: title_page_title_centered
+    label: Title page - title centered
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: Omit when the requirement says nothing about centering the title on the title page.
+  - key: title_page_title_bold
+    label: Title page - title bold
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: Omit when unspecified. MLA explicitly forbids bolding the title.
+  - key: title_page_author_centered
+    label: Title page - author lines centered
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: Omit when unspecified. APA/IEEE center the author and affiliation lines, MLA does not.
+  - key: paper_size
+    label: Paper size
+    unit: ""
+    example: A4
+    allowed: [Letter, A4, Legal, A5]
+    note: Omit when the requirement says nothing — paper size is not part of a citation style.
+  - key: page_number_position
+    label: Page number position
+    unit: ""
+    example: top-right
+    allowed: [top-right, bottom-center, bottom-right]
+    note: >-
+      top-right = top-right corner of the header (APA/MLA); bottom-center = centered in the
+      footer (common in Chinese theses). Omit when the requirement says nothing. The tool
+      will then add an automatic PAGE field there and replace a hand-typed page number.
   - key: heading_levels
     label: Heading levels
     unit: levels
     example: 0
+    note: Optional when heading_formats is filled in (deepest level wins).
+  - key: heading_formats
+    label: Per-level heading format
+    unit: ""
+    note: >-
+      Map of heading level (1 = top level) to that level's requirements. Fields per level:
+      font_family, size_pt, bold, italic, uppercase, run_in, alignment (left/center/right/justify),
+      indent_in (inches), number_prefix (number/roman/upper_letter/lower_letter/lower_roman/number_paren).
   - key: reference_style
     label: Reference format
     unit: ""
@@ -98,6 +168,36 @@ fields:
     label: Numbered references
     unit: ""
     example: false
+  - key: reference_font_family
+    label: Reference entry font
+    unit: ""
+    example: SimSun
+    note: Omit to follow the body font.
+  - key: reference_size_pt
+    label: Reference entry font size
+    unit: pt
+    example: 10.5
+    note: Omit to follow the body text (10.5 pt and 12 pt are common).
+  - key: reference_line_spacing
+    label: Reference entry line spacing
+    unit: x
+    example: 1.0
+    note: Omit to follow the body text. 1.0 = single (common for entries).
+  - key: reference_new_page
+    label: References start on a new page
+    unit: ""
+    example: true
+    note: true / false. Omit when the requirement says nothing about it.
+  - key: reference_heading_bold
+    label: Reference heading bold
+    unit: ""
+    example: true
+    note: true / false. Omit when unspecified (MLA requires not bold).
+  - key: reference_heading_centered
+    label: Reference heading centered
+    unit: ""
+    example: true
+    note: true / false. Omit when unspecified (IEEE is left-aligned).
 
 example_filled:
   margin_top_in: 1.0
@@ -112,7 +212,40 @@ example_filled:
   space_after_pt: 0.0
   # header_distance_in: 0.5   # optional — only when the requirement states it (MLA 9)
   columns: 1
-  heading_levels: 5
+  # paper_size: A4      # optional — only when the requirement states it (no default)
+  # page_number_position: top-right       # optional — top-right (header) / bottom-center (footer)
+  # title_page_title_centered: true      # optional — omit when unspecified
+  # title_page_title_bold: true          # optional — omit when unspecified
+  # title_page_author_centered: true     # optional — omit when unspecified
+  heading_levels: 3
+  heading_formats:
+    1:
+      font_family: SimHei
+      size_pt: 16
+      bold: true
+      alignment: center
+      number_prefix: number
+    2:
+      font_family: KaiTi
+      size_pt: 14
+      bold: true
+      italic: false
+      alignment: left
+    3:
+      font_family: SimSun
+      size_pt: 12
+      bold: true
+      italic: false
+      alignment: left
+      indent_in: 0.5
   reference_style: APA
   reference_hanging_indent_in: 0.5
   reference_numbered: false
+  # The reference list itself is often formatted differently from the body text.
+  # Omit any of these when the requirement says nothing about them.
+  # reference_font_family: SimSun
+  # reference_size_pt: 10.5
+  # reference_line_spacing: 1.0
+  # reference_new_page: true
+  # reference_heading_bold: true
+  # reference_heading_centered: true

@@ -73,10 +73,19 @@ class HeadingLevelFormat:
     """
 
     alignment: Optional[str] = None      # "left" / "center" / "right"
-    bold: bool = False
-    italic: bool = False
+    # v2.3.65：加粗 / 斜体改**三态**（None=本级不规定 / True=必须 / False=必须不是）。
+    # 旧写法是纯 bool、默认 False，分不清「未规定」与「明确不加粗」；一旦据此修正，
+    # 会去主动清除作者原有的加粗（越界）。三态下 None 一律不触碰该属性。
+    bold: Optional[bool] = None
+    italic: Optional[bool] = None
     run_in: bool = False                 # L4/L5：标题与正文接排（同行）
-    indent: bool = False                 # 缩进式标题（L4/L5 首行缩进）
+    indent: bool = False                 # 缩进式标题（L4/L5 首行缩进）——旧的开关式写法
+    # v2.3.65：缩进量可填（英寸）。学校模板里大量是「标题左缩进 0.5 英寸 / 首行缩进 0.25」
+    # 这种具体值，只有一个开关表达不了。为 None 时回退到旧的 indent 开关（0.5 英寸）。
+    indent_in: Optional[float] = None
+    # v2.3.65：每级标题可以有自己的字体（很多学校要求「一级黑体、二级楷体」）。
+    # None = 跟随正文字体（不臆造），这是旧行为，保持兼容。
+    font_family: Optional[str] = None
     size_pt: Optional[float] = None      # None = 与正文同字号
     number_prefix: Optional[str] = None  # 见上；None = 不加章节编号
     uppercase: bool = False              # 标题文本全大写（IEEE 约定）
@@ -116,6 +125,13 @@ class StyleSpec:
     # 栏数是结构性页面维度：选中某规范作为**来源**即为其显式布局意图，checker 对此
     # 不做「spec→info」降级（与页边距/字体等软参考不同），不匹配时照常 warn。
     columns: Optional[int] = 1
+    # 纸张大小（Letter / A4 / Legal / A5）。None = 该风格不规定（由学校模板 / 用户决定）。
+    # 🔴 这是**通用维度，不属于任何引用规范**：北美（美/加）多用 Letter（8.5×11 in），
+    # 欧洲、中国、澳洲等用 A4（210×297 mm）。同一份 APA 论文在伦敦交就是 A4、
+    # 在纽约交就是 Letter —— 所以真正说了算的是学校模板/客户，规范的只是「典型值参考」。
+    # 因此 spec 来源固定降级为 info（只提示「APA 常用 Letter，你的是 A4，请确认学校要求」），
+    # 学校模板 / 问卷 / AI 显式给出时才硬判。
+    paper_size: Optional[str] = None
     heading_formats: dict = field(default_factory=dict)  # 每级直接格式化规则（不写 styleId）
     title_page: Optional[TitlePageFormat] = None          # 标题页规则；None = 不自动处理
     # —— 学生/专业分层（APA 7th 专用，其余风格留默认中性值）——
@@ -133,6 +149,13 @@ class StyleSpec:
     page_number_position: Optional[str] = None   # 页码位置，如 "top-right"；None=不检查。APA=top-right
     reference_new_page: bool = False             # 参考文献须另起一页；APA=True
     font_allowlist: tuple = ()                   # 允许字体清单；空=不限制（模板驱动）。APA=多种
+    # 字体 → 该字体在规范下的**合规字号**（像素级配对）。APA 7th §2.19 的允许清单不是
+    # 「一串字体名」，而是「字体+字号」配对：TNR 12 / Calibri 11 / Arial 11 / Georgia 11 /
+    # Lucida Sans Unicode 10 / Computer Modern 10。只比字体名不比字号 → Calibri 12pt 会被
+    # 误判为合格。键为字体名（原样大小写），值为磅值；空 dict = 不做配对检查。
+    # 🔴 有了这张表，修正就不必「替客户换字体」（换字体是越权：6 种都合规），
+    #    只需**保留客户选的字体、把字号校正到该字体的规范值**（只动 w:sz，不动 w:rFonts）。
+    font_allowlist_sizes: dict = field(default_factory=dict)
     running_head_max_chars: Optional[int] = None # 页眉短标题最大字符数；None=不检查。APA专业版=50
     reference_alpha_sort_hint: bool = False      # 参考文献字母序仅做提示（不动内容）；APA=True
     running_head_kind: str = "apa"               # running head 形态："apa"=短标题(专业版) / "mla"=姓氏+页码；仅 running_head=True 时生效
@@ -148,6 +171,7 @@ class StyleSpec:
             "reference": asdict(self.reference),
         "heading_levels": self.heading_levels,
         "columns": self.columns,
+        "paper_size": self.paper_size,
         "heading_formats": {str(k): asdict(v) for k, v in self.heading_formats.items()},
         "title_page": asdict(self.title_page) if self.title_page else None,
         "running_head": self.running_head,
@@ -158,6 +182,7 @@ class StyleSpec:
         "page_number_position": self.page_number_position,
         "reference_new_page": self.reference_new_page,
         "font_allowlist": list(self.font_allowlist),
+        "font_allowlist_sizes": dict(self.font_allowlist_sizes),
         "running_head_max_chars": self.running_head_max_chars,
         "reference_alpha_sort_hint": self.reference_alpha_sort_hint,
         "notes": self.notes,
@@ -170,18 +195,61 @@ class StyleSpec:
 #       这些页面值仅作为「参考」而非硬性要求（页面以学校模板/问卷为准）。
 # ---------------------------------------------------------------------------
 
+# APA 7th §2.19 官方推荐的 6 款「无障碍、可读」字体，**每种字体绑定自己的合规字号**。
+# 这张表是「字体白名单」的单一真相源：清单本身 = 键序列，配对字号 = 值。
+#   Times New Roman 12pt / Calibri 11pt / Arial 11pt /
+#   Georgia 11pt / Lucida Sans Unicode 10pt / Computer Modern 10pt
+# 🔴 只比字体名不比字号是错的（Calibri 12pt 会被误判合格）；旧版还误含 Lucida Console、
+#    Courier New（等宽，非 APA 推荐）、漏了 Computer Modern，已在 v2.3.65 修正。
+APA_FONT_SIZES: dict[str, float] = {
+    "Times New Roman": 12.0,
+    "Calibri": 11.0,
+    "Arial": 11.0,
+    "Georgia": 11.0,
+    "Lucida Sans Unicode": 10.0,
+    "Computer Modern": 10.0,
+}
+
+
+def size_for_font(family: Optional[str],
+                  pairs: Optional[dict] = None) -> Optional[float]:
+    """给定字体名，返回该字体在``pairs``表中的合规字号（磅）；查不到返回 None。
+
+    归一规则：忽略大小写、折叠空白、忽略引号（Word 里 "Times New Roman" 可能带
+    撇号或用 ``TimesNewRoman`` 变体）。查不到时**绝不猜**——宁可只提示，也不按
+    别的字体的字号去改客户的文档。
+    """
+    if not family or not pairs:
+        return None
+
+    def _norm(s: str) -> str:
+        return "".join(str(s).replace("'", "").replace("'", "")
+                       .replace('"', "").split()).lower()
+
+    want = _norm(family)
+    for k, v in pairs.items():
+        if _norm(k) == want:
+            return float(v)
+    return None
+
+
 # APA 7 五级的精确直接格式化规则（官方手册 §2.26–2.27）。绝不写 styleId。
+# ⚠️ 一律**关键字传参**：v2.3.65 给 HeadingLevelFormat 增补 indent_in / font_family
+# 两个字段，插在 size_pt 之前；旧的位置写法会让第 6~9 位参数整体错位（"roman" 会
+# 落到 font_family、"desc" 会落到 number_prefix → 编号前缀被塞进标题正文）。
 APA_HEADING: dict[int, HeadingLevelFormat] = {
-    1: HeadingLevelFormat("center", True, False, False, False, None,
-                          "centered, bold, title case"),
-    2: HeadingLevelFormat("left", True, False, False, False, None,
-                          "flush-left, bold, title case"),
-    3: HeadingLevelFormat("left", True, True, False, False, None,
-                          "flush-left, bold italic, title case"),
-    4: HeadingLevelFormat("left", True, False, True, True, None,
-                          "indented, bold, title case, ending with a period (run-in)"),
-    5: HeadingLevelFormat("left", True, True, True, True, None,
-                          "indented, bold italic, title case, ending with a period (run-in)"),
+    1: HeadingLevelFormat(alignment="center", bold=True,
+                          desc="centered, bold, title case"),
+    2: HeadingLevelFormat(alignment="left", bold=True,
+                          desc="flush-left, bold, title case"),
+    3: HeadingLevelFormat(alignment="left", bold=True, italic=True,
+                          desc="flush-left, bold italic, title case"),
+    4: HeadingLevelFormat(alignment="left", bold=True, run_in=True,
+                          indent=True, indent_in=0.5,
+                          desc="indented, bold, title case, ending with a period (run-in)"),
+    5: HeadingLevelFormat(alignment="left", bold=True, italic=True, run_in=True,
+                          indent=True, indent_in=0.5,
+                          desc="indented, bold italic, title case, ending with a period (run-in)"),
 }
 
 
@@ -193,16 +261,17 @@ APA_HEADING: dict[int, HeadingLevelFormat] = {
 # 仅 L1 做全大写（编号 + 样式），L2–L5 不改文字大小写 —— 严守「不改内容」原则；
 # 罗马数字递增由 fixer 按文档顺序维护（同层 +1、遇浅层重置更深层），幂等。
 IEEE_HEADING: dict[int, HeadingLevelFormat] = {
-    1: HeadingLevelFormat("center", True, False, False, False, None, "roman",
-                          True, "centered, bold, roman numeral, uppercase"),
-    2: HeadingLevelFormat("left", True, False, False, False, None, "upper_letter",
-                          False, "flush-left, bold, capital letter"),
-    3: HeadingLevelFormat("left", False, True, False, False, None, "number_paren",
-                          False, "flush-left, italic, arabic numeral + paren"),
-    4: HeadingLevelFormat("left", False, True, False, False, None, "lower_letter",
-                          False, "flush-left, italic, lowercase letter"),
-    5: HeadingLevelFormat("left", False, True, False, False, None, "lower_roman",
-                          False, "flush-left, italic, lowercase roman"),
+    1: HeadingLevelFormat(alignment="center", bold=True, number_prefix="roman",
+                          uppercase=True,
+                          desc="centered, bold, roman numeral, uppercase"),
+    2: HeadingLevelFormat(alignment="left", bold=True, number_prefix="upper_letter",
+                          desc="flush-left, bold, capital letter"),
+    3: HeadingLevelFormat(alignment="left", italic=True, number_prefix="number_paren",
+                          desc="flush-left, italic, arabic numeral + paren"),
+    4: HeadingLevelFormat(alignment="left", italic=True, number_prefix="lower_letter",
+                          desc="flush-left, italic, lowercase letter"),
+    5: HeadingLevelFormat(alignment="left", italic=True, number_prefix="lower_roman",
+                          desc="flush-left, italic, lowercase roman"),
 }
 
 
@@ -214,14 +283,139 @@ def generic_heading_formats(levels: int) -> dict:
     out: dict = {}
     for lv in range(1, max(int(levels), 1) + 1):
         if lv == 1:
-            out[lv] = HeadingLevelFormat("center", True, False, False, False, None,
-                                         "centered, bold")
+            out[lv] = HeadingLevelFormat(alignment="center", bold=True,
+                                         desc="centered, bold")
         elif lv == 2:
-            out[lv] = HeadingLevelFormat("left", True, False, False, False, None,
-                                         "flush-left, bold")
+            out[lv] = HeadingLevelFormat(alignment="left", bold=True,
+                                         desc="flush-left, bold")
         else:
-            out[lv] = HeadingLevelFormat("left", True, True, False, False, None,
-                                         "flush-left, bold italic")
+            out[lv] = HeadingLevelFormat(alignment="left", bold=True, italic=True,
+                                         desc="flush-left, bold italic")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 每级标题规则的统一解析（v2.3.65）
+#
+# 背景：每级标题参数有四个可能的来源 —— 学校模板（docx 采样）、手填问卷、
+# AI 填表、内置规范。历史上只有内置规范这一路真的被引擎消费：
+#   ``fmt_map = spec.heading_formats or generic_heading_formats(...)``
+# 于是学校模板明明写着「一级标题左对齐、黑体三号」，修正器却按写死的
+# 「L1 居中加粗」去改 —— 模板驱动的铁律被绕过。这里把「谁说了算」收成一处：
+#   显式来源（模板/问卷/AI，即 TargetProfile.heading_formats）
+#     > 内置规范规则 > 最深层回退。
+# ---------------------------------------------------------------------------
+
+_HEADING_ALIGN_VALUES = ("left", "center", "right", "justify")
+# 与 fixer._section_number_prefix 支持的形态一一对应
+_NUMBER_PREFIX_VALUES = ("number", "roman", "upper_letter", "lower_letter",
+                         "lower_roman", "number_paren")
+
+
+def describe_heading(f: "HeadingLevelFormat") -> str:
+    """给一级标题规则拼一句英文说明（用于报告 / 文档批注，绝不外泄中文）。"""
+    bits: list = []
+    if f.alignment:
+        bits.append({"left": "flush-left", "center": "centered",
+                     "right": "flush-right", "justify": "justified"}.get(f.alignment, f.alignment))
+    if f.bold:
+        bits.append("bold")
+    if f.italic:
+        bits.append("italic")
+    if f.uppercase:
+        bits.append("uppercase")
+    if f.font_family:
+        bits.append(str(f.font_family))
+    if f.size_pt:
+        bits.append(("%g pt" % float(f.size_pt)))
+    ind = f.indent_in if f.indent_in is not None else (0.5 if f.indent else None)
+    if ind:
+        bits.append(("first-line indent %g in" % float(ind)))
+    if f.number_prefix:
+        bits.append("numbered (%s)" % f.number_prefix)
+    if f.run_in:
+        bits.append("run-in with body text")
+    return ", ".join(bits) if bits else "format not specified"
+
+
+def heading_level_format_from_dict(raw: dict) -> "HeadingLevelFormat":
+    """把手填 / AI / 学校模板给出的**一级标题 dict** 转成 HeadingLevelFormat。
+
+    只认白名单字段；值不合法就丢掉（不臆造）。缺省字段保持 None/False 语义：
+    ``bold=None`` / ``italic=None`` 表示「本级不规定该属性」，修正器一个字节都不写。
+    """
+    raw = raw if isinstance(raw, dict) else {}
+
+    def _num(key):
+        v = raw.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _tri(key):
+        v = raw.get(key)
+        if v is None or v == "":
+            return None
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "y")
+        return bool(v)
+
+    al = raw.get("alignment")
+    al = str(al).strip().lower() if al is not None else None
+    if al not in _HEADING_ALIGN_VALUES:
+        al = None
+    prefix = raw.get("number_prefix")
+    if prefix is not None:
+        prefix = str(prefix).strip()
+        if prefix not in _NUMBER_PREFIX_VALUES:
+            prefix = None          # 不认识就不编号，绝不照着乱塞前缀
+    font = raw.get("font_family")
+    font = str(font).strip() if font else None
+
+    f = HeadingLevelFormat(
+        alignment=al,
+        bold=_tri("bold"),
+        italic=_tri("italic"),
+        run_in=bool(_tri("run_in")),
+        indent=bool(_tri("indent")),
+        indent_in=_num("indent_in"),
+        font_family=font,
+        size_pt=_num("size_pt"),
+        number_prefix=prefix,
+        uppercase=bool(_tri("uppercase")),
+        desc=str(raw.get("desc") or "").strip(),
+    )
+    if not f.desc:
+        f.desc = describe_heading(f)
+    return f
+
+
+def resolve_heading_formats(explicit: Optional[dict] = None,
+                            spec_formats: Optional[dict] = None,
+                            levels: Optional[int] = None) -> dict:
+    """决定「每级标题用哪套规则」，单一真相（修正器与检查器共用）。
+
+    优先级：``explicit``（学校模板 / 手填问卷 / AI 填表）> ``spec_formats``（内置规范）
+    > ``generic_heading_formats(levels)``（只在两层都空时才兜底的通用方案）。
+
+    ⚠️ 有 ``explicit`` 时**只用 explicit**，绝不拿内置规范去补它没写的层级 ——
+    学校模板就是学校模板，混进 APA 的层级规则等于偷偷换了一套格式（模板驱动铁律）。
+    explicit 没覆盖的深层级，由调用方按「回退到最深层规则」处理。
+    """
+    explicit = explicit or {}
+    spec_formats = spec_formats or {}
+    if not explicit:
+        if spec_formats:
+            return dict(spec_formats)
+        return generic_heading_formats(levels or 0)
+    out: dict = {}
+    top = max(int(k) for k in explicit)
+    for lv in range(1, top + 1):
+        if lv in explicit:
+            out[lv] = heading_level_format_from_dict(explicit[lv])
     return out
 
 
@@ -229,14 +423,9 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
                expect_author_note: bool, title_page_kind: str, notes: str,
                page_number_position: Optional[str] = "top-right",
                reference_new_page: bool = True,
-               # APA 7th (§2.19) 官方推荐的 6 款「无障碍、可读」字体：
-               # 11pt Calibri / 11pt Arial / 10pt Lucida Sans Unicode /
-               # 12pt Times New Roman / 11pt Georgia / 10pt Computer Modern。
-               # 旧版误含 Lucida Console、Courier New（等宽字体，非 APA 推荐）且漏了 Computer Modern，
-               # 会导致「用 Courier New 反而判定通过、用 Computer Modern 反而提示」的反向错误；此处修正。
-               font_allowlist: tuple = ("Times New Roman", "Calibri", "Arial",
-                                        "Georgia", "Lucida Sans Unicode",
-                                        "Computer Modern"),
+               # APA 7th (§2.19) 的 6 款推荐字体与各自字号见模块级 ``APA_FONT_SIZES``
+               # （单一真相源；清单由该表的键序列派生，避免两处各写一份走样）。
+               font_allowlist: tuple = tuple(APA_FONT_SIZES),
                running_head_max_chars: Optional[int] = None,
                reference_alpha_sort_hint: bool = True) -> StyleSpec:
     """构造一个 APA 7th 规范档（学生/专业共享同一套正文/标题/参考文献规则，仅前置材料不同）。
@@ -266,6 +455,7 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         ),
         heading_levels=5,
         heading_formats=APA_HEADING,
+        paper_size="Letter",     # APA 7th §2.1：8.5 × 11 in（北美 Letter）
         title_page=TitlePageFormat(True, True, True),
         running_head=running_head,
         expect_abstract=expect_abstract,
@@ -274,6 +464,8 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         page_number_position=page_number_position,
         reference_new_page=reference_new_page,
         font_allowlist=font_allowlist,
+        # 字体→合规字号配对表（APA 6 款）。修正时只改字号、绝不改客户选的字体。
+        font_allowlist_sizes=dict(APA_FONT_SIZES),
         running_head_max_chars=running_head_max_chars,
         reference_alpha_sort_hint=reference_alpha_sort_hint,
         notes=notes,
@@ -329,6 +521,7 @@ SPECS: dict[str, StyleSpec] = {
             checks=("author_title_order",),
         ),
         heading_levels=0,
+        paper_size="Letter",     # MLA 9th / Purdue OWL：8.5 × 11 in
         title_page=TitlePageFormat(True, False, False),
         # —— MLA 9th 版式检查开关（Purdue OWL general_format + 样例论文，均经逐字核对）——
         page_number_position="top-right",          # 页码右上（MLA 要求每页右上姓氏+页码）
@@ -358,6 +551,7 @@ SPECS: dict[str, StyleSpec] = {
         ),
         heading_levels=5,
         columns=2,   # IEEE 标准两栏（会议/期刊）：选此规范即声明双栏布局意图
+        paper_size=None,   # IEEEtran 官方模板 A4 / US Letter 两版并存 → 不规定，由模板决定
         heading_formats=IEEE_HEADING,
         title_page=TitlePageFormat(True, True, True),
         notes="Numeric (sequential) citation system [1]; section headings use Roman/Arabic "

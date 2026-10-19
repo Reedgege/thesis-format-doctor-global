@@ -47,11 +47,11 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 from ..engine import checker, report as report_mod
-from ..engine.docx_reader import DocxReadError
+from ..engine.docx_reader import DocxReadError, PAPER_SIZES
 from ..engine.fixer import compute_changes, fix_docx, same_file, _compute_changes
 from ..engine.questionnaire import (
     FIELD_RANGES, QUESTIONNAIRE_SCHEMA, TargetProfile, build_target,
-    apply_page_overrides,
+    apply_page_overrides, PAGE_NUMBER_POSITIONS,
 )
 from ..engine.specs import SPEC_ORDER, spec_display
 from ..license import license as lic
@@ -170,6 +170,17 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _TEMPLATE_PATH = os.path.join(_HERE, "..", "data", "ai_questionnaire_template.yaml")
 
 _FIELD_RANGE = FIELD_RANGES
+
+
+def _opt_val(opts, disp):
+    """下拉「显示名 → 引擎值」反查（显示名是给人看的，绝不把文字反解析成值）。
+
+    ``opts`` 是 [(value, display), ...]；找不到返回 None（= 不设定）。
+    """
+    for value, text in opts or ():
+        if text == disp:
+            return value
+    return None
 
 # 引用规范下拉的展示名：引擎 key 已是分层后的 APA-Student / APA-Professional，
 # 这里只把界面展示名写清楚（学生版 / 专业版），其余风格用 key 本身。
@@ -1448,6 +1459,8 @@ class App:
                                        self._export_template, style="secondary",
                                        font=F["F_BTN_S"], height=42)
         self._export_btn.pack(fill="x")
+        # 它只在来源 = AI 导入时才有意义（6/7 项互斥），建完按当前来源收一次口
+        self._sync_export_visible()
 
     def _hairline(self, parent):
         """字段之间的极细分隔线。
@@ -1541,7 +1554,8 @@ class App:
             ("MLA", "src_mla"),
             ("IEEE", "src_ieee"),
             (None, "src_school"),
-            (None, "src_custom"),
+            (None, "src_manual"),
+            (None, "src_ai"),
         ]
         disp_values = [self.tr(k) for _, k in self._source_map]
         self._source_disp = tk.StringVar(value=self.tr(self.source_mode.get()))
@@ -1598,10 +1612,11 @@ class App:
             self._applying_source = False
 
     def _apply_source_mode(self, mode_key, refresh=True):
-        """按来源模式设置 spec_key + 高级区可用 / 展开态。
+        """按来源模式设置 spec_key + 高级区可用 / 展开态 + 显示哪一块子面板。
 
         - 内置规范（前 4 项）：spec_key 落盘、高级区整片置灰并折叠；
-        - 学校模板 / 自定义：spec_key 清空、高级区展开且可用。
+        - 学校模板 / 自定义：spec_key 清空、高级区展开且可用，**只展开对应那一块**
+          （v2.3.65 起两块互斥显示，不再同时摊开）。
 
         refresh=False 用于初始构建期（不触发 _relayout_all，避免访问尚未建好的控件）；
         用户交互时 refresh=True，再做完整重测量与刷新。
@@ -1611,8 +1626,30 @@ class App:
             if k == mode_key:
                 spec_key = sk
                 break
+        # 单一真相：以"应用哪一个来源"为准，顺手把 source_mode 对齐。
+        # 旧版只有 _on_source_pick 会写 source_mode，程序化调用（测试 / 恢复状态）时
+        # 两者会不一致 —— _build_target 与「导出按钮显隐」就可能读到旧来源。
+        if self.source_mode.get() != mode_key:
+            was = getattr(self, "_applying_source", False)
+            self._applying_source = True
+            try:
+                self.source_mode.set(mode_key)
+            finally:
+                self._applying_source = was
+        # 下拉框显示的文案也得跟上（它和 source_mode 是"显示名 ↔ 键"两套值）。
+        # 真实点击时由 _on_source_pick 从选中项反推，程序化切换（恢复状态 / 测试）
+        # 不补这一步，就会出现"面板换成 AI 导入、下拉还写着 APA"的错位。
+        try:
+            disp = self.tr(mode_key)
+            if getattr(self, "_source_disp", None) is not None and self._source_disp.get() != disp:
+                self._source_disp.set(disp)
+        except Exception:
+            pass
         self.spec_key.set(spec_key if spec_key is not None else "")
         self._adv_enabled = spec_key is None
+        is_school = mode_key == "src_school"
+        is_manual = mode_key == "src_manual"
+        is_ai = mode_key == "src_ai"
 
         def _flip():
             """折叠/展开高级区并刷新置灰态（纯显隐，不含测量）。"""
@@ -1626,6 +1663,22 @@ class App:
                     self._adv_body.pack(fill="x", pady=(theme.SECTION_GAP, 0))
                     self._adv_chev.config(text="▾")
                     self._adv_open = True
+            # v2.3.65：来源是 7 选 1、**互斥**的 → 子面板也只显示被选中的那一块。
+            # 旧版学校模板与自定义同时摊开，客户选了自定义还看见「University template」，
+            # 自然要问"手动输入为什么还要学校模板"。三块（学校模板 / 手填问卷 / AI 导入）
+            # 一一对应三个来源，同一时刻最多露一块。
+            for frame, show, pad in (
+                    (getattr(self, "_school_frame", None), is_school, (4, 10)),
+                    (getattr(self, "_manual_frame", None), is_manual, (4, 10)),
+                    (getattr(self, "_ai_frame", None), is_ai, (4, 2))):
+                if frame is None:
+                    continue
+                if show:
+                    frame.pack(fill="x", pady=pad)
+                else:
+                    frame.pack_forget()
+            # 「Export AI template」只属于 AI 导入这条路（老板：只在 AI 导入时显示）
+            self._sync_export_visible()
             self._paint_advanced_state()
 
         if not refresh:
@@ -1646,6 +1699,27 @@ class App:
             self._refresh_rows()      # 内部 _sync_ui → _relayout_all（可嵌套闸门）
         # 出闸门后一次完整刷新，最终画面立刻上屏（不等事件循环）。
         self._flush_frame()
+
+    def _sync_export_visible(self):
+        """「Export AI template」按钮只在来源 = Import configuration (AI) 时出现。
+
+        它属于 AI 导入这条路的配套设施（导出模板 → 交给 AI 填 → 再导回来），
+        选内置规范 / 学校模板 / 手填问卷时留在界面上只会干扰。
+        """
+        btn = getattr(self, "_export_btn", None)
+        if btn is None:
+            return
+        try:
+            shown = btn.winfo_manager() == "pack"
+        except Exception:
+            # 切换语言会整体重建界面：此刻 _export_btn 还指着已被销毁的旧控件
+            # （winfo_manager 会抛 TclError）。等新按钮建好后 _build_left 末尾再收口。
+            return
+        if self.source_mode.get() == "src_ai":
+            if not shown:
+                btn.pack(fill="x")
+        elif shown:
+            btn.pack_forget()
 
     def _paint_advanced_state(self):
         """高级区可用态外观：可用=正常色，禁用=灰色（标题 + 箭头）。"""
@@ -1811,35 +1885,29 @@ class App:
             "<<ComboboxSelected>>", lambda e: self._on_input_changed())
 
     def _build_adv_custom(self, parent):
-        """高级区 ②：自定义面板（手填问卷 + AI 导入两入口）。
+        """高级区 ②③：手填问卷 / AI 导入——**各自是一个独立来源**，互斥显示。
 
-        v2.3.64 按老板反馈改的三处：
-        ① 与上面「学校模板」块之间加一条细分隔线 —— 两块标题字号一样、间距又近，
-           客户容易把 Custom 这两行看成 School Template 的续行；
-        ② 两行**不再罗列会检查哪些格式项**（"Page layout: margins, font, size, spacing"
-           这类既列不全、又挤掉按钮），只留「已填写 / 未填写」「已导入 / 未导入」状态；
-        ③ 按钮改成**先入队**（见下方 pack 注释），修掉 "Import" 被压窄只剩 "mpor"。
+        v2.3.65：来源下拉是 7 选 1、互斥的。旧版把「手填问卷 + AI 导入」塞进同一个
+        Custom 选项里，客户选了 Custom 反而同时看见学校模板、问卷、AI 三样入口，
+        逻辑上说不通（老板原话：「手动输入为什么还要学校模板」「这七个选项是互斥的」）。
+        现在拆成两块独立面板，由 ``_apply_source_mode`` 按来源只显示对应的那一块：
+
+        - 学校模板（``_build_adv_school``）：模板行 + 参考文献格式下拉（**只有这项有**）
+        - 手填问卷（本函数前半）：问卷行
+        - AI 导入（本函数后半）：导入配置行（+ 左卡底部的「Export AI template」）
+
+        两行都保留 v2.3.64 的两处修正：不再罗列格式明细、按钮先入队避免被压窄裁字。
         """
         tr = self.tr
         F = self.F
-        # ① 分隔线：两块之间的视觉分界（1px，跟随高级区一起显隐）
-        tk.Frame(parent, bg=theme.BORDER, height=1).pack(fill="x", pady=(2, 14))
-        sec = tk.Frame(parent, bg=theme.SURFACE)
-        sec.pack(fill="x", pady=(0, 4))
-        self._custom_frame = sec
-        h = tk.Frame(sec, bg=theme.SURFACE)
-        h.pack(fill="x")
-        IconBadge(h, "sliders", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
-        tk.Label(h, text=tr("adv_custom_title"), bg=theme.SURFACE, fg=theme.TEXT,
-                 font=F["F_SUBTITLE"], anchor="w").pack(side="left", padx=(8, 0))
-        tk.Label(sec, text=tr("adv_custom_desc"), bg=theme.SURFACE, fg=theme.TEXT_2,
-                 font=F["F_HELP"], anchor="w", justify="left").pack(
-            fill="x", pady=(1, 6))
 
-        # —— 行1：手填问卷 ——
+        # —— ② 手填问卷 ——
+        sec = tk.Frame(parent, bg=theme.SURFACE)
+        sec.pack(fill="x", pady=(4, 10))
+        self._manual_frame = sec
         r1 = tk.Frame(sec, bg=theme.SURFACE)
-        r1.pack(fill="x", pady=(2, 10))
-        # ③ 按钮**先**入队。Tk 的 pack 在横向空间不够时是"压缩最后入队的控件"，
+        r1.pack(fill="x")
+        # 按钮**先**入队。Tk 的 pack 在横向空间不够时是"压缩最后入队的控件"，
         # 而 RoundButton 是自绘 canvas：一旦被压窄，居中绘制的文字就从两侧被裁
         # （真机截图实测 "Import" 只剩 "mpor"）。先让按钮占住自己的宽度，
         # 剩余空间再分给左侧文字列 —— 无论文案多长，按钮字都完整。
@@ -1853,15 +1921,18 @@ class App:
         tk.Label(c1, text=tr("row_questionnaire_title"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_SUBTITLE"], anchor="w").pack(
                      side="left", padx=(8, 0), fill="x", expand=True)
-        # ② 只留状态行（已填写 / 未填写），明细留给复核弹窗去看
+        # 只留状态行（已填项数 / 未填写），明细留给复核弹窗去看
         self._q_name = tk.Label(c1, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
                                 font=F["F_HELP"], anchor="w", justify="left")
         self._q_name.pack(fill="x", pady=(2, 0))
         _auto_wrap(self._q_name, c1, 0)
 
-        # —— 行2：AI 导入配置 ——
-        r2 = tk.Frame(sec, bg=theme.SURFACE)
-        r2.pack(fill="x", pady=(0, 2))
+        # —— ③ AI 导入配置 ——
+        sec2 = tk.Frame(parent, bg=theme.SURFACE)
+        sec2.pack(fill="x", pady=(4, 2))
+        self._ai_frame = sec2
+        r2 = tk.Frame(sec2, bg=theme.SURFACE)
+        r2.pack(fill="x")
         RoundButton(r2, text=tr("btn_ai_import"),
                     command=self._pick_ai_config, style="secondary",
                     font=F["F_BTN_S"], height=28, padx=12).pack(
@@ -2360,7 +2431,12 @@ class App:
         # 问卷 / AI 两行只显示「填没填」（v2.3.64：不再罗列会检查哪些格式项，
         # 明细留给复核弹窗）。问卷给出**已填项数**：只写 "Filled in" 客户不知道
         # 是填了两项还是全填了；只列格式项又列不全还挤掉按钮。条数两头都顾上。
-        _n_q = len(self.questionnaire_data or {})
+        _q_data = self.questionnaire_data or {}
+        _n_q = len(_q_data)
+        _hf_levels = _q_data.get("heading_formats") or {}
+        if _hf_levels:
+            # 每级标题明细按「一项一级」计数：整块只算一项会让客户以为漏填了
+            _n_q += len(_hf_levels) - 1
         if _n_q:
             self._q_name.config(text=tr("st_q_set_n", _n_q), fg=theme.SUCCESS)
         else:
@@ -2848,69 +2924,89 @@ class App:
 
     # ------------------------------------------------------------ 问卷
     def _open_questionnaire(self):
+        """手填问卷弹窗（v2.3.64 整窗按新设计重做）。
+
+        旧版是重设计时**唯一漏掉的弹窗**：``_scroll_frame`` + 一列 ttk.Entry +
+        16 行平铺 + 满行 ``#888888`` 灰字，跟复核 / 购买 / 反馈三个 ModalShell
+        弹窗完全不像同一个产品。这次统一到同一套骨架：
+
+        ① 骨架换 ``ModalShell``（14px 圆角、单一滚动条权威、``refresh_layout`` 收口）；
+        ② 16 个字段按 schema 的 ``group`` 分三块（页面排版 / 标题层级 / 参考文献），
+           不再一字排开；
+        ③ 栏数与会话复核弹窗用同一个词（单栏 / 双栏）下拉，客户不用猜 "1" 是什么；
+        ④ 帮助文字降到字段下方的小字，不再占第三列；
+        ⑤ 顺带修一个真 bug：旧版每次打开都按 schema **默认值**重置，
+           ``self.questionnaire_data`` 里已保存的值**不回显** —— 客户填完再打开
+           像是白填了，这也是它看着"根本没改过"的原因之一。现在先取已存值，
+           没有才用默认值。
+        """
         tr = self.tr
-        win = tk.Toplevel(self.root)
-        win.title(tr("q_title"))
-        win.configure(bg=PAPER)
-        self._center(win, 880, 700)
-        win.minsize(760, 560)
+        F = self.F
+        win = ModalShell(self.root, tr("q_title"), width=640, height=720,
+                         sticky_actions=True)
         self._track(win)
+        body = win.content
+        saved = dict(self.questionnaire_data or {})
 
-        tk.Label(win, text=tr("q_title"), bg=PAPER, fg=INK,
-                 font=self.F["F_DIALOG_TITLE"]).pack(pady=(16, 2))
-        tk.Label(win, text=tr("q_hint"), bg=PAPER, fg=MUTED,
-                 font=self.F["F_SMALL"]).pack(pady=(0, 8))
-        tk.Frame(win, bg=LINE, height=1).pack(fill="x", padx=24)
+        tk.Label(body, text=tr("q_hint"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_HELP"], anchor="w", justify="left",
+                 wraplength=560).pack(fill="x", pady=(0, 4))
 
-        inner = _scroll_frame(win, bg=PAPER)
-        form = tk.Frame(inner, bg=PAPER)
-        form.pack(fill="both", expand=True, padx=24, pady=10)
+        one_txt = tr("review_one_column")
+        two_txt = tr("review_two_column")
+        # 栏数用「显示名 ↔ 数值」显式映射，不把展示文案反解析成数字。
+        # ⚠️ StringVar 一律显式给 master：不给就走 tkinter 的"默认 root"，一旦进程里
+        # 先后建过/销毁过别的 Tk，变量会挂到已经死掉的解释器上（表现是下拉显示空白）。
+        col_var = tk.StringVar(master=win,
+                               value=two_txt if str(saved.get("columns", "")) == "2"
+                               else one_txt)
 
         vars_: dict = {}
-        row = 0
-        for field in QUESTIONNAIRE_SCHEMA:
-            key = field["key"]
-            tk.Label(form, text=i18n.questionnaire_label(self.lang, field), bg=PAPER,
-                     fg=INK, font=self.F["F_SMALL"], anchor="w").grid(
-                row=row, column=0, sticky="w", padx=(0, 10), pady=4)
-            ftype = field.get("type")
-            if ftype == "bool":
-                # 布尔项用"是/否"下拉，比裸复选框更清楚（默认值照 schema）
-                v = tk.BooleanVar(value=bool(field.get("default", False)))
-                cb = ttk.Combobox(form, state="readonly", width=18,
-                                  font=self.F["F_SMALL"],
-                                  values=[tr("bool_yes"), tr("bool_no")])
-                cb.set(tr("bool_yes") if v.get() else tr("bool_no"))
-                cb.grid(row=row, column=1, sticky="w")
-                vars_[key] = ("bool", cb, v)
-            elif ftype == "choice":
-                v = tk.StringVar(value=str(field.get("default", "")))
-                ttk.Combobox(form, textvariable=v, values=field.get("options", []),
-                             state="readonly", width=18,
-                             font=self.F["F_SMALL"]).grid(row=row, column=1, sticky="w")
-                vars_[key] = ("str", v)
-            else:
-                v = tk.StringVar(value=str(field.get("default", "")))
-                ttk.Entry(form, textvariable=v, width=20,
-                          font=self.F["F_SMALL"]).grid(row=row, column=1, sticky="w")
-                vars_[key] = ("str", v)
-            hint = i18n.questionnaire_help(self.lang, field)
-            tk.Label(form, text=hint, bg=PAPER, fg="#888888", font=self.F["F_FOOT"],
-                     wraplength=330, justify="left", anchor="w").grid(
-                row=row, column=2, sticky="w", padx=(12, 0))
-            row += 1
+        for gi, (gkey, gtitle) in enumerate((("page", "q_sec_page"),
+                                             ("heading", "q_sec_heading"),
+                                             ("reference", "q_sec_refs"))):
+            fields = [f for f in QUESTIONNAIRE_SCHEMA if f.get("group") == gkey]
+            if not fields:
+                continue
+            self._review_section(body, tr(gtitle), 0 if gi == 0 else theme.SECTION_GAP)
+            grid = tk.Frame(body, bg=theme.SURFACE)
+            grid.pack(fill="x", pady=(0, 4))
+            grid.columnconfigure(0, weight=1, uniform="qcol")
+            grid.columnconfigure(1, weight=1, uniform="qcol")
+            for i, field in enumerate(fields):
+                r, c = divmod(i, 2)
+                cell = tk.Frame(grid, bg=theme.SURFACE)
+                cell.grid(row=r, column=c, sticky="new",
+                          padx=(0, 14) if c == 0 else (0, 0), pady=(0, 10))
+                self._q_field(cell, field, vars_, saved, col_var, one_txt, two_txt)
+            if gkey == "heading":
+                # 层级数这个数字只是"有几级"，真正干活的参数在下面这张明细表里
+                lvl_var = vars_.get("heading_levels", (None, None))[1]
+                self._q_heading_table(body, saved, vars_, lvl_var)
 
         def _save():
             data: dict = {}
             warnings: list = []
             for field in QUESTIONNAIRE_SCHEMA:
                 key = field["key"]
+                if key == "columns":
+                    # 下拉的显示名 → 数值字符串（_coerce 会转成 int）
+                    data[key] = "2" if col_var.get() == two_txt else "1"
+                    continue
+                if field.get("type") == "tri":
+                    _txt = vars_[key][1].get()
+                    if _txt == tr("bool_yes"):
+                        data[key] = True
+                    elif _txt == tr("bool_no"):
+                        data[key] = False
+                    # 「—」= 不规定：不写进数据，引擎那边就是 None
+                    continue
                 if field.get("type") == "bool":
                     _kind, cb, _v = vars_[key]
                     data[key] = (cb.get() == tr("bool_yes"))
                     continue
                 val = vars_[key][1].get().strip()
-                if not val:
+                if not val or val == tr("q_none"):
                     continue
                 if field.get("type") in ("float", "int"):
                     try:
@@ -2928,6 +3024,53 @@ class App:
                             i18n.questionnaire_label(self.lang, field), val,
                             rng[0], rng[1]))
                 data[key] = val
+
+            # —— 每级标题明细（与 AI 导出模板的 heading_formats 同一套字段）——
+            hf_opts = vars_.get("_hf_opts") or {}
+            hf_out: dict = {}
+            for row in (vars_.get("heading_formats") or []):
+                if not row.get("state", {}).get("show"):
+                    continue      # 超出「层级数」的行不参与，避免把没打算填的算进来
+                item: dict = {}
+                font = row["font"].get().strip()
+                if font:
+                    item["font_family"] = font
+                for key2, varkey, label in (("size_pt", "size", tr("q_h_size")),
+                                            ("indent_in", "indent", tr("q_h_indent"))):
+                    txt = row[varkey].get().strip()
+                    if not txt:
+                        continue
+                    try:
+                        item[key2] = float(txt)
+                    except ValueError:
+                        messagebox.showwarning(
+                            tr("q_bad_number_title"),
+                            tr("q_bad_number",
+                               "%s · %s" % (tr("q_h_lvl", row["lvl"]), label), txt),
+                            parent=win)
+                        return
+                    if key2 == "size_pt" and not (6.0 <= item[key2] <= 72.0):
+                        warnings.append("%s · %s = %s  (6–72)" % (
+                            tr("q_h_lvl", row["lvl"]), label, txt))
+                    if key2 == "indent_in" and not (0.0 <= item[key2] <= 3.0):
+                        warnings.append("%s · %s = %s  (0–3)" % (
+                            tr("q_h_lvl", row["lvl"]), label, txt))
+                al = _opt_val(hf_opts.get("aligns"), row["align"].get())
+                if al:
+                    item["alignment"] = al
+                npre = _opt_val(hf_opts.get("prefixes"), row["num"].get())
+                if npre:
+                    item["number_prefix"] = npre
+                for key2, varkey in (("bold", "bold"), ("italic", "italic"),
+                                     ("uppercase", "upper"), ("run_in", "runin")):
+                    tv = _opt_val(hf_opts.get("tris"), row[varkey].get())
+                    if tv is not None:
+                        item[key2] = tv
+                if item:
+                    hf_out[str(row["lvl"])] = item
+            if hf_out:
+                data["heading_formats"] = hf_out
+
             if warnings and not messagebox.askyesno(
                     tr("q_range_title"), tr("q_range_body", "\n".join(warnings)),
                     parent=win):
@@ -2937,10 +3080,217 @@ class App:
             self._close_one(win)
             self._on_input_changed()
 
-        bar = tk.Frame(win, bg=PAPER)
-        bar.pack(fill="x", side="bottom", pady=12)
-        ttk.Button(bar, text=tr("q_save"), style="Primary.TButton",
-                   command=_save).pack()
+        win.add_primary_action(tr("q_save"), command=_save)
+        win.add_cancel_action(tr("q_cancel"))
+        self._fit_modal(win, 640)
+
+    def _q_field(self, cell, field, store, saved, col_var, one_txt, two_txt):
+        """问卷弹窗里的单个字段：标签 / 输入控件 / 下方小字帮助。
+
+        控件按 schema 的 ``type`` 选：bool → 是/否下拉，choice → 只读下拉，
+        ``columns`` → 单栏/双栏下拉（与复核弹窗同一个词），其余 → 文本框。
+        """
+        tr = self.tr
+        F = self.F
+        key = field["key"]
+        tk.Label(cell, text=i18n.questionnaire_label(self.lang, field),
+                 bg=theme.SURFACE, fg=theme.TEXT_2, font=F["F_FOOT"],
+                 anchor="w").pack(fill="x")
+        cur = saved.get(key, field.get("default", ""))
+        if key == "columns":
+            ttk.Combobox(cell, textvariable=col_var, state="readonly", width=16,
+                         font=F["F_SMALL"], values=[one_txt, two_txt]).pack(fill="x")
+            store[key] = ("cols", col_var)
+        elif field.get("type") == "tri":
+            # 三态开关（v2.3.65）：「—」= 不规定，是/否 = 明确要求。
+            # 参考文献的「另起一页 / 标题加粗 / 标题居中」必须能表达"不规定"，
+            # 否则客户没意见的项会被当成"明确不要"，反倒去改文档。
+            cur_b = cur if isinstance(cur, bool) else None
+            v = tk.StringVar(
+                master=cell,
+                value=(tr("q_none") if cur_b is None
+                       else (tr("bool_yes") if cur_b else tr("bool_no"))))
+            ttk.Combobox(cell, textvariable=v, state="readonly", width=16,
+                         font=F["F_SMALL"],
+                         values=[tr("q_none"), tr("bool_yes"), tr("bool_no")]).pack(fill="x")
+            store[key] = ("tri", v)
+        elif field.get("type") == "bool":
+            v = tk.BooleanVar(master=cell, value=bool(cur))
+            cb = ttk.Combobox(cell, state="readonly", width=16,
+                              font=F["F_SMALL"],
+                              values=[tr("bool_yes"), tr("bool_no")])
+            cb.set(tr("bool_yes") if v.get() else tr("bool_no"))
+            cb.pack(fill="x")
+            store[key] = ("bool", cb, v)
+        elif field.get("type") == "choice":
+            # 「可留空」的 choice（schema default 为空，如纸张大小）：补一个「—」，
+            # 否则客户一旦选了 A4 就再也回不到「不规定」，只能去改文件。
+            opts = list(field.get("options", []))
+            allow_none = field.get("default", None) in ("", None)
+            shown = ([tr("q_none")] + opts) if allow_none else opts
+            init = str(cur) if str(cur) in opts else (tr("q_none") if allow_none else "")
+            v = tk.StringVar(master=cell, value=init)
+            ttk.Combobox(cell, textvariable=v, values=shown,
+                         state="readonly", width=16,
+                         font=F["F_SMALL"]).pack(fill="x")
+            store[key] = ("str", v)
+        else:
+            v = tk.StringVar(master=cell, value=("" if cur is None else str(cur)))
+            tk.Entry(cell, textvariable=v, font=F["F_BODY"], width=18,
+                     bg=theme.SURFACE, fg=theme.TEXT,
+                     highlightbackground=theme.BORDER,
+                     highlightthickness=1).pack(fill="x")
+            store[key] = ("str", v)
+        tk.Label(cell, text=i18n.questionnaire_help(self.lang, field),
+                 bg=theme.SURFACE, fg=theme.TEXT_3, font=F["F_FOOT"],
+                 anchor="w", justify="left", wraplength=262).pack(
+            fill="x", pady=(2, 0))
+
+    # ------------------------------------------------------------ 每级标题明细
+    def _q_heading_table(self, parent, saved, store, lvl_var):
+        """问卷弹窗里的「每级标题明细」表（v2.3.65）。
+
+        为什么要有这张表：老板的原话是「各层级的字体字号缩进斜体等等参数你做了吗？
+        AI 导入与手动输入一样，只是让 AI 帮客户写」。此前的问卷只问一句「标题层级数」，
+        学校要的「一级黑体三号居中、二级楷体四号左对齐、三级首行缩进 0.5 英寸」全无处
+        可填；更糟的是读进来的学校模板参数修正器也不用（被写死的通用规则覆盖）。
+
+        这张表与 AI 模板里的 ``heading_formats`` 是**同一套字段**（见
+        ai_questionnaire_template.yaml），两个入口最终都落进 TargetProfile.heading_formats，
+        检查与修正走同一条链路 —— 手填能填的，AI 也能填；AI 能填的，手填也能填。
+
+        取值一律用「显示名 ↔ 引擎值」显式映射，绝不把界面文字反解析成值（改文案就不会坏）。
+        """
+        tr = self.tr
+        F = self.F
+        aligns = [(None, tr("q_none")), ("left", tr("q_align_left")),
+                  ("center", tr("q_align_center")), ("right", tr("q_align_right")),
+                  ("justify", tr("q_align_justify"))]
+        prefixes = [(None, tr("q_none")), ("number", tr("q_prefix_number")),
+                    ("roman", tr("q_prefix_roman")),
+                    ("upper_letter", tr("q_prefix_upper_letter")),
+                    ("lower_letter", tr("q_prefix_lower_letter")),
+                    ("lower_roman", tr("q_prefix_lower_roman")),
+                    ("number_paren", tr("q_prefix_number_paren"))]
+        # 加粗 / 斜体 / 全大写 / 接排是**三态**：—=不规定，是/否=明确要求（或明确不要）
+        tris = [(None, tr("q_none")), (True, tr("bool_yes")), (False, tr("bool_no"))]
+        store["_hf_opts"] = {"aligns": aligns, "prefixes": prefixes, "tris": tris}
+
+        tk.Label(parent, text=tr("q_h_table_hint"), bg=theme.SURFACE, fg=theme.TEXT_3,
+                 font=F["F_FOOT"], anchor="w", justify="left",
+                 wraplength=560).pack(fill="x", pady=(2, 6))
+
+        table = tk.Frame(parent, bg=theme.SURFACE)
+        table.pack(fill="x", pady=(0, 6))
+
+        # 每级**两行**摆：单行 9 个控件在 640 宽的弹窗里放不下（实测 UPPER / Run-in
+        # 被右边裁掉，正是"按钮文字显示不全"那类毛病）。两行后每行都留有余量。
+        hdr1 = {1: tr("q_h_font"), 2: tr("q_h_size"), 3: tr("q_h_bold"), 4: tr("q_h_italic")}
+        hdr2 = {1: tr("q_h_align"), 2: tr("q_h_indent"), 3: tr("q_h_num"),
+                4: tr("q_h_upper"), 5: tr("q_h_runin")}
+        for col, text in hdr1.items():
+            tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_3,
+                     font=F["F_FOOT"], anchor="w").grid(
+                row=0, column=col, sticky="w", padx=(0, 8), pady=(0, 2))
+        for col, text in hdr2.items():
+            tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_3,
+                     font=F["F_FOOT"], anchor="w").grid(
+                row=1, column=col, sticky="w", padx=(0, 8), pady=(0, 4))
+
+        saved_hf: dict = {}
+        for k, v in (saved.get("heading_formats") or {}).items():
+            try:
+                saved_hf[int(k)] = dict(v or {})
+            except (TypeError, ValueError):
+                continue
+
+        def _disp(opts, value) -> str:
+            for v, d in opts:
+                if v == value:
+                    return d
+            return opts[0][1]
+
+        rows: list = []
+        for lvl in range(1, 10):          # schema 里 heading_levels 上限是 9
+            cur = saved_hf.get(lvl, {})
+            ws: list = []
+            r1 = lvl * 2               # 每个层级占两行（表头占 0/1 行）
+            r2 = lvl * 2 + 1
+
+            def _lab(text, col, row):
+                w = tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_2,
+                             font=F["F_SMALL"], anchor="w")
+                w.grid(row=row, column=col, sticky="w", padx=(0, 8), pady=(0, 3))
+                ws.append(w)
+                return w
+
+            def _combo(col, row, opts, value, width):
+                var = tk.StringVar(master=table, value=_disp(opts, value))
+                w = ttk.Combobox(table, textvariable=var, state="readonly", width=width,
+                                 font=F["F_SMALL"], values=[d for _v, d in opts])
+                w.grid(row=row, column=col, sticky="w", padx=(0, 8), pady=(0, 3))
+                ws.append(w)
+                return var
+
+            def _entry(col, row, value, width):
+                var = tk.StringVar(master=table,
+                                   value="" if value is None else str(value))
+                w = tk.Entry(table, textvariable=var, font=F["F_SMALL"], width=width,
+                             bg=theme.SURFACE, fg=theme.TEXT,
+                             highlightbackground=theme.BORDER, highlightthickness=1)
+                w.grid(row=row, column=col, sticky="w", padx=(0, 8), pady=(0, 3))
+                ws.append(w)
+                return var
+
+            _lab(tr("q_h_lvl", lvl), 0, r1)
+            font_var = tk.StringVar(master=table, value=str(cur.get("font_family") or ""))
+            cb_font = ttk.Combobox(table, textvariable=font_var, width=12,
+                                   font=F["F_SMALL"],
+                                   values=["Times New Roman", "Arial", "Calibri",
+                                           "Cambria", "Georgia", "SimSun", "SimHei",
+                                           "KaiTi", "FangSong"])
+            cb_font.grid(row=r1, column=1, sticky="w", padx=(0, 8), pady=(0, 3))
+            ws.append(cb_font)
+            size_var = _entry(2, r1, cur.get("size_pt"), 4)
+            bold_var = _combo(3, r1, tris, cur.get("bold"), 5)
+            ital_var = _combo(4, r1, tris, cur.get("italic"), 5)
+            # 第二行：对齐 / 缩进 / 编号 / 全大写 / 接排（第 1 列留空，与字体列对齐）
+            al_var = _combo(1, r2, aligns, cur.get("alignment"), 8)
+            ind_var = _entry(2, r2, cur.get("indent_in"), 4)
+            num_var = _combo(3, r2, prefixes, cur.get("number_prefix"), 7)
+            up_var = _combo(4, r2, tris, cur.get("uppercase"), 5)
+            runin_var = _combo(5, r2, tris, cur.get("run_in"), 5)
+
+            state = {"show": True}
+            rows.append({
+                "lvl": lvl, "state": state, "widgets": ws,
+                "font": font_var, "size": size_var, "bold": bold_var,
+                "italic": ital_var, "align": al_var, "indent": ind_var,
+                "num": num_var, "upper": up_var, "runin": runin_var,
+            })
+
+        def _sync_rows(*_a):
+            try:
+                want = int(float(lvl_var.get() or 0)) if lvl_var is not None else 0
+            except (TypeError, ValueError):
+                want = 0
+            # 至少露出 2 行：客户还没想好"几级"时，也得看得见这张表存在
+            visible = max(want, 2)
+            for row in rows:
+                row["state"]["show"] = row["lvl"] <= visible
+                for w in row["widgets"]:
+                    if row["state"]["show"]:
+                        w.grid()
+                    else:
+                        w.grid_remove()
+
+        if lvl_var is not None:
+            try:
+                lvl_var.trace_add("write", _sync_rows)
+            except Exception:
+                pass
+        store["heading_formats"] = rows
+        _sync_rows()
 
     # ------------------------------------------------------------ 关于 / 帮助
     def _about_dialog(self):
@@ -3391,13 +3741,28 @@ class App:
 
     # ------------------------------------------------------------ 目标画像
     def _build_target(self) -> TargetProfile:
+        """按**当前来源**组装目标画像（6 选 1 互斥 → 只取这一条路径的输入）。
+
+        v2.3.65：旧版不管选了什么来源，都把 school_template / ai / questionnaire
+        一股脑传给引擎。后果有两个:
+          ① 选了 Custom，之前点过的学校模板还在背后参与合并（界面看不见、实际生效）；
+          ② 选了内置规范，之前填过的问卷会通过"高优先级叠加"盖掉规范本身。
+        来源既然是互斥的，就只交代当前那条：规范 → 只给 spec_key；
+        学校模板 → 只给 template；自定义 → 只给问卷 / AI。
+        """
         ref = self.school_ref_style.get()
+        mode = self.source_mode.get()
+        is_school = mode == "src_school"
+        is_manual = mode == "src_manual"
+        is_ai = mode == "src_ai"
         # 默认「不检查引用」对应的显示串不是合法风格键，build_target 会忽略为 None
         return build_target(
-            self.spec_key.get(),
-            template=self.school_template.get() or None,
-            ai=self.ai_json.get() or None,
-            questionnaire=self.questionnaire_data or None,
+            # spec_key 是 StringVar，无规范时是 ""（不是 None）—— 统一转成 None 再交给
+            # 引擎，别让空串被当成一个"空规范"（v2.3.65 引擎侧也做了兜底）
+            self.spec_key.get() or None,
+            template=(self.school_template.get() or None) if is_school else None,
+            ai=(self.ai_json.get() or None) if is_ai else None,
+            questionnaire=(self.questionnaire_data or None) if is_manual else None,
             reference_style=ref or None,
         )
 
@@ -3484,33 +3849,64 @@ class App:
         ttk.Combobox(col_row, textvariable=columns_var, state="readonly", width=18,
                      values=[one_txt, two_txt]).pack(side="left")
 
+        # 纸张大小（通用维度：北美 Letter / 欧洲与中国 A4）：与引用规范无关，单独一行。
+        paper_var = tk.StringVar(value=(target.paper_size or tr("q_none")))
+        tk.Label(col_row, text=tr("review_paper_size"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_FOOT"], anchor="w").pack(side="left", padx=(18, 8))
+        ttk.Combobox(col_row, textvariable=paper_var, state="readonly", width=14,
+                     values=[tr("q_none")] + list(PAPER_SIZES)).pack(side="left")
+
+        # 页码位置（v2.3.66 客户可填）：top-right = **页眉**右上（APA/MLA 的语义），
+        # bottom-center = 页脚居中（中文论文常规）。留「—」= 不规定、不检查。
+        # 单独一行：与栏数/纸型挤同一行会把三项都挤窄（本轮之前的裁字教训）。
+        pn_row = tk.Frame(inner, bg=theme.SURFACE)
+        pn_row.pack(fill="x", padx=12, pady=(0, 8))
+        pn_var = tk.StringVar(value=(target.page_number_position or tr("q_none")))
+        tk.Label(pn_row, text=tr("review_page_number"), bg=theme.SURFACE, fg=theme.TEXT_2,
+                 font=F["F_FOOT"], anchor="w").pack(side="left", padx=(0, 8))
+        ttk.Combobox(pn_row, textvariable=pn_var, state="readonly", width=18,
+                     values=[tr("q_none")] + list(PAGE_NUMBER_POSITIONS)).pack(side="left")
+
         # —— ② Headings（只读，每级一行）——
         self._review_section(inner, tr("review_headings"), theme.SECTION_GAP)
         hfmt = target.heading_formats or {}
         if hfmt:
             head = tk.Frame(inner, bg=theme.SURFACE)
             head.pack(fill="x", padx=12, pady=(0, 4))
-            cols = (tr("review_lvl"), tr("review_align"), tr("review_bold"),
-                    tr("review_italic"), tr("review_size"), tr("review_prefix"),
-                    tr("review_upper"))
+            cols = (tr("review_lvl"), tr("q_h_font"), tr("q_h_size"), tr("q_h_bold"),
+                    tr("q_h_italic"), tr("review_align"), tr("q_h_indent"),
+                    tr("q_h_num"), tr("review_upper"))
             for j, col in enumerate(cols):
                 tk.Label(head, text=col, bg=theme.SURFACE, fg=theme.TEXT_2,
                          font=F["F_FOOT"], anchor="w").grid(
-                    row=0, column=j, sticky="w", padx=(0, 10))
+                    row=0, column=j, sticky="w", padx=(0, 6))
+            _none = tr("q_none")
+
+            def _tri(v):
+                """三态显示：None=不规定（—），True/False=是/否。"""
+                if v is None:
+                    return _none
+                return tr("review_enabled") if v else tr("review_disabled")
+
             r = 1
             for lvl in sorted(int(k) for k in hfmt):
                 d = hfmt.get(str(lvl), hfmt.get(lvl, {}))
+                _ind = d.get("indent_in")
+                if _ind is None and d.get("indent"):
+                    _ind = 0.5
                 vals = [str(lvl),
-                        str(d.get("alignment", "")),
-                        tr("review_enabled") if d.get("bold") else tr("review_disabled"),
-                        tr("review_enabled") if d.get("italic") else tr("review_disabled"),
-                        str(d.get("size_pt", "")),
-                        str(d.get("number_prefix", "")),
-                        tr("review_enabled") if d.get("uppercase") else tr("review_disabled")]
+                        str(d.get("font_family") or _none),
+                        _none if d.get("size_pt") is None else str(d.get("size_pt")),
+                        _tri(d.get("bold")),
+                        _tri(d.get("italic")),
+                        str(d.get("alignment") or _none),
+                        _none if _ind is None else str(_ind),
+                        str(d.get("number_prefix") or _none),
+                        _tri(d.get("uppercase"))]
                 for j, v in enumerate(vals):
                     tk.Label(head, text=v, bg=theme.SURFACE, fg=theme.TEXT,
                              font=F["F_SMALL"], anchor="w").grid(
-                        row=r, column=j, sticky="w", padx=(0, 10))
+                        row=r, column=j, sticky="w", padx=(0, 6))
                 r += 1
         else:
             tk.Label(inner, text=tr("review_missing"), bg=theme.SURFACE, fg=warn_fg,
@@ -3518,13 +3914,38 @@ class App:
 
         # —— ③ References（只读）——
         self._review_section(inner, tr("review_refs"), theme.SECTION_GAP)
-        ref_num = target.reference_numbered
+        _none = tr("q_none")
+
+        def _lbl(key):
+            """问卷字段的本地化标签（与手填弹窗同一套词，单一真相）。"""
+            return i18n.questionnaire_label(self.lang, {"key": key, "label": key})
+
+        def _tri_txt(v):
+            if v is None:
+                return _none
+            return tr("review_enabled") if v else tr("review_disabled")
+
+        def _num_txt(v, unit):
+            return _none if v is None else ("%g%s" % (float(v), unit))
+
+        # v2.3.65：参考文献条目本身的排版也要摊开（学校模板里常与正文不同口径），
+        # 客户在「确认」这一步就该看到「条目五号宋体单倍」这类要求，而不是只有风格名。
         ref_lines = [
-            "Reference style: %s" % (target.reference_style or tr("review_missing")),
-            "Hanging indent: %s" % (target.reference_hanging_indent_in
-                                    if target.reference_hanging_indent_in is not None else "—"),
-            "Numbered: %s" % (tr("review_enabled") if ref_num is True
-                              else (tr("review_disabled") if ref_num is False else "—")),
+            "%s: %s" % (_lbl("reference_style"),
+                        target.reference_style or tr("review_missing")),
+            "%s: %s" % (_lbl("reference_hanging_indent_in"),
+                        _num_txt(target.reference_hanging_indent_in, "″")),
+            "%s: %s" % (_lbl("reference_numbered"), _tri_txt(target.reference_numbered)),
+            "%s: %s" % (_lbl("reference_font_family"),
+                        target.reference_font_family or _none),
+            "%s: %s" % (_lbl("reference_size_pt"), _num_txt(target.reference_size_pt, "pt")),
+            "%s: %s" % (_lbl("reference_line_spacing"),
+                        _num_txt(target.reference_line_spacing, "x")),
+            "%s: %s" % (_lbl("reference_new_page"), _tri_txt(target.reference_new_page)),
+            "%s: %s" % (_lbl("reference_heading_bold"),
+                        _tri_txt(target.reference_heading_bold)),
+            "%s: %s" % (_lbl("reference_heading_centered"),
+                        _tri_txt(target.reference_heading_centered)),
         ]
         for ln in ref_lines:
             tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],
@@ -3553,6 +3974,10 @@ class App:
             edits = {key: var.get() for key, var in page_vars.items()}
             # 栏数：显示名 → 数值；仅当与当前 target.columns 不同才写回（逻辑在 apply_page_overrides）
             edits["columns"] = "2" if columns_var.get() == two_txt else "1"
+            # 纸张大小：「—」= 不规定（apply_page_overrides 会清空并取消检查）
+            edits["paper_size"] = paper_var.get()
+            # 页码位置：同上，「—」= 不规定；白名单外的值 apply_page_overrides 会丢弃
+            edits["page_number_position"] = pn_var.get()
             apply_page_overrides(target, edits)
             self._execute_check(target, win)
 

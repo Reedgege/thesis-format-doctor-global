@@ -36,7 +36,12 @@ class ModalShell(tk.Toplevel):
 
     def __init__(self, parent, title: str, width: int = 600, height: int = None, **kw):
         bg = kw.pop("bg", None) or theme.BG
+        # v2.3.64：吸底动作栏。长表单（手填问卷 16 个字段）内容比可视区高时，主按钮
+        # 会被挤到折线以下 —— 客户看不到"保存"在哪。置 True 时动作栏挂在 canvas 上
+        # 而不是 _inner 里，滚动时钉在可视区底部；默认 False，其余弹窗行为不变。
+        sticky_actions = bool(kw.pop("sticky_actions", False))
         super().__init__(parent, bg=bg, **kw)
+        self._sticky = sticky_actions
         self._title_text = title
         self._width = int(width)
         self._height = height
@@ -86,8 +91,24 @@ class ModalShell(tk.Toplevel):
         self._content.pack(fill="both", expand=True, padx=24, pady=16)
 
         # 按钮区（默认隐藏，需要时调用 add_primary_action / add_secondary_action）
-        self._button_bar = tk.Frame(self._inner, bg=theme.SURFACE)
-        self._button_bar.pack(fill="x", padx=24, pady=(0, 24))
+        if sticky_actions:
+            # 底部占位：让滚动区末尾留出动作栏的高度，否则最后一行内容会被动作栏
+            # 永久盖住、滚也滚不到。高度在 _sync_scroll 里按动作栏真实高度补齐。
+            self._bar_spacer = tk.Frame(self._inner, bg=theme.SURFACE, height=0)
+            self._bar_spacer.pack(fill="x", side="bottom")
+            # 动作栏是 canvas 的独立 item（不是 _inner 的子控件）→ 不随内容滚动
+            self._button_bar = tk.Frame(self._cv, bg=theme.SURFACE)
+            self._bar_item = self._cv.create_window(0, 0, window=self._button_bar,
+                                                    anchor="sw")
+            tk.Frame(self._button_bar, bg=theme.BORDER, height=1).pack(fill="x")
+            self._bar_pad = tk.Frame(self._button_bar, bg=theme.SURFACE)
+            self._bar_pad.pack(fill="x", padx=24, pady=(10, 16))
+        else:
+            self._bar_spacer = None
+            self._bar_item = None
+            self._button_bar = tk.Frame(self._inner, bg=theme.SURFACE)
+            self._button_bar.pack(fill="x", padx=24, pady=(0, 24))
+            self._bar_pad = self._button_bar
 
         self.update_idletasks()
 
@@ -150,6 +171,17 @@ class ModalShell(tk.Toplevel):
         self._relaying = True
         try:
             self.update_idletasks()
+            # 吸底动作栏：先按可视区宽度摆好，再把它的真实高度补进内容末尾的占位。
+            # 动作栏是 canvas 的 item，会随 canvas 一起滚动，所以每次重排 / 滚动都要
+            # 重新贴到底边（见 _place_bar）。
+            if self._sticky:
+                self._cv.itemconfigure(self._bar_item, width=max(1, w - 2))
+                self.update_idletasks()
+                bh = int(self._button_bar.winfo_reqheight())
+                if int(self._bar_spacer.cget("height") or 0) != bh:
+                    self._bar_spacer.configure(height=bh)
+                    self.update_idletasks()
+                self._place_bar(h)
             ih = int(self._inner.winfo_reqheight())
             inner_w = max(1, w - 2)
             # 至少填满可视区，避免内容短时下方留空；内容更高则按自然高度
@@ -172,8 +204,23 @@ class ModalShell(tk.Toplevel):
         finally:
             self._relaying = False
 
+    def _place_bar(self, h: int):
+        """把吸底动作栏贴到**当前可视区**底部（它自己也是 canvas item，会跟着滚）。
+
+        canvas item 的坐标是"画布坐标"，滚动后视口顶部对应 ``canvasy(0)``，
+        所以要贴底就得写成 ``canvasy(0) + h``；写死成 0 的话一滚就跑没影了。
+        """
+        if not self._sticky or self._bar_item is None:
+            return
+        try:
+            top = self._cv.canvasy(0)
+            self._cv.coords(self._bar_item, 1, top + h - 1)
+            self._cv.tag_raise(self._bar_item)
+        except Exception:
+            pass
+
     def _on_scroll(self, first: str, last: str):
-        """Canvas 的 yscrollcommand 回调：**只**同步滚动条位置。
+        """Canvas 的 yscrollcommand 回调：同步滚动条位置 + 让动作栏跟着贴底。
 
         显隐的唯一权威是 ``_sync_scroll``（它才知道内容自然高度 vs 可视高度）。
         旧版这里也自己 pack/pack_forget 一遍滚动条 —— 两处各判一次、判据还不一样
@@ -184,6 +231,8 @@ class ModalShell(tk.Toplevel):
             self._sb.set(first, last)
         except Exception:
             pass
+        if self._sticky:
+            self._place_bar(self._cv.winfo_height())
 
     def _on_wheel(self, event):
         """鼠标滚轮滚动内容（Windows 用 delta，跨平台兜底）。"""
@@ -226,7 +275,7 @@ class ModalShell(tk.Toplevel):
 
         F = i18n.resolve_font_spec(i18n.detect_lang())
         btn = widgets.RoundButton(
-            self._button_bar, text=text, command=command,
+            self._bar_pad, text=text, command=command,
             style="primary", font=F["F_BTN"], height=52
         )
         btn.pack(side="right", padx=(0, 0))
@@ -236,7 +285,7 @@ class ModalShell(tk.Toplevel):
         """添加次要操作按钮（视觉安静）。"""
         F = i18n.resolve_font_spec(i18n.detect_lang())
         btn = widgets.RoundButton(
-            self._button_bar, text=text, command=command,
+            self._bar_pad, text=text, command=command,
             style="secondary", font=F["F_BTN_S"], height=52
         )
         btn.pack(side="right", padx=(12, 0))
@@ -249,7 +298,7 @@ class ModalShell(tk.Toplevel):
 
         F = i18n.resolve_font_spec(i18n.detect_lang())
         btn = widgets.RoundButton(
-            self._button_bar, text=text, command=command,
+            self._bar_pad, text=text, command=command,
             style="ghost", font=F["F_BTN_S"], height=52
         )
         btn.pack(side="right", padx=(12, 0))

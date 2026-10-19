@@ -92,7 +92,18 @@ class DocumentProfile:
     # python-docx 1.2.0 的 Section 没有栏数属性，故直读 sectPr XML（见 _section_columns）。
     # 多分节取众数；读不到任何分节时保持 None（不臆造）。
     columns: Optional[int] = None
+    # 纸张大小（Letter / A4 / Legal / A5 / None=非标准或读不到）。**通用维度**：
+    # 北美常用 Letter，欧洲/中国常用 A4，与引用规范无关，由学校模板/客户决定。
+    # 多分节取众数；横向文档按「短边×长边」归一后识别（不会因宽高对调漏判）。
+    paper_size: Optional[str] = None
+    paper_width_in: Optional[float] = None             # 实测宽（英寸），写实值便于报告展示
+    paper_height_in: Optional[float] = None            # 实测高（英寸）
     font_family: Optional[str] = None                  # 正文最常见字体（含表格文字）
+    # 正文**每种字体各自的众数字号**：{字体名: 磅值}。
+    # 为什么不能只看「正文字体众数 + 正文字号众数」：一篇稿子正文里混用 Times New Roman
+    # 与 Calibri 时，APA 对两者的合规字号不同（12 / 11）。只看众数会把混用当成单一字体，
+    # Calibri 那几段永远判不出来、也就永远改不到位。
+    font_size_by_family: dict = field(default_factory=dict)
     font_size_pt: Optional[float] = None               # 正文最常见字号（含表格文字）
     line_spacing: Optional[float] = None               # 倍数（固定值/最小值返回 None）
     body_alignment: Optional[str] = None               # left / justify / center / right
@@ -114,9 +125,21 @@ class DocumentProfile:
     reference_heading_bold: bool = False               # 直接格式：是否有任意 run 粗体
     reference_heading_centered: bool = False           # 直接格式：段落是否居中
     reference_hanging_indent_in: Optional[float] = None  # 参考文献实测悬挂缩进（英寸）
+    # v2.3.65：参考文献条目自己的字体 / 字号 / 行距（条目常与正文不同口径，
+    # 如「正文小四双倍、条目五号单倍」）。无参考文献段或读不到 → None（不臆造）。
+    reference_font_family: Optional[str] = None
+    reference_size_pt: Optional[float] = None
+    reference_line_spacing: Optional[float] = None
     header_text: str = ""                              # 页眉可见文本（剔除 PAGE 域结果，用于 running head 长度/内容检查）
-    page_number_present: bool = False                 # 页眉/页脚中是否存在 PAGE 域（页码）
+    page_number_present: bool = False                 # 页眉/页脚中是否存在页码（PAGE 域 **或** 手打静态页码）
     page_number_right_aligned: Optional[bool] = None  # 含页码段落是否右对齐（APA 要求 top-right）；无法判定=None
+    # —— 页码位置细项（v2.3.66）：区分页眉/页脚 + 有效对齐 + 是否手打 ——
+    # 旧版只判「含 PAGE 域的段落是否右对齐」，导致①页脚右对齐被误判为符合 APA top-right
+    # （top-right 指页眉右上）②客户手打「第 1 页」被判「没有页码」→⑧补页码时出现两个页码。
+    page_number_in: Optional[str] = None              # "header" / "footer" / None
+    page_number_alignment: Optional[str] = None       # "left" / "center" / "right" / "both"（已按样式继承归一）
+    page_number_is_static: bool = False               # True=手打页码（无 PAGE 域），修正时需原地替换
+    page_number_static_text: str = ""                 # 手打页码原文（报告展示 + 前后缀保留）
     header_distance_in: Optional[float] = None       # 页眉距页顶（英寸）；MLA 9th 要求 ½″，python-docx 读 section.header_distance
     reference_new_page: Optional[bool] = None         # 参考文献标题是否另起一页（分页符/段前分页）；无参考文献段=None
     has_abstract: bool = False                        # 文档是否含 Abstract / 摘要 段落（专业版要求）
@@ -129,9 +152,20 @@ class DocumentProfile:
     title_underline: bool = False                     # 标题是否含任意下划线 run
     first_page_left_lines: int = 0                    # 标题之前左上对齐行数（MLA 首页信息块：姓名/教授/课程/日期 共 4 行）
     block_quote_candidates: list = field(default_factory=list)  # 长段落候选：{words, left_indent_in, has_quote}
+    # —— 标题页（title page）实测字段（v2.3.65）——
+    # 检测规则见 detect_title_page（checker 与 fixer 共用，单一真相源）。
+    # 以前标题页改动由 fixer 里一条不受检查驱动的流程悄悄施加：客户看不到、报告里也没有，
+    # 违反「检查→修正单一真相源」。现在先采样、由 checker 出结论，才允许修正。
+    title_page_detected: bool = False                 # 是否识别到标题页（有 Abstract/Keywords 正面信号）
+    tp_title_alignment: Optional[str] = None          # 标题页标题的对齐（center/left/...）
+    tp_title_bold: Optional[bool] = None              # 标题页标题是否加粗
+    tp_author_alignment: Optional[str] = None         # 作者/单位行的对齐
     # 每级标题格式样本（学校模板驱动：层级 → 代表性样本）。仅记录可从 docx 读出的属性；
     # number_prefix 为编号形态的最佳猜测（读不到为 None）。
     heading_formats: dict = field(default_factory=dict)         # level(int) -> HeadingFormatSample
+    # heading_formats 是否来自「伪标题」兜底采样（无 Heading 样式、靠整段加粗+字号档识别）。
+    # True 时检查报告需说明「层级是推断的」——这是口径说明，不是错误。
+    heading_formats_are_pseudo: bool = False
 
 
 @dataclass
@@ -142,6 +176,12 @@ class HeadingFormatSample:
     bold: Optional[bool] = None
     italic: Optional[bool] = None
     indent: Optional[bool] = None        # 标题段是否缩进（左缩进或首行缩进 > 0）
+    # v2.3.65：缩进的**具体英寸数**（左缩进优先、否则首行缩进）。学校模板里写的是
+    # 「标题左缩进 0.5 英寸」这种值，只有一个 bool 表达不了，也无法据此修正。
+    indent_in: Optional[float] = None
+    # v2.3.65：本级标题自己的字体（run → 段落样式 → 文档默认 三级回退）。
+    # 很多学校要求「一级黑体、二级楷体」，只记正文字体会把标题字体统一抹平。
+    font_family: Optional[str] = None
     size_pt: Optional[float] = None      # 字号（磅）
     number_prefix: Optional[str] = None  # 编号形态：number/roman/upper_letter/lower_letter/lower_roman/number_paren/None
     uppercase: Optional[bool] = None     # 标题文本是否全大写
@@ -149,7 +189,9 @@ class HeadingFormatSample:
     def to_dict(self) -> dict:
         return {
             "alignment": self.alignment, "bold": self.bold, "italic": self.italic,
-            "indent": self.indent, "size_pt": self.size_pt,
+            "indent": self.indent, "indent_in": self.indent_in,
+            "font_family": self.font_family,
+            "size_pt": self.size_pt,
             "number_prefix": self.number_prefix, "uppercase": self.uppercase,
         }
 
@@ -347,10 +389,10 @@ def _detect_number_prefix(text: str) -> Optional[str]:
     return None
 
 
-def _sample_heading_format(para, doc_pf) -> "HeadingFormatSample":
+def _sample_heading_format(para, doc_pf, doc_default_font=None) -> "HeadingFormatSample":
     """采样一个代表性标题段落的直接格式化（用于学校模板驱动）。
 
-    对齐 / 加粗 / 斜体 / 字号均三级回退（run → 段落样式 → 文档默认），
+    对齐 / 加粗 / 斜体 / 字体 / 字号均三级回退（run → 段落样式 → 文档默认），
     与正文采样口径一致；编号前缀 / 全大写按标题文本启发式识别。
     """
     # 对齐
@@ -360,39 +402,74 @@ def _sample_heading_format(para, doc_pf) -> "HeadingFormatSample":
         al_raw2 = _pf_attr(para, doc_pf, "alignment")
         al = _ALIGN_MAP.get(al_raw2) if al_raw2 is not None else None
 
-    # 加粗 / 斜体：整段 run 全为某状态才记为 True/False；有混合则回退样式
+    # 加粗 / 斜体：run 全部显式 True / 全部显式 False 才下结论；有未显式(None)或
+    # 混合时回退段落样式。旧写法用 `all(x is True)`，把「未显式设置」直接判成 False，
+    # 于是「粗体由 Heading 样式承载」的模板被读成「不加粗」——新加的每级标题检查会
+    # 据此误报（v2.3.65 修正）。
     runs = [r for r in para.runs if (r.text or "").strip()]
     bold: Optional[bool] = None
     italic: Optional[bool] = None
     if runs:
-        bold = all(getattr(r.font, "bold", None) is True for r in runs)
-        italic = all(getattr(r.font, "italic", None) is True for r in runs)
+        b_raw = [getattr(r.font, "bold", None) for r in runs]
+        i_raw = [getattr(r.font, "italic", None) for r in runs]
+        if all(v is True for v in b_raw):
+            bold = True
+        elif all(v is False for v in b_raw):
+            bold = False
+        if all(v is True for v in i_raw):
+            italic = True
+        elif all(v is False for v in i_raw):
+            italic = False
     if bold is None or italic is None:
         try:
             st = para.style
             if st is not None and st.font is not None:
-                if bold is None:
+                if bold is None and st.font.bold is not None:
                     bold = st.font.bold is True
-                if italic is None:
+                if italic is None and st.font.italic is not None:
                     italic = st.font.italic is True
         except Exception:
             pass
 
-    # 字号：先样式（标题格式常由样式承载），再 run 最大
+    # 字号：run 显式值优先（直接格式覆盖样式，这才是用户看到的值），读不到再回退样式。
+    # 旧写法反过来（先样式），模板 run 写着 16pt、样式 14pt 时会读成 14pt。
     size: Optional[float] = None
-    try:
-        st = para.style
-        if st is not None and st.font is not None and st.font.size is not None:
-            size = round(float(st.font.size.pt), 1)
-    except Exception:
-        size = None
+    size = _max_run_size_pt(para)
     if size is None:
-        size = _max_run_size_pt(para)
+        try:
+            st = para.style
+            if st is not None and st.font is not None and st.font.size is not None:
+                size = round(float(st.font.size.pt), 1)
+        except Exception:
+            size = None
 
-    # 缩进：左缩进或首行缩进 > 0 视为缩进式标题
+    # 字体：run → 段落样式 → 文档默认（与正文口径一致）。取第一个有字体的 run
+    # 作代表 —— 标题段通常整段同字体，混合时按首个非空 run 记为样本，不臆造。
+    font: Optional[str] = None
+    for r in runs:
+        fn = _run_font_name(r)
+        if fn:
+            font = fn
+            break
+    if font is None:
+        try:
+            st = para.style
+            if st is not None and st.font is not None and st.font.name:
+                font = st.font.name
+        except Exception:
+            pass
+    if font is None and doc_default_font:
+        font = doc_default_font
+
+    # 缩进：左缩进或首行缩进 > 0 视为缩进式标题；同时记下具体英寸数
     li = _inch(_pf_attr(para, doc_pf, "left_indent"))
     fli = _inch(_pf_attr(para, doc_pf, "first_line_indent"))
-    indent = bool((li is not None and li > 0) or (fli is not None and fli > 0))
+    indent_in: Optional[float] = None
+    if li is not None and li > 0:
+        indent_in = li
+    elif fli is not None and fli > 0:
+        indent_in = fli
+    indent = indent_in is not None
 
     # 全大写：标题文本去掉空格后全为字母且等于大写
     txt = para.text.strip()
@@ -404,8 +481,8 @@ def _sample_heading_format(para, doc_pf) -> "HeadingFormatSample":
     number_prefix = _detect_number_prefix(txt)
 
     return HeadingFormatSample(
-        alignment=al, bold=bold, italic=italic, indent=indent,
-        size_pt=size, number_prefix=number_prefix, uppercase=uppercase,
+        alignment=al, bold=bold, italic=italic, indent=indent, indent_in=indent_in,
+        font_family=font, size_pt=size, number_prefix=number_prefix, uppercase=uppercase,
     )
 
 
@@ -463,6 +540,44 @@ def heading_level(para) -> Optional[int]:
     判定链路：样式名 → 段落级 outlineLvl → 样式级 outlineLvl，兼容自定义标题样式。
     """
     return _heading_level(para)
+
+
+def pseudo_heading_level_map(paras, min_pt: Optional[float] = None,
+                             exclude_ps: Optional[set] = None) -> dict:
+    """把「无标题样式但形似标题」的段落按字号档分层，返回 {w:p 元素: level}。
+
+    ⚠️ **单一真相源**：fixer 的层级推断与 docx_reader 的伪标题采样共用本函数，
+    否则会出现「检查说没问题、修正却改了一批」这类检查/修正脱节（v2.3.65 实测）。
+
+    分层规则（best-effort，无法更可靠时的既定口径）：
+    - 出现 ≥ 2 种不同字号 → 最大档 = L1、次大档 = L2 …
+    - 只有 1 种字号（均匀加粗、无样式）→ 全部当作 L1（真实「大节/小节」场景可正确分层）
+
+    ``min_pt``：字号下限，默认用 _PSEUDO_HEADING_FORMAT_MIN_PT（识别用途的宽松阈值）。
+    ``exclude_ps``：需排除的 w:p 集合（标题页标题/作者，由标题页流程独占）。
+    """
+    threshold = _PSEUDO_HEADING_FORMAT_MIN_PT if min_pt is None else min_pt
+    exclude_ps = exclude_ps or set()
+    pseudo = []
+    for para in paras:
+        if para._p in exclude_ps:
+            continue
+        if is_pseudo_heading(para, min_pt=threshold):
+            pseudo.append(para)
+    if not pseudo:
+        return {}
+    out: dict = {}
+    sizes = [round(s, 1) for p in pseudo if (s := _max_run_size_pt(p)) is not None]
+    tiers = sorted(set(sizes)) if sizes else []
+    if len(tiers) >= 2:
+        tier_to_lvl = {sz: i + 1 for i, sz in enumerate(reversed(tiers))}
+        for p in pseudo:
+            s = _max_run_size_pt(p)
+            out[p._p] = tier_to_lvl.get(round(s, 1) if s is not None else tiers[0], 1)
+    else:
+        for p in pseudo:
+            out[p._p] = 1
+    return out
 
 
 def _pf_attr(para, doc_pf, attr):
@@ -638,40 +753,179 @@ def _para_text_excl_fields(para) -> str:
     return "".join(parts).strip()
 
 
-def _read_header_footer_info(doc) -> tuple[str, bool, Optional[bool]]:
-    """返回 (running_head_text, page_number_present, page_number_right_aligned)。
+# 手打静态页码的识别式：整段只有一个数字，允许「1」「Page 1」「第 1 页」「- 1 -」等前后缀。
+# 页码最多三位（999 页），四年份（2020）不会被误当页码。
+# 🔴 刻意**不认**「Page 1 of 10」这类带总页数的：就地替换要同时把总页数换成 NUMPAGES 域，
+#    超出保守范围 —— 宁可不自动改（只提示客户手改），也不能把总页数写成死数字。
+_STATIC_PAGE_RE = re.compile(
+    r"^[\s\u00a0]*"
+    r"(?P<pre>(?:(?:page|p\.|第)\s*)?[-–—]?\s*)"
+    r"(?P<num>\d{1,3})"
+    r"(?P<suf>\s*(?:页|of|/)?\s*[-–—]?)"
+    r"[\s\u00a0]*$",
+    re.IGNORECASE,
+)
 
-    running_head_text：拼接所有分节页眉文本并剔除 PAGE 域结果；
-    page_number_present：任意页眉/页脚含 PAGE 域；
-    page_number_right_aligned：含 PAGE 域的段落中是否有右对齐者（None=未能判定）。
+_ALIGN_NAMES = {
+    WD_ALIGN_PARAGRAPH.LEFT: "left",
+    WD_ALIGN_PARAGRAPH.CENTER: "center",
+    WD_ALIGN_PARAGRAPH.RIGHT: "right",
+    WD_ALIGN_PARAGRAPH.JUSTIFY: "both",
+}
+
+
+def detect_static_page_number(text: str) -> Optional[dict]:
+    """整段是否只是「手打页码」；是则返回 ``{"prefix", "number", "suffix"}``，否则 None。
+
+    只在页眉/页脚里调用。要求整段**只有一个数字**（见 ``_STATIC_PAGE_RE`` 注释）。
+    返回的前后缀用于修正时**原地替换**：把数字换成 PAGE 域、前后缀原样保留，
+    这样「第 1 页」会变成「第 {PAGE} 页」，既不会出现两个页码，也不丢客户格式。
     """
-    texts: list = []
-    page_present = False
-    right_aligned: Optional[bool] = None
+    if not text:
+        return None
+    t = text.strip()
+    if not t:
+        return None
+    if sum(ch.isdigit() for ch in t) > 3:
+        return None
+    m = _STATIC_PAGE_RE.match(t)
+    if not m:
+        return None
+    return {"prefix": m.group("pre"), "number": m.group("num"),
+            "suffix": m.group("suf")}
+
+
+def _effective_para_alignment(para) -> str:
+    """段落的**有效**对齐：直接格式 → 样式 → 默认左。
+
+    🔴 旧版在直接格式为空时把对齐读成 None，checker 的 ``elif ... is False`` 分支因此
+    不成立、直接落进 else 报 pass —— 客户页码在页脚居中却被判「右上，符合」。这里统一
+    归一到具体值：一个声明都没有时就是左对齐（Word 的默认），不存在「无法判定」。
+    """
+    al = None
+    try:
+        al = para.alignment
+    except Exception:
+        al = None
+    if al is None:
+        try:
+            st = para.style
+            if st is not None:
+                al = st.paragraph_format.alignment
+        except Exception:
+            al = None
+    if al is None:
+        return "left"
+    return _ALIGN_NAMES.get(al, "left")
+
+
+@dataclass
+class PageNumberInfo:
+    """页码读取结果（页眉/页脚全口径）。"""
+
+    has_field: bool = False                 # 存在 PAGE 域（自动页码）
+    has_static: bool = False                # 手打静态页码（无域）
+    location: Optional[str] = None          # "header" / "footer"
+    alignment: Optional[str] = None         # "left"/"center"/"right"/"both"（有效对齐）
+    static_text: str = ""                   # 手打页码原文
+
+    @property
+    def present(self) -> bool:
+        return self.has_field or self.has_static
+
+
+def _iter_header_footer_parts(doc):
+    """产出 ``(part, kind, scope)``：kind="header"/"footer"，scope="main"/"first"/"even"。
+
+    🔴 首页 / 偶数页只在**文档真正启用**时才读：
+    - 首页：``section.different_first_page_header_footer`` 为 True；
+    - 偶数页：``settings.xml`` 里存在 ``<w:evenAndOddHeaders/>``。
+    否则那些 part 即使留着内容也不会被渲染，读了会误报「有页码」。
+    （旧版完全没读首页 → APA 标题页页码放在首页页眉时被报「没有页码」。）
+    """
     try:
         sections = list(doc.sections)
     except Exception:
-        sections = []
+        return
+    even_on = False
+    try:
+        even_on = doc.settings.element.find(qn("w:evenAndOddHeaders")) is not None
+    except Exception:
+        even_on = False
     for sec in sections:
-        for part in (getattr(sec, "header", None), getattr(sec, "footer", None)):
-            if part is None:
+        try:
+            diff = bool(sec.different_first_page_header_footer)
+        except Exception:
+            diff = False
+        for kind in ("header", "footer"):
+            main = getattr(sec, kind, None)
+            if main is not None:
+                yield main, kind, "main"
+            if diff:
+                fp = getattr(sec, "first_page_" + kind, None)
+                if fp is not None:
+                    yield fp, kind, "first"
+            if even_on:
+                ev = getattr(sec, "even_page_" + kind, None)
+                if ev is not None:
+                    yield ev, kind, "even"
+
+
+def read_page_number_info(doc) -> PageNumberInfo:
+    """读页码：有无（域/手打）+ 在页眉还是页脚 + 有效对齐。
+
+    页眉与页脚同时有页码时以**页眉**为准 —— page_number_position 的 top-right 语义
+    指的是页眉右上（APA 7th / MLA 9th 都是）。
+    """
+    info = PageNumberInfo()
+    for part, kind, _scope in _iter_header_footer_parts(doc):
+        try:
+            para_list = part.paragraphs
+        except Exception:
+            continue
+        for p in para_list:
+            if _para_has_page_field(p):
+                if not info.has_field or (kind == "header" and info.location != "header"):
+                    info.has_field = True
+                    info.location = kind
+                    info.alignment = _effective_para_alignment(p)
                 continue
-            try:
-                para_list = part.paragraphs
-            except Exception:
-                continue
-            for p in para_list:
-                if _para_has_page_field(p):
-                    page_present = True
-                    al = getattr(p, "alignment", None)
-                    if al == WD_ALIGN_PARAGRAPH.RIGHT:
-                        right_aligned = True
-                    elif al is not None and al != WD_ALIGN_PARAGRAPH.RIGHT and right_aligned is None:
-                        right_aligned = False
-                t = _para_text_excl_fields(p)
-                if t:
-                    texts.append(t)
-    return " ".join(texts).strip(), page_present, right_aligned
+            txt = _para_text_excl_fields(p)
+            st = detect_static_page_number(txt)
+            if st is not None:
+                if not info.has_static:
+                    info.has_static = True
+                    info.static_text = txt.strip()
+                if not info.has_field and info.location is None:
+                    info.location = kind
+                    info.alignment = _effective_para_alignment(p)
+    return info
+
+
+def _read_header_footer_info(doc) -> tuple[str, bool, Optional[bool]]:
+    """返回 (running_head_text, page_number_present, page_number_right_aligned)。
+
+    running_head_text：拼接主分节页眉文本并剔除 PAGE 域结果（页脚不计入）；
+    page_number_present：页眉/页脚存在 PAGE 域**或**手打页码；
+    page_number_right_aligned：页码段落是否右对齐（已按样式继承归一，不再出现 None）。
+    """
+    texts: list = []
+    for part, kind, scope in _iter_header_footer_parts(doc):
+        if kind != "header" or scope != "main":
+            continue
+        try:
+            para_list = part.paragraphs
+        except Exception:
+            continue
+        for p in para_list:
+            t = _para_text_excl_fields(p)
+            if t:
+                texts.append(t)
+    info = read_page_number_info(doc)
+    right: Optional[bool] = None
+    if info.present:
+        right = (info.alignment == "right")
+    return " ".join(texts).strip(), info.present, right
 
 
 def _para_page_break_before(para) -> bool:
@@ -857,6 +1111,161 @@ def read_docx(path: str) -> DocumentProfile:
         ) from e
 
 
+# ---------------------------------------------------------------------------
+# 纸张大小（Letter / A4 / Legal / A5）
+# ---------------------------------------------------------------------------
+# 🔴 这是**通用维度，不属于任何引用规范**：北美（美/加）多用 Letter（8.5×11 in），
+# 欧洲、中国、澳洲等用 A4（210×297 mm）。同一篇 APA 论文在伦敦交是 A4、在纽约交是
+# Letter —— 所以真正说了算的是学校模板/客户，规范的只是「典型值参考」。
+# 尺寸写成 **短边 × 长边**（英寸），比对时把文档实测宽高也归一成短边×长边，
+# 这样横向（landscape）文档不会因为宽高对调被判成「不是 A4」。
+PAPER_SIZES: dict = {
+    "Letter": (8.5, 11.0),      # 215.9 × 279.4 mm —— 美国/加拿大/墨西哥等
+    "A4": (8.27, 11.69),        # 210 × 297 mm —— 欧洲/中国/澳洲/日韩等
+    "Legal": (8.5, 14.0),       # 215.9 × 355.6 mm
+    "A5": (5.83, 8.27),         # 148 × 210 mm
+}
+PAPER_KEYS = tuple(PAPER_SIZES)
+# 容差（英寸）：Word 里常见 8.27/8.28 这种舍入，0.06″ ≈ 1.5 mm，够容下各种导出差异
+PAPER_TOL_IN = 0.06
+
+
+def normalize_paper_dims(width_in: float, height_in: float) -> tuple:
+    """把任意宽高归一成 (短边, 长边)，横向/纵向统一口径。"""
+    w, h = float(width_in), float(height_in)
+    return (min(w, h), max(w, h))
+
+
+def identify_paper_size(width_in, height_in) -> Optional[str]:
+    """由实测宽高识别纸型名；不在已知表内返回 None（绝不臆造）。"""
+    if width_in is None or height_in is None:
+        return None
+    short, long_ = normalize_paper_dims(width_in, height_in)
+    for name, (w, h) in PAPER_SIZES.items():
+        if abs(short - w) <= PAPER_TOL_IN and abs(long_ - h) <= PAPER_TOL_IN:
+            return name
+    return None
+
+
+def describe_paper_size(width_in, height_in) -> str:
+    """给报告用的英文描述：认出就报名字，认不出就报实测尺寸。"""
+    name = identify_paper_size(width_in, height_in)
+    if name:
+        return name
+    if width_in is None or height_in is None:
+        return "unknown"
+    return "non-standard (%.2f x %.2f in)" % (float(width_in), float(height_in))
+
+
+def detect_title_page(doc):
+    """识别标题页结构，返回 {'title': int, 'authors': list[int]} 或 None。
+
+    **单一真相源**：checker（判断客户要求是否满足）与 fixer（施加改动）共用本函数，
+    否则会出现「检查说没问题、修正却动了另一段」的漂移。
+
+    判定刻意保守 —— 必须有**标题页正面信号**才认，绝不对无信号文档盲猜：
+    ① 首段不是已识别标题（是标题就交给 heading 流程，不重复处理）；
+    ② 前 40 段内出现 Abstract / Keywords 标签（标题页型论文的强特征）。
+    满足后：首段 = 标题；紧随其后 ≤3 段内的短行（≤90 字、非标题、未到摘要）= 作者/单位。
+    """
+    paras = doc.paragraphs
+    idx0 = None
+    for i, p in enumerate(paras):
+        if (p.text or "").strip():
+            idx0 = i
+            break
+    if idx0 is None:
+        return None
+    if is_heading(paras[idx0]):
+        return None
+    blob = "\n".join((p.text or "") for p in paras[:min(len(paras), 40)])
+    if not re.search(r"(?i)\babstract\b|\bkeywords\b", blob):
+        return None
+    title_idx = idx0
+    authors = []
+    for i in range(idx0 + 1, min(len(paras), idx0 + 4)):
+        p = paras[i]
+        t = (p.text or "").strip()
+        if not t:
+            continue
+        if re.search(r"(?i)\b(abstract|keywords)\b", t):
+            break                       # 已经到摘要/关键词，停止
+        if is_heading(p):
+            break
+        if len(t) <= 90:                # 作者/单位通常是短行
+            authors.append(i)
+        else:
+            break
+    return {"title": title_idx, "authors": authors}
+
+
+def _sample_title_page(doc, prof: "DocumentProfile") -> None:
+    """把标题页的实测格式写进画像（标题对齐/加粗、作者行对齐）。
+
+    读不到的属性留 None（不臆造），由 checker 决定「无法判定」时只提示不判红。
+    """
+    try:
+        tp = detect_title_page(doc)
+    except Exception:
+        tp = None
+    if not tp:
+        return
+    prof.title_page_detected = True
+    try:
+        title_p = doc.paragraphs[tp["title"]]
+    except Exception:
+        return
+
+    # 对齐：直接格式 → 段落样式 → Word 缺省（左）。
+    # ⚠️ 「没有显式对齐」不等于「读不到」——Word 里未设 alignment 就是左对齐。
+    # 旧写法在这里返回 None，checker 于是把「本该居中却没设」判成「无法判定」→ 不修，
+    # 客户点完修正发现标题还是左对齐（实测打红 test_fix_apa_title_page_centers_and_bolds_title）。
+    al_raw = title_p.alignment
+    if al_raw is None:
+        al_raw = _pf_attr(title_p, None, "alignment")
+    prof.tp_title_alignment = _ALIGN_MAP.get(al_raw, "left") if al_raw is not None else "left"
+
+    runs = [r for r in title_p.runs if (r.text or "").strip()]
+    b_raw = [getattr(r.font, "bold", None) for r in runs]
+    if b_raw and all(v is True for v in b_raw):
+        prof.tp_title_bold = True
+    elif b_raw and all(v is False for v in b_raw):
+        prof.tp_title_bold = False
+    else:
+        # run 未显式声明 → 看段落样式；样式也没声明 → Word 缺省即「不加粗」。
+        bold = False
+        try:
+            st = title_p.style
+            if st is not None and st.font is not None and st.font.bold is not None:
+                bold = st.font.bold is True
+        except Exception:
+            pass
+        prof.tp_title_bold = bold
+
+    for ai in tp["authors"]:
+        try:
+            ap = doc.paragraphs[ai]
+        except Exception:
+            continue
+        a_al = ap.alignment
+        if a_al is None:
+            a_al = _pf_attr(ap, None, "alignment")
+        prof.tp_author_alignment = _ALIGN_MAP.get(a_al, "left") if a_al is not None else "left"
+        break                            # 取第一行作者/单位作代表（通常整组同格式）
+
+
+def _section_paper_size(sec) -> Optional[str]:
+    """读单个分节的纸张大小：``sectPr/w:pgSz/@w:w`` 与 ``@w:h``（unit = twip）。"""
+    try:
+        w = sec.page_width
+        h = sec.page_height
+        if w is None or h is None:
+            return None
+        return identify_paper_size(_inch(w), _inch(h))
+    except Exception:
+        return None
+
+
 def _section_columns(sec) -> int:
     """读单个分节的栏数：``sectPr/w:cols/@w:num``，缺省视为 1。
 
@@ -882,6 +1291,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # —— 页边距：遍历所有分节取众数；不一致则标记 ——
     per_side: dict = {s: [] for s in ("top", "bottom", "left", "right")}
     col_samples: list = []
+    paper_samples: list = []
     try:
         sections = list(doc.sections)
     except Exception:
@@ -892,6 +1302,13 @@ def _read_docx_impl(doc) -> DocumentProfile:
         per_side["left"].append(_inch(sec.left_margin))
         per_side["right"].append(_inch(sec.right_margin))
         col_samples.append(_section_columns(sec))
+        paper_samples.append(_section_paper_size(sec))
+        try:
+            if prof.paper_width_in is None and sec.page_width is not None:
+                prof.paper_width_in = round(_inch(sec.page_width), 2)
+                prof.paper_height_in = round(_inch(sec.page_height), 2)
+        except Exception:
+            pass
 
     def _mode(vals):
         vals = [v for v in vals if v is not None]
@@ -909,6 +1326,11 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # 栏数：多分节取众数（与页边距同口径）；无分节则留 None（不臆造）
     if col_samples:
         prof.columns = Counter(col_samples).most_common(1)[0][0]
+        # 纸张大小：多分节取众数（横向/纵向都按「短边×长边」归一后比对，
+        # 否则一份横向 A4 会被判成「不是 A4」）
+        paper_samples = [p for p in paper_samples if p is not None]
+        if paper_samples:
+            prof.paper_size = Counter(paper_samples).most_common(1)[0][0]
 
     # —— 文档默认（Normal）样式：字体 + 段落格式，作为三级回退的兜底 ——
     doc_default_font: Optional[str] = None
@@ -974,7 +1396,16 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 cnt += 1
         prof.first_page_left_lines = cnt
 
+    # —— 标题页实测（APA/IEEE 等「有独立标题页」的论文）——
+    # 与上面的「首页居中标题」是两件事：那个服务于 MLA 无标题页形态，这里服务于
+    # 有 Abstract/Keywords 的标题页形态。检测函数与 fixer 共用（单一真相源）。
+    _sample_title_page(doc, prof)
+
     # —— 块引用候选收集（MLA：超 4 行引文应缩进 0.5″、不加引号；此处只收集长段落，由 checker 按风格判断）——
+    # idx 一并记下：fixer 要按**同一批候选**施加缩进，否则「检查按长引文判、修正只认
+    # Quote 样式」，客户看到「3 处块引用不达标」，点完修正一处没动（检查/修正不同源）。
+    # 键用 p._p（w:p 元素），绝不用 id(para)：python-docx 每次迭代都新建包装对象（铁律）
+    _body_idx = {p._p: i for i, p in enumerate(paras)}
     for p in body_paras:
         words = len(p.text.split())
         if words < 50:
@@ -982,6 +1413,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
         left_indent = _inch(_pf_attr(p, doc_pf, "left_indent"))
         has_quote = any(q in p.text for q in ('"', "“", "”", "'"))
         prof.block_quote_candidates.append({
+            "idx": _body_idx.get(p._p),
             "words": words,
             "left_indent_in": left_indent,
             "has_quote": has_quote,
@@ -1013,6 +1445,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # —— 字体 / 字号 / 行距 / 标题（正文段落 + 表格段落）——
     font_counter: Counter = Counter()
     size_counter: Counter = Counter()
+    family_size_counter: dict = {}          # 字体 → 该字体出现的字号计数（判混用）
     spacing_samples: list = []
     heading_styles: list = []
     heading_levels: set = set()
@@ -1035,6 +1468,13 @@ def _read_docx_impl(doc) -> DocumentProfile:
             if fs is not None:
                 try:
                     size_counter[round(float(fs.pt), 1)] += 1
+                except Exception:
+                    pass
+            # 字体 → 字号配对计数（混用字体时每种字体各取自己的众数字号）
+            if fn and fs is not None:
+                try:
+                    family_size_counter.setdefault(fn, Counter())[
+                        round(float(fs.pt), 1)] += 1
                 except Exception:
                     pass
 
@@ -1068,6 +1508,11 @@ def _read_docx_impl(doc) -> DocumentProfile:
 
     if font_counter:
         prof.font_family = font_counter.most_common(1)[0][0]
+    if family_size_counter:
+        prof.font_size_by_family = {
+            str(f): float(c.most_common(1)[0][0])
+            for f, c in family_size_counter.items() if c
+        }
     if size_counter:
         prof.font_size_pt = size_counter.most_common(1)[0][0]
     if spacing_samples:
@@ -1077,8 +1522,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
     prof.heading_levels_used = max(heading_levels) if heading_levels else 0
 
     # —— 每级标题格式采样（学校模板驱动：取每级首个标题段为代表性样本）——
-    # 仅真实标题层级参与（伪标题无明确层级，跳过）。每级只取第一个样本，
-    # 避免同层多个标题互相平均掩盖差异。
+    # 每级只取第一个样本，避免同层多个标题互相平均掩盖差异。
     level_samples: dict = {}
     seen_levels: set = set()
     for para in paras:
@@ -1088,9 +1532,36 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if lvl in seen_levels:
             continue
         seen_levels.add(lvl)
-        level_samples[lvl] = _sample_heading_format(para, doc_pf)
+        level_samples[lvl] = _sample_heading_format(para, doc_pf, doc_default_font)
     if level_samples:
         prof.heading_formats = {lvl: level_samples[lvl] for lvl in sorted(level_samples)}
+
+    # —— 伪标题兜底采样（v2.3.65）——
+    # 学生论文最常见的形态是「章节标题就是整段加粗的 Normal 段，压根没有 Heading 样式」。
+    # 旧版只采真标题样式 → 客户填了「一级 16pt 居中加粗」，检查器只回一句
+    # 「No Heading styles detected」、修正预览一行不出，而修正器其实会照改（fixer 走
+    # _assign_heading_levels 认伪标题）——检查/预览/修正三方脱节。
+    # 这里补一份伪标题样本，分层规则与 fixer 共用 pseudo_heading_level_map（单一真相源）。
+    # 只在「一个真标题样式都没有」时兜底：有样式就按样式走，绝不把两套口径混在一起。
+    if not level_samples:
+        # 排除参考文献标题与条目：模板里的 "References" 常是「12pt 居中加粗」，
+        # 会因字号档差异被当成「二级标题」凭空造出一级要求（实测：学校模板画像里
+        # 多出一条 L2 = 12pt 居中加粗，其实是参考文献标题）。后置部分标题不属于
+        # 章节标题层级，必须排除。
+        _skip_ps = {paras[i]._p for i in skip}
+        _pseudo = pseudo_heading_level_map(paras, exclude_ps=_skip_ps)
+        _first_of_level: dict = {}
+        for para in paras:
+            lvl = _pseudo.get(para._p)
+            if lvl is None or not para.text.strip():
+                continue
+            _first_of_level.setdefault(lvl, para)
+        if _first_of_level:
+            prof.heading_formats = {
+                lvl: _sample_heading_format(p, doc_pf, doc_default_font)
+                for lvl, p in sorted(_first_of_level.items())
+            }
+            prof.heading_formats_are_pseudo = True
 
     # —— 参考文献悬挂缩进实测（条目段落里 first_line_indent 为负 → 悬挂）——
     # 三级回退取不到显式缩进时按 0 计入（Word 缺省无悬挂），与正文缩进口径一致。
@@ -1103,12 +1574,47 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if hangs:
             prof.reference_hanging_indent_in = Counter(hangs).most_common(1)[0][0]
 
+        # —— 参考文献条目的字体 / 字号 / 行距（v2.3.65）——
+        # 学校模板里「参考文献用五号宋体、单倍行距」是硬要求，且常与正文不同口径
+        # （正文小四双倍、条目五号单倍）。以前只采正文，条目一律按正文处理 → 模板
+        # 里这条要求既读不到也改不了。取众数（条目之间可能有混排）。
+        ref_fonts: Counter = Counter()
+        ref_sizes: Counter = Counter()
+        ref_spacings: list = []
+        for i in ref_indices:
+            para_i = paras[i]
+            for r in para_i.runs:
+                if not (r.text or "").strip():
+                    continue
+                fn = _run_font_name(r)
+                if fn:
+                    ref_fonts[fn] += 1
+                sz = _pt(r.font.size)
+                if sz:
+                    ref_sizes[sz] += 1
+            sp_i = _line_spacing_of(para_i.paragraph_format)
+            if sp_i is not None:
+                ref_spacings.append(sp_i)
+        if ref_fonts:
+            prof.reference_font_family = ref_fonts.most_common(1)[0][0]
+        if ref_sizes:
+            prof.reference_size_pt = ref_sizes.most_common(1)[0][0]
+        if ref_spacings:
+            prof.reference_line_spacing = Counter(
+                round(s, 2) for s in ref_spacings).most_common(1)[0][0]
+
     # —— 页眉 / 页码 / 参考文献另起一页（轻量读取，仅用于保守提示，不修改文档）——
     try:
         rh_text, page_present, page_right = _read_header_footer_info(doc)
         prof.header_text = rh_text
         prof.page_number_present = page_present
         prof.page_number_right_aligned = page_right
+        # 页码细项：在页眉还是页脚、有效对齐、是否手打（已含首页/偶数页口径）
+        _pn = read_page_number_info(doc)
+        prof.page_number_in = _pn.location
+        prof.page_number_alignment = _pn.alignment
+        prof.page_number_is_static = _pn.has_static and not _pn.has_field
+        prof.page_number_static_text = _pn.static_text
         # 页眉距页顶（MLA 9th 要求 ½″）：取首个有显式值的分节；读不到则为 None
         try:
             _hd_val = None
@@ -1125,6 +1631,10 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.header_text = ""
         prof.page_number_present = False
         prof.page_number_right_aligned = None
+        prof.page_number_in = None
+        prof.page_number_alignment = None
+        prof.page_number_is_static = False
+        prof.page_number_static_text = ""
     if ref_start is not None:
         prev = paras[ref_start - 1] if ref_start > 0 else None
         try:

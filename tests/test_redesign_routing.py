@@ -201,3 +201,28 @@ def test_apply_page_overrides_rejects_garbage():
     # checker 经 resolve_spec 落到 Other，无引用硬判
     spec = resolve_spec(t)
     assert spec.key == "Other"
+
+
+def test_empty_spec_key_means_no_spec_baseline():
+    """spec_key 为空串时必须等同于「无规范」，不能当成一个空规范。
+
+    v2.3.65 实测到的真问题：UI 的 spec_key 是 StringVar，「无规范」存的是 ``""``；
+    旧判定写的是 ``spec_key is not None``，于是空串被当成合法规范键 → 客户选了
+    「学校模板 / 自定义」，背后仍套着一层规范基线，凭空注入
+    reference_style / reference_numbered / reference_hanging_indent_in 三项硬规则，
+    跟「留空即不检查」直接矛盾。三种"无规范"写法必须完全等价。
+    """
+    for sk in (None, "", "Other"):
+        t = build_target(sk, questionnaire={"margin_left_in": "1.5"})
+        assert t.source == "user", "spec_key=%r 不该带规范基线（source=%r）" % (sk, t.source)
+        assert set(t.resolution) == {"margin_left_in"}, \
+            "spec_key=%r 凭空注入了别的维度：%r" % (sk, sorted(t.resolution))
+        assert t.reference_style is None
+
+
+def test_no_spec_baseline_does_not_inject_reference_rules():
+    """无规范基线 + 问卷没写参考文献 → 参考文献三项都得是 None（不检查）。"""
+    t = build_target("", questionnaire={"font_family": "Arial"})
+    assert t.reference_style is None
+    assert t.reference_numbered is None
+    assert t.reference_hanging_indent_in is None

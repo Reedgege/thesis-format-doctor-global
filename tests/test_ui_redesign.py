@@ -122,7 +122,7 @@ def test_advanced_toggle_remeasures_card_and_scrollregion(ui):
     """
     from src.ui import theme
 
-    ui._apply_source_mode("src_custom", refresh=True)
+    ui._apply_source_mode("src_manual", refresh=True)
     ui.root.update_idletasks()
     assert ui._adv_enabled is True, "切到自定义后高级区应解锁"
     # 切自定义会**自动展开**（见 _apply_source_mode），先折回折叠态，
@@ -163,7 +163,7 @@ def test_collapse_toggles_visibility(ui):
 
     # ② 切到自定义 → 解锁，并且**自动展开**（自定义来源下高级项就是主输入，
     #    老板要求自动摊开；这一点和"选规范时自动折叠"是同一条规则的两面）
-    ui._apply_source_mode("src_custom", refresh=True)
+    ui._apply_source_mode("src_manual", refresh=True)
     ui.root.update_idletasks()
     assert ui._adv_enabled is True
     assert ui._adv_open is True, "切到自定义应自动展开高级区"
@@ -549,7 +549,7 @@ def test_two_cards_equal_width_and_right_does_not_follow_left(ui):
     # v2.3.62：来源默认是内置规范，高级区此时是锁定的（置灰折叠）→ 先切自定义解锁，
     # 否则 _toggle_advanced 不动作，"展开后左栏涨高"这条断言就等于没测。
     # 注意切自定义会**自动展开**，所以先折回折叠态再取基线。
-    ui._apply_source_mode("src_custom", refresh=True)
+    ui._apply_source_mode("src_manual", refresh=True)
     ui.root.update()
     if ui._adv_open:
         ui._toggle_advanced()
@@ -791,3 +791,229 @@ def test_chinese_app_title_is_mr_document_formatter():
         assert bad not in title, "中文产品名混入了禁用字样 %r：%r" % (bad, raw)
     # 英文那块是海外品牌名，不要被中文名污染
     assert i18n.STRINGS.get("en", {}).get("app_title") == "PaperFormat Pro"
+
+
+def test_questionnaire_dialog_uses_modal_shell_and_columns_dropdown(ui):
+    """手填问卷弹窗必须走 ModalShell（与复核 / 购买 / 反馈同一套骨架），栏数是单双栏下拉。
+
+    v2.3.64 的背景：重设计只覆盖了主界面 + 三个 ModalShell 弹窗，**问卷弹窗被漏掉**，
+    还是老的 `_scroll_frame` + 一列 ttk.Entry + 16 行平铺 + #888888 灰字。老板一句
+    「手动输入那个弹窗为什么还是之前没修改的那个」把它点了出来。这个用例钉住：
+      ① 骨架 = ModalShell（不是老 Toplevel + _scroll_frame）；
+      ② 栏数用的是与会话复核弹窗**同一个词**（单栏 / 双栏）的下拉，不是裸数字输入框。
+    """
+    from tkinter import ttk
+
+    from src.ui import i18n
+    from src.ui.modal_shell import ModalShell
+
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+
+    win = ui._popups[-1] if ui._popups else None
+    assert win is not None and win.winfo_exists(), "点「手填问卷」应弹出问卷窗"
+    assert isinstance(win, ModalShell), "问卷弹窗没走 ModalShell（还是老骨架）"
+
+    one = i18n.t(ui.lang, "review_one_column")
+    two = i18n.t(ui.lang, "review_two_column")
+    values = [tuple(str(v) for v in c.cget("values"))
+              for c in _descendants(win, ttk.Combobox)]
+    assert (one, two) in values, "问卷里没有单栏/双栏下拉：%r" % (values,)
+
+
+def test_questionnaire_echoes_saved_values_and_saves_columns(ui, monkeypatch):
+    """再次打开问卷要**回显**已保存的值，保存时栏数写成 "1"/"2"。
+
+    旧版每次都按 schema 的 `default` 重建控件，`self.questionnaire_data` 里存的东西
+    根本不进控件 —— 客户填完再打开像是白填了，这也是老板觉得它「没改过」的原因之一。
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    from src.ui import i18n
+    from src.ui import app as app_mod
+
+    # 保存时会弹 messagebox，测试里不能真弹
+    monkeypatch.setattr(app_mod.messagebox, "showinfo", lambda *a, **k: None)
+    monkeypatch.setattr(app_mod.messagebox, "askyesno", lambda *a, **k: True)
+
+    ui.questionnaire_data = {"margin_top_in": "1.25", "columns": 2}
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    one = i18n.t(ui.lang, "review_one_column")
+    two = i18n.t(ui.lang, "review_two_column")
+    combo = [c for c in _descendants(win, ttk.Combobox)
+             if tuple(str(v) for v in c.cget("values")) == (one, two)][0]
+    assert combo.get() == two, "已保存的 columns=2 没回显到下拉里"
+
+    entry_vals = [e.get() for e in _descendants(win, tk.Entry)]
+    assert "1.25" in entry_vals, "已保存的页边距没回显（旧版每次重置成默认值）"
+
+    # 改成单栏 → 保存 → 落库写成 "1"（_coerce 再转 int），已填的页边距不能丢
+    combo.set(one)
+    win._primary_btn._command()
+    assert ui.questionnaire_data.get("columns") == "1"
+    assert ui.questionnaire_data.get("margin_top_in") == "1.25"
+
+
+def test_questionnaire_heading_table_echoes_and_saves(ui, monkeypatch):
+    """问卷弹窗必须有「每级标题明细」：字体/字号/加粗/斜体/对齐/缩进/编号/大写/接排。
+
+    老板原话：「各层级的字体字号缩进斜体等等参数你做了吗？ai 导入与手动输入一样，
+    只是让 ai 帮客户写」。此前问卷只有「标题层级数」一个数字，学校要的每级参数无处可填。
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    from src.ui import i18n
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(app_mod.messagebox, "showinfo", lambda *a, **k: None)
+    monkeypatch.setattr(app_mod.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app_mod.messagebox, "showwarning", lambda *a, **k: None)
+
+    ui.questionnaire_data = {
+        "heading_levels": "2",
+        "heading_formats": {
+            "1": {"font_family": "SimHei", "size_pt": 16.0, "bold": True,
+                  "alignment": "center", "number_prefix": "number"},
+            "2": {"font_family": "KaiTi", "size_pt": 14.0, "italic": True,
+                  "indent_in": 0.25},
+        },
+    }
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    # 回显：字体/字号必须按级回填（不填就等于白填）
+    combos = [c.get() for c in _descendants(win, ttk.Combobox)]
+    entries = [e.get() for e in _descendants(win, tk.Entry)]
+    assert "SimHei" in combos and "KaiTi" in combos
+    assert "16.0" in entries and "14.0" in entries and "0.25" in entries
+
+    none_txt = i18n.t(ui.lang, "q_none")
+    assert none_txt in combos, "三态下拉必须有「不规定」这一档（—）"
+    assert i18n.t(ui.lang, "q_align_center") in combos
+    assert i18n.t(ui.lang, "q_prefix_number") in combos
+
+    # 层级数 = 2 → 只露两行（第 3 行的"Level 3"标签不该是可见的）
+    shown = [w.cget("text") for w in _descendants(win, tk.Label)
+             if w.cget("text").startswith(i18n.t(ui.lang, "q_h_lvl", "").rstrip())
+             and w.winfo_ismapped()]
+    assert len(shown) == 2, shown
+
+    # 保存：明细必须原样落进 questionnaire_data（手填与 AI 同一套字段名）
+    win._primary_btn._command()
+    hf = (ui.questionnaire_data or {}).get("heading_formats") or {}
+    assert set(hf) == {"1", "2"}, hf
+    assert hf["1"]["font_family"] == "SimHei"
+    assert hf["1"]["size_pt"] == 16.0
+    assert hf["1"]["bold"] is True
+    assert hf["1"]["alignment"] == "center"
+    assert hf["1"]["number_prefix"] == "number"
+    assert hf["2"]["indent_in"] == 0.25
+    assert hf["2"]["italic"] is True
+
+
+def test_questionnaire_heading_table_feeds_target(ui, monkeypatch):
+    """手填的每级明细要真的进 TargetProfile（不能只存在界面里）。"""
+    from src.ui import app as app_mod
+
+    monkeypatch.setattr(app_mod.messagebox, "showinfo", lambda *a, **k: None)
+    monkeypatch.setattr(app_mod.messagebox, "askyesno", lambda *a, **k: True)
+
+    ui.source_mode.set("src_manual")
+    ui.questionnaire_data = {"heading_levels": "1",
+                             "heading_formats": {"1": {"font_family": "SimHei",
+                                                       "size_pt": 16.0}}}
+    t = ui._build_target()
+    assert t.heading_formats.get(1, {}).get("font_family") == "SimHei"
+    assert t.heading_levels == 1
+
+
+def test_source_mode_shows_only_its_own_panel(ui):
+    """来源 7 选 1、**互斥** → 高级区里只显示被选中那一项对应的面板。
+
+    v2.3.65：老板指出「这七个选项是互斥的，用户只能七选一，只是学校模板那个地方
+    可以选参考文献格式」。根因有两层：
+      ① `_apply_source_mode` 只负责解锁/折叠整片高级区，从没区分过子面板；
+      ② 「手填问卷」与「AI 导入」被塞进同一个 Custom 选项里。
+    现在三块面板（学校模板 / 手填问卷 / AI 导入）一一对应三个来源，互斥显示。
+    """
+    def _vis(mode):
+        ui._apply_source_mode(mode, refresh=True)
+        ui.root.update_idletasks()
+        return (bool(ui._school_frame.winfo_ismapped()),
+                bool(ui._manual_frame.winfo_ismapped()),
+                bool(ui._ai_frame.winfo_ismapped()))
+
+    assert _vis("src_school") == (True, False, False), "选 School Template 露出了别的面板"
+    assert _vis("src_manual") == (False, True, False), "选手填问卷露出了别的面板"
+    assert _vis("src_ai") == (False, False, True), "选 AI 导入露出了别的面板"
+    # 内置规范：高级区整片折叠，三块都不露
+    for mode in ("src_apa_student", "src_apa_pro", "src_mla", "src_ieee"):
+        assert _vis(mode) == (False, False, False), "%s 露出了子面板" % mode
+
+
+def test_export_ai_button_only_in_ai_mode(ui):
+    """「Export AI template」只属于 AI 导入这条路（老板：只在 AI 导入时显示）。"""
+    def _shown(mode):
+        ui._apply_source_mode(mode, refresh=True)
+        ui.root.update_idletasks()
+        return ui._export_btn.winfo_manager() == "pack"
+
+    assert _shown("src_ai") is True
+    assert _shown("src_manual") is False
+    assert _shown("src_school") is False
+    assert _shown("src_apa_student") is False
+    assert _shown("src_ai") is True
+
+
+def test_source_dropdown_has_seven_exclusive_options(ui):
+    """来源下拉必须是 7 项，且每项唯一（互斥）。"""
+    import copy
+    import io
+    import os
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = io.open(os.path.join(root, "src", "ui", "app.py"), encoding="utf-8").read()
+    m = re.search(r"self\._source_map = \[(.*?)\]", src, re.S)
+    assert m, "没找到 _source_map"
+    keys = re.findall(r'"(\w+)"', m.group(1))
+    src_keys = [k for k in keys if k.startswith("src_")]
+    assert len(src_keys) == 7, "来源下拉应为 7 项，实际 %d 项：%r" % (len(src_keys), src_keys)
+    assert len(set(src_keys)) == 7, "来源下拉有重复项：%r" % (src_keys,)
+    assert "src_manual" in src_keys and "src_ai" in src_keys
+
+    shown = [ui.tr(k) for k in src_keys]
+    assert len(set(shown)) == 7, "两项显示同一个文案（客户分不清）：%r" % (shown,)
+
+
+def test_build_target_only_uses_inputs_of_current_source(ui):
+    """目标画像只能取**当前来源**的输入，别的通道不许在背后生效。
+
+    两个隐形生效的坑：
+      ① 选 Custom 时，之前点过的学校模板还在参与合并（界面看不见、实际生效）；
+      ② 选内置规范时，之前填过的问卷会以"高优先级叠加"盖掉规范本身。
+    """
+    ui.school_template.set(r"D:/no_such_template.docx")   # 故意无效：Custom 模式下不该被读
+    ui.questionnaire_data = {"margin_top_in": "1.75", "font_family": "Arial"}
+
+    # 真实交互里 source_mode 与 _apply_source_mode 是同一动作（trace 兜底），
+    # 这里两步都做：只调 _apply_source_mode 的话 _build_target 读到的还是旧来源。
+    ui.source_mode.set("src_manual")
+    ui._apply_source_mode("src_manual", refresh=True)
+    t = ui._build_target()
+    assert "school" not in t.source and "spec" not in t.source, \
+        "Custom 模式还带着别的来源：source=%r" % (t.source,)
+    assert t.page.get("margin_top_in") == 1.75
+
+    ui.source_mode.set("src_apa_student")
+    ui._apply_source_mode("src_apa_student", refresh=True)
+    t2 = ui._build_target()
+    assert t2.spec_key == "APA-Student"
+    assert t2.source == "spec", "规范模式被问卷叠加上去了：source=%r" % (t2.source,)
+    assert t2.page.get("margin_top_in") == 1.0, "规范模式被问卷改了页边距"
