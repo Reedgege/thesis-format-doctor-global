@@ -1811,9 +1811,19 @@ class App:
             "<<ComboboxSelected>>", lambda e: self._on_input_changed())
 
     def _build_adv_custom(self, parent):
-        """高级区 ②：自定义面板（手填问卷 + AI 导入两入口）。"""
+        """高级区 ②：自定义面板（手填问卷 + AI 导入两入口）。
+
+        v2.3.64 按老板反馈改的三处：
+        ① 与上面「学校模板」块之间加一条细分隔线 —— 两块标题字号一样、间距又近，
+           客户容易把 Custom 这两行看成 School Template 的续行；
+        ② 两行**不再罗列会检查哪些格式项**（"Page layout: margins, font, size, spacing"
+           这类既列不全、又挤掉按钮），只留「已填写 / 未填写」「已导入 / 未导入」状态；
+        ③ 按钮改成**先入队**（见下方 pack 注释），修掉 "Import" 被压窄只剩 "mpor"。
+        """
         tr = self.tr
         F = self.F
+        # ① 分隔线：两块之间的视觉分界（1px，跟随高级区一起显隐）
+        tk.Frame(parent, bg=theme.BORDER, height=1).pack(fill="x", pady=(2, 14))
         sec = tk.Frame(parent, bg=theme.SURFACE)
         sec.pack(fill="x", pady=(0, 4))
         self._custom_frame = sec
@@ -1825,47 +1835,56 @@ class App:
         tk.Label(sec, text=tr("adv_custom_desc"), bg=theme.SURFACE, fg=theme.TEXT_2,
                  font=F["F_HELP"], anchor="w", justify="left").pack(
             fill="x", pady=(1, 6))
-        # 行1：手填问卷
+
+        # —— 行1：手填问卷 ——
         r1 = tk.Frame(sec, bg=theme.SURFACE)
-        r1.pack(fill="x", pady=(2, 7))
+        r1.pack(fill="x", pady=(2, 10))
+        # ③ 按钮**先**入队。Tk 的 pack 在横向空间不够时是"压缩最后入队的控件"，
+        # 而 RoundButton 是自绘 canvas：一旦被压窄，居中绘制的文字就从两侧被裁
+        # （真机截图实测 "Import" 只剩 "mpor"）。先让按钮占住自己的宽度，
+        # 剩余空间再分给左侧文字列 —— 无论文案多长，按钮字都完整。
+        RoundButton(r1, text=tr("btn_questionnaire"),
+                    command=self._open_questionnaire, style="secondary",
+                    font=F["F_BTN_S"], height=28, padx=12).pack(
+                        side="right", padx=(10, 0))
         c1 = tk.Frame(r1, bg=theme.SURFACE)
         c1.pack(side="left", fill="x", expand=True)
         IconBadge(c1, "questionnaire", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
         tk.Label(c1, text=tr("row_questionnaire_title"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_SUBTITLE"], anchor="w").pack(
                      side="left", padx=(8, 0), fill="x", expand=True)
-        tk.Label(c1, text=tr("row_questionnaire_desc"), bg=theme.SURFACE,
-                 fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
+        # ② 只留状态行（已填写 / 未填写），明细留给复核弹窗去看
         self._q_name = tk.Label(c1, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
-                                font=F["F_HELP"], anchor="w")
-        self._q_name.pack(fill="x", pady=(3, 0))
-        RoundButton(r1, text=tr("btn_questionnaire"),
-                    command=self._open_questionnaire, style="secondary",
-                    font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
-        # 行2：AI 导入
+                                font=F["F_HELP"], anchor="w", justify="left")
+        self._q_name.pack(fill="x", pady=(2, 0))
+        _auto_wrap(self._q_name, c1, 0)
+
+        # —— 行2：AI 导入配置 ——
         r2 = tk.Frame(sec, bg=theme.SURFACE)
         r2.pack(fill="x", pady=(0, 2))
+        RoundButton(r2, text=tr("btn_ai_import"),
+                    command=self._pick_ai_config, style="secondary",
+                    font=F["F_BTN_S"], height=28, padx=12).pack(
+                        side="right", padx=(10, 0))
+        # ✕ 清除按钮排在上面那个按钮的左侧（后入队的 side="right" 更靠内），
+        # 选中配置后由 _refresh_rows 显示
+        self._ai_clear = tk.Label(r2, text="✕", bg=theme.SURFACE, fg=theme.TEXT_3,
+                                  font=F["F_HELP"], cursor="hand2")
+        self._ai_clear.pack(side="right", padx=(0, 4))
+        self._ai_clear.pack_forget()
+        self._ai_clear.bind("<Button-1>", lambda e: (self._clear_input("ai"), "break")[-1])
+        self._ai_clear.bind("<Enter>", lambda e: self._ai_clear.config(fg=theme.ERROR))
+        self._ai_clear.bind("<Leave>", lambda e: self._ai_clear.config(fg=theme.TEXT_3))
         c2 = tk.Frame(r2, bg=theme.SURFACE)
         c2.pack(side="left", fill="x", expand=True)
         IconBadge(c2, "import_config", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
         tk.Label(c2, text=tr("row_ai_title"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_SUBTITLE"], anchor="w").pack(
                      side="left", padx=(8, 0), fill="x", expand=True)
-        tk.Label(c2, text=tr("row_ai_desc"), bg=theme.SURFACE,
-                 fg=theme.TEXT_2, font=F["F_HELP"], anchor="w").pack(fill="x")
         self._ai_name = tk.Label(c2, text="", bg=theme.SURFACE, fg=theme.TEXT_3,
-                                 font=F["F_HELP"], anchor="w")
-        self._ai_name.pack(fill="x", pady=(3, 0))
-        self._ai_clear = tk.Label(r2, text="✕", bg=theme.SURFACE, fg=theme.TEXT_3,
-                                  font=F["F_HELP"], cursor="hand2")
-        self._ai_clear.pack(side="right", padx=(0, 8))
-        self._ai_clear.pack_forget()
-        self._ai_clear.bind("<Button-1>", lambda e: (self._clear_input("ai"), "break")[-1])
-        self._ai_clear.bind("<Enter>", lambda e: self._ai_clear.config(fg=theme.ERROR))
-        self._ai_clear.bind("<Leave>", lambda e: self._ai_clear.config(fg=theme.TEXT_3))
-        RoundButton(r2, text=tr("btn_ai_import"),
-                    command=self._pick_ai_config, style="secondary",
-                    font=F["F_BTN_S"], height=28, padx=12).pack(side="right")
+                                 font=F["F_HELP"], anchor="w", justify="left")
+        self._ai_name.pack(fill="x", pady=(2, 0))
+        _auto_wrap(self._ai_name, c2, 0)
 
     def _toggle_advanced(self):
         """展开 / 收起 Advanced options（返回展开后的状态，便于测试断言）。"""
@@ -2338,12 +2357,25 @@ class App:
             self._paper_name.config(text=tr("btn_select_doc"), fg=theme.PRIMARY)
             self._paper_sub.config(text=tr("paper_support"), fg=theme.TEXT_3)
         _sel(self._tpl_name, self.school_template.get(), "st_tpl_none")
-        # 问卷的状态来自内存数据（不是文件路径），单独判
-        if self.questionnaire_data:
-            self._q_name.config(text=tr("st_q_set"), fg=theme.SUCCESS)
+        # 问卷 / AI 两行只显示「填没填」（v2.3.64：不再罗列会检查哪些格式项，
+        # 明细留给复核弹窗）。问卷给出**已填项数**：只写 "Filled in" 客户不知道
+        # 是填了两项还是全填了；只列格式项又列不全还挤掉按钮。条数两头都顾上。
+        _n_q = len(self.questionnaire_data or {})
+        if _n_q:
+            self._q_name.config(text=tr("st_q_set_n", _n_q), fg=theme.SUCCESS)
         else:
             self._q_name.config(text=tr("st_q_none"), fg=theme.TEXT_3)
-        _sel(self._ai_name, self.ai_json.get(), "st_ai_none")
+        # AI 配置：已导入时给「已导入 · 文件名」——只说"已导入"看不出是哪个文件，
+        # 只显示文件名又看不出状态。文件名按字符截断：超长名会把 c2 的请求宽度顶大，
+        # 反过来挤扁右侧按钮（v2.3.64 修的就是这个连锁反应）。
+        _ai_file = self.ai_json.get()
+        if _ai_file:
+            _nm = os.path.basename(_ai_file)
+            if len(_nm) > 32:
+                _nm = _nm[:14] + " … " + _nm[-14:]
+            self._ai_name.config(text=tr("st_ai_set", _nm), fg=theme.SUCCESS)
+        else:
+            self._ai_name.config(text=tr("st_ai_none"), fg=theme.TEXT_3)
 
         # 选了真实存在的论文 → 从 idle 进入 ready。
         # results / fixed 由动作本身决定，这里绝不能覆盖（否则一刷新就把结果态抹掉）。
@@ -2765,8 +2797,11 @@ class App:
             # v2.3.29：把 ✕ 钉在下拉箭头「⌄」左侧（before=chevron），避免挤在箭头右边
             # 被当成装饰、看不见。chevron 在 _select_field 里记到了 clear_btn._chevron。
             before = getattr(btn, "_chevron", None)
+            # v2.3.64：AI 行的 ✕ 在「Import」按钮左侧（不是下拉框），间距要留在右边，
+            # 否则 ✕ 会贴着 Import 的圆角边。
+            padx = (0, 6) if btn is getattr(self, "_ai_clear", None) else (4, 0)
             if show and btn.winfo_manager() != "pack":
-                btn.pack(side="right", padx=(4, 0), before=before)
+                btn.pack(side="right", padx=padx, before=before)
             elif not show and btn.winfo_manager() == "pack":
                 btn.pack_forget()
 

@@ -279,11 +279,12 @@ STRINGS: dict = {
         "row_template_title": "University template",
         "row_template_desc": "Use your university's official template (if available).",
         "row_template_placeholder": "Choose a template",
+        # v2.3.64：两行标题下不再挂「会检查哪些格式项」的长说明
+        # （原 row_questionnaire_desc / row_ai_desc 已删）—— 那串既列不全，
+        # 又会把同行的按钮挤到裁字。要看明细请去复核弹窗。
         "row_questionnaire_title": "Questionnaire",
-        "row_questionnaire_desc": "Page layout: margins, font, size, spacing",
         "btn_questionnaire": "Fill in",
         "row_ai_title": "Import configuration",
-        "row_ai_desc": "Let any AI fill the questionnaire template for you",
         "btn_ai_import": "Import",
         "row_paper_title": "Paper",
         # ⚠️ 对外能力声明必须与实际一致（上架铁律）。引擎只读 .docx：
@@ -305,9 +306,13 @@ STRINGS: dict = {
         "st_paper_sample": "Thesis_Final.docx",
         "st_paper_error": "File type not supported",
         "st_tpl_none": "Choose a template",
+        # 状态行用词（v2.3.64）：只回答「这行填没填、填了多少」，不罗列格式项。
+        # ``*_n`` 词条走 i18n.t() 的复数约定：N=1 时自动改用 ``*_one`` 文案。
         "st_q_none": "Not filled in",
-        "st_q_set": "Filled in",
+        "st_q_set_n": "Filled in · %s fields",
+        "st_q_set_one": "Filled in · 1 field",
         "st_ai_none": "Not imported",
+        "st_ai_set": "Imported · %s",
 
         # —— 右栏：Review & Fix ——
         # 规格书：Workflow → "Review & Fix"；Run Format Check → "Check formatting"；
@@ -613,10 +618,8 @@ STRINGS: dict = {
         "row_template_desc": "如果有学校官方模板，用它更准。",
         "row_template_placeholder": "选择模板",
         "row_questionnaire_title": "格式问卷",
-        "row_questionnaire_desc": "页面排版：页边距、字体、字号、行距",
         "btn_questionnaire": "手填问卷",
         "row_ai_title": "导入配置",
-        "row_ai_desc": "把问卷模板交给任意 AI，让它按学校要求填好",
         "btn_ai_import": "导入",
         "row_paper_title": "论文",
         "row_paper_helper": "上传或选择要体检的文档。",
@@ -634,8 +637,11 @@ STRINGS: dict = {
         "st_paper_error": "文件类型不支持",
         "st_tpl_none": "选择模板",
         "st_q_none": "未填写",
-        "st_q_set": "已填写",
+        # 与 EN 同构：``st_q_set_n`` / ``st_q_set_one`` 交给 t() 的复数约定挑一条。
+        "st_q_set_n": "已填写 · %s 项",
+        "st_q_set_one": "已填写 · 1 项",
         "st_ai_none": "未导入",
+        "st_ai_set": "已导入 · %s",
 
         # —— 格式来源（6 选 1 互斥，海外版零中文：zh 亦用英文值）——
         "source_title": "Format source",
