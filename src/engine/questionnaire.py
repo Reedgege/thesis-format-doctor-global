@@ -173,6 +173,37 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
      "default": "", "unit": "", "help": "是=粗体；否=明确不加粗（MLA 要求不加粗）；—=不规定"},
     {"key": "reference_heading_centered", "label": "参考文献标题居中", "group": "reference", "type": "tri",
      "default": "", "unit": "", "help": "是=居中；否=明确左对齐（IEEE 左对齐）；—=不规定"},
+
+    # —— 摘要页特化（v2.3.67）——
+    # 摘要正文口径与正文相反（APA 摘要顶格不缩进、专业版另起一页），独立可填。
+    {"key": "abstract_first_line_indent_in", "label": "摘要首行缩进", "group": "page", "type": "float",
+     "default": "", "unit": "英寸", "range": (0.0, 2.0),
+     "help": "摘要正文首行缩进；APA 摘要顶格=0（留空=不规定，跟随正文不检查）"},
+    {"key": "abstract_new_page", "label": "摘要另起一页", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=摘要标题前插分页（APA 专业版要求）；否=明确不另起；—=不规定"},
+
+    # —— Running head（v2.3.67）——
+    {"key": "running_head_required", "label": "要求页眉 Running Head", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=要求页眉有 running head（短标题/姓氏）；APA 专业版要求、MLA 要求姓氏+页码；—=不规定"},
+    {"key": "page_number_include_author_name", "label": "页码含作者姓氏", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=页码旁须带作者姓氏（MLA 的「Smith 1」形态）；—=不规定"},
+
+    # —— 图表 caption（v2.3.67）——
+    {"key": "caption_font_size_pt", "label": "图表标题字号", "group": "reference", "type": "float",
+     "default": "", "unit": "磅", "range": (6.0, 72.0),
+     "help": "图表标题（Caption）字号；留空=跟随正文。APA 表题常与正文同号或小一号"},
+    {"key": "caption_line_spacing", "label": "图表标题行距", "group": "reference", "type": "float",
+     "default": "", "unit": "倍", "range": (0.8, 4.0),
+     "help": "图表标题行距；留空=跟随正文"},
+    {"key": "caption_position_table", "label": "表题位置", "group": "reference", "type": "choice",
+     "options": ["top", "bottom"], "default": "", "unit": "",
+     "help": "表题在表格上方(top)还是下方(bottom)；APA/IEEE 表题在上。留空=不检查"},
+    {"key": "caption_position_figure", "label": "图题位置", "group": "reference", "type": "choice",
+     "options": ["top", "bottom"], "default": "", "unit": "",
+     "help": "图题在图上方(top)还是下方(bottom)；APA/IEEE 图题在下。留空=不检查"},
 ]
 
 # 数值字段的合理范围（由 schema 派生，避免 UI 侧再抄一份）
@@ -228,6 +259,27 @@ class TargetProfile:
     title_page_title_centered: Optional[bool] = None
     title_page_title_bold: Optional[bool] = None
     title_page_author_centered: Optional[bool] = None
+    # —— 摘要页特化（v2.3.67）——
+    # 摘要正文的口径与正文相反：APA 摘要不首行缩进（顶格）、专业版摘要另起一页。
+    # None = 不规定（不检查、不改动）。这两个字段独立于正文 first_line_indent_in，
+    # 因为「正文 0.5″ 首行缩进」绝不能刷到摘要段上。
+    abstract_first_line_indent_in: Optional[float] = None
+    abstract_new_page: Optional[bool] = None
+    # —— Running head（v2.3.67）——
+    # 页眉 running head 的两个显式开关。以前只能由内置规范（APA 专业版 / MLA）隐式带出，
+    # 客户/学校想显式声明「要 running head」或「页码要含作者姓氏」无处可填。
+    # running_head_required=True = 要求页眉有 running head（短标题或姓氏）；
+    # page_number_include_author_name=True = 页码旁须带作者姓氏（MLA 的「Smith 1」）。
+    # 文本内容（短标题 / 姓氏）因涉及「改内容」且无法可靠自动生成，仍只提示客户手动补；
+    # 页码位置本身已由 page_number_position 维度可查可修。
+    running_head_required: Optional[bool] = None
+    page_number_include_author_name: Optional[bool] = None
+    # —— 图表 caption（v2.3.67）——
+    # 图表标题的字号/行距可修；表题/图题位置只能提示。None = 不规定（不检查、不改动）。
+    caption_font_size_pt: Optional[float] = None
+    caption_line_spacing: Optional[float] = None
+    caption_position_table: Optional[str] = None   # "top" / "bottom"
+    caption_position_figure: Optional[str] = None  # "top" / "bottom"
     # 每级标题格式样本（学校模板驱动 / 问卷 / AI 显式给出）：level(int) -> dict
     # {alignment, bold, italic, indent, size_pt, number_prefix, uppercase}。
     # 仅当来源显式提供时才填入；其余入口留空、不臆造。
@@ -255,6 +307,16 @@ class TargetProfile:
                       "reference_line_spacing", "reference_new_page",
                       "reference_heading_bold", "reference_heading_centered")
 
+    # 摘要页特化（不进 PAGE_KEYS：它们只作用于摘要正文段，与正文口径分开）
+    ABSTRACT_KEYS = ("abstract_first_line_indent_in", "abstract_new_page")
+
+    # Running head（不进 PAGE_KEYS：页眉维度，文本内容只提示、页码位置由 page_number 管）
+    RUNNING_HEAD_KEYS = ("running_head_required", "page_number_include_author_name")
+
+    # 图表 caption（不进 PAGE_KEYS：图表标题维度，字号/行距可修、位置只提示）
+    CAPTION_KEYS = ("caption_font_size_pt", "caption_line_spacing",
+                    "caption_position_table", "caption_position_figure")
+
     def to_dict(self) -> dict:
         return {
             "source": self.source,
@@ -269,6 +331,9 @@ class TargetProfile:
             "paper_size": self.paper_size,
             "page_number_position": self.page_number_position,
             **{k: getattr(self, k) for k in self.TITLE_PAGE_KEYS},
+            **{k: getattr(self, k) for k in self.ABSTRACT_KEYS},
+            **{k: getattr(self, k) for k in self.RUNNING_HEAD_KEYS},
+            **{k: getattr(self, k) for k in self.CAPTION_KEYS},
             "heading_formats": {str(k): v for k, v in self.heading_formats.items()},
             "reference_rewrite": self.reference_rewrite,
             "resolution": self.resolution,
@@ -298,6 +363,18 @@ def target_from_spec(key: str) -> TargetProfile:
         resolution["paper_size"] = "spec"
     if spec.page_number_position:
         resolution["page_number_position"] = "spec"
+    if spec.abstract_first_line_indent_in is not None:
+        resolution["abstract_first_line_indent_in"] = "spec"
+    if spec.abstract_new_page is not None:
+        resolution["abstract_new_page"] = "spec"
+    if spec.caption_font_size_pt is not None:
+        resolution["caption_font_size_pt"] = "spec"
+    if spec.caption_line_spacing is not None:
+        resolution["caption_line_spacing"] = "spec"
+    if spec.caption_position_table is not None:
+        resolution["caption_position_table"] = "spec"
+    if spec.caption_position_figure is not None:
+        resolution["caption_position_figure"] = "spec"
     return TargetProfile(
         source="spec",
         spec_key=key,
@@ -306,6 +383,12 @@ def target_from_spec(key: str) -> TargetProfile:
         columns=spec.columns,
         paper_size=spec.paper_size,
         page_number_position=spec.page_number_position,
+        abstract_first_line_indent_in=spec.abstract_first_line_indent_in,
+        abstract_new_page=spec.abstract_new_page,
+        caption_font_size_pt=spec.caption_font_size_pt,
+        caption_line_spacing=spec.caption_line_spacing,
+        caption_position_table=spec.caption_position_table,
+        caption_position_figure=spec.caption_position_figure,
         reference_style=ref.style_key,
         reference_hanging_indent_in=ref.hanging_indent_in,
         reference_numbered=ref.numbered,
@@ -368,7 +451,8 @@ def _coerce(schema: dict, raw: dict) -> dict:
 
 # 每级标题格式的字段白名单与取值归一（手填问卷 / AI 填表 / 学校模板三路共用一套）
 HEADING_LEVEL_KEYS = ("alignment", "bold", "italic", "run_in", "indent", "indent_in",
-                      "font_family", "size_pt", "number_prefix", "uppercase")
+                      "font_family", "size_pt", "number_prefix", "uppercase",
+                      "page_break_before")
 
 _HEADING_ALIGN = ("left", "center", "right", "justify")
 _HEADING_PREFIX = ("number", "roman", "upper_letter", "lower_letter",
@@ -387,7 +471,8 @@ def _coerce_heading_level(raw: dict) -> dict:
         if v is None or v == "":
             continue
         try:
-            if k in ("bold", "italic", "run_in", "indent", "uppercase"):
+            if k in ("bold", "italic", "run_in", "indent", "uppercase",
+                     "page_break_before"):
                 if isinstance(v, str):
                     out[k] = v.strip().lower() in ("1", "true", "yes", "y")
                 else:
@@ -443,6 +528,9 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     paper = clean.get("paper_size")        # 纸型（Letter/A4/...；通用项，单独承载）
     page_num = clean.get("page_number_position")   # 页码位置（top-right/...；单独承载）
     tp_extra = {k: clean[k] for k in TargetProfile.TITLE_PAGE_KEYS if k in clean}
+    abs_extra = {k: clean[k] for k in TargetProfile.ABSTRACT_KEYS if k in clean}
+    rh_extra = {k: clean[k] for k in TargetProfile.RUNNING_HEAD_KEYS if k in clean}
+    cap_extra = {k: clean[k] for k in TargetProfile.CAPTION_KEYS if k in clean}
     ref_style = clean.get("reference_style")
     ref_hang = clean.get("reference_hanging_indent_in")
     ref_num = clean.get("reference_numbered")
@@ -471,6 +559,12 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     if page_num is not None:
         resolution["page_number_position"] = source
     for _k in tp_extra:
+        resolution[_k] = source
+    for _k in abs_extra:
+        resolution[_k] = source
+    for _k in rh_extra:
+        resolution[_k] = source
+    for _k in cap_extra:
         resolution[_k] = source
     if ref_style is not None:
         resolution["reference_style"] = source
@@ -502,7 +596,8 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     # 空校验：避免静默得到空画像（只填了参考文献细项也算有效内容）
     if not page and ref_style is None and heading is None and cols is None \
             and paper is None and page_num is None \
-            and not ref_extra and not tp_extra:
+            and not ref_extra and not tp_extra and not abs_extra and not rh_extra \
+            and not cap_extra:
         raise ValueError(
             "No valid format fields could be parsed from the input "
             "(margins, font, reference style, and heading levels are all empty). "
@@ -518,6 +613,9 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         paper_size=paper,
         page_number_position=page_num,
         **tp_extra,
+        **abs_extra,
+        **rh_extra,
+        **cap_extra,
         heading_formats=heading_formats,
         reference_style=ref_style,
         reference_hanging_indent_in=ref_hang,
@@ -654,6 +752,17 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         for _k in tpl_tp:
             resolution[_k] = "school"
 
+    # 摘要页特化：模板实测（识别到摘要段才写，读不到就不臆造）。
+    tpl_abs: dict = {}
+    _abs_fli = getattr(doc_profile, "abstract_first_line_indent_in", None)
+    if _abs_fli is not None:
+        tpl_abs["abstract_first_line_indent_in"] = round(float(_abs_fli), 3)
+    _abs_np = getattr(doc_profile, "abstract_new_page", None)
+    if _abs_np is not None:
+        tpl_abs["abstract_new_page"] = bool(_abs_np)
+    for _k in tpl_abs:
+        resolution[_k] = "school"
+
     ref_style = reference_style if reference_style in REFERENCE_STYLE_KEYS else None
     ref_hang = None
     ref_num = None
@@ -748,6 +857,7 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         paper_size=tpl_paper,
         page_number_position=tpl_page_num,
         **tpl_tp,
+        **tpl_abs,
         heading_formats=heading_formats,
         reference_style=ref_style,
         reference_hanging_indent_in=ref_hang,
@@ -812,6 +922,30 @@ def _overlay_one(merged: TargetProfile, extra: TargetProfile, conflicts: list) -
         merged.resolution["page_number_position"] = _origin("page_number_position")
 
     for _k in TargetProfile.TITLE_PAGE_KEYS:
+        _v = getattr(extra, _k, None)
+        if _v is None:
+            continue
+        _register(_k, getattr(merged, _k), merged.resolution.get(_k), _v, _origin(_k))
+        setattr(merged, _k, _v)
+        merged.resolution[_k] = _origin(_k)
+
+    for _k in TargetProfile.ABSTRACT_KEYS:
+        _v = getattr(extra, _k, None)
+        if _v is None:
+            continue
+        _register(_k, getattr(merged, _k), merged.resolution.get(_k), _v, _origin(_k))
+        setattr(merged, _k, _v)
+        merged.resolution[_k] = _origin(_k)
+
+    for _k in TargetProfile.RUNNING_HEAD_KEYS:
+        _v = getattr(extra, _k, None)
+        if _v is None:
+            continue
+        _register(_k, getattr(merged, _k), merged.resolution.get(_k), _v, _origin(_k))
+        setattr(merged, _k, _v)
+        merged.resolution[_k] = _origin(_k)
+
+    for _k in TargetProfile.CAPTION_KEYS:
         _v = getattr(extra, _k, None)
         if _v is None:
             continue
@@ -982,6 +1116,88 @@ def apply_page_overrides(target: "TargetProfile", edits: dict) -> None:
                 continue
             target.page_number_position = raw
             target.resolution["page_number_position"] = "user"
+            continue
+        # 摘要页特化（v2.3.67）：首行缩进是 float、另起一页是三态，都走「—」=清空逻辑。
+        if key == "abstract_first_line_indent_in":
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if target.abstract_first_line_indent_in is not None:
+                    target.abstract_first_line_indent_in = None
+                    target.resolution.pop("abstract_first_line_indent_in", None)
+                continue
+            try:
+                fv = float(raw)
+            except (ValueError, TypeError):
+                continue
+            if fv == target.abstract_first_line_indent_in:
+                continue
+            target.abstract_first_line_indent_in = fv
+            target.resolution["abstract_first_line_indent_in"] = "user"
+            continue
+        if key == "abstract_new_page":
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if target.abstract_new_page is not None:
+                    target.abstract_new_page = None
+                    target.resolution.pop("abstract_new_page", None)
+                continue
+            _tv = raw.lower() in ("1", "true", "yes", "y")
+            _fv2 = raw.lower() in ("0", "false", "no", "n")
+            if not (_tv or _fv2):
+                continue
+            if bool(target.abstract_new_page) == _tv:
+                continue
+            target.abstract_new_page = _tv
+            target.resolution["abstract_new_page"] = "user"
+            continue
+        # Running head（v2.3.67）：两个三态开关，都走「—」=清空逻辑。
+        if key in TargetProfile.RUNNING_HEAD_KEYS:
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if getattr(target, key, None) is not None:
+                    setattr(target, key, None)
+                    target.resolution.pop(key, None)
+                continue
+            _tv = raw.lower() in ("1", "true", "yes", "y")
+            _fv2 = raw.lower() in ("0", "false", "no", "n")
+            if not (_tv or _fv2):
+                continue
+            if bool(getattr(target, key, None)) == _tv:
+                continue
+            setattr(target, key, _tv)
+            target.resolution[key] = "user"
+            continue
+        # 图表 caption（v2.3.67）：字号/行距是 float、位置是 choice，都走「—」=清空。
+        if key in ("caption_font_size_pt", "caption_line_spacing"):
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if getattr(target, key, None) is not None:
+                    setattr(target, key, None)
+                    target.resolution.pop(key, None)
+                continue
+            try:
+                fv = float(raw)
+            except (ValueError, TypeError):
+                continue
+            if fv == getattr(target, key, None):
+                continue
+            setattr(target, key, fv)
+            target.resolution[key] = "user"
+            continue
+        if key in ("caption_position_table", "caption_position_figure"):
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if getattr(target, key, None) is not None:
+                    setattr(target, key, None)
+                    target.resolution.pop(key, None)
+                continue
+            _val = raw.lower()
+            if _val not in ("top", "bottom"):
+                continue
+            if _val == getattr(target, key, None):
+                continue
+            setattr(target, key, _val)
+            target.resolution[key] = "user"
             continue
         if key not in TargetProfile.PAGE_KEYS:
             continue

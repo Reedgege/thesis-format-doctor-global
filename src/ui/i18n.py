@@ -472,6 +472,9 @@ STRINGS: dict = {
         "q_h_size": "Size (pt)",
         "q_h_bold": "Bold",
         "q_h_italic": "Italic",
+        "q_h_pagebreak": "Page break",
+        "q_prefilled": ("Blank fields were pre-filled with typical %s values — "
+                        "anything you filled in yourself is never overwritten."),
         "q_h_upper": "UPPER",
         "q_h_runin": "Run-in",
         "q_h_align": "Align",
@@ -604,6 +607,7 @@ STRINGS: dict = {
         "review_two_column": "Two columns",
         "review_headings": "Headings",
         "review_refs": "References",
+        "review_frontmatter": "Abstract / Running Head / Captions",
         "review_style": "Style Rules",
         "review_confirm": "Run check",
         "review_back": "Back",
@@ -691,6 +695,7 @@ STRINGS: dict = {
         "review_two_column": "Two columns",
         "review_headings": "Headings",
         "review_refs": "References",
+        "review_frontmatter": "Abstract / Running Head / Captions",
         "review_style": "Style Rules",
         "review_confirm": "Run check",
         "review_back": "Back",
@@ -842,6 +847,8 @@ STRINGS: dict = {
         "q_h_size": "字号（磅）",
         "q_h_bold": "加粗",
         "q_h_italic": "斜体",
+        "q_h_pagebreak": "分页",
+        "q_prefilled": "空白字段已按 %s 的典型值预填；您自己填过的不会被覆盖。",
         "q_h_upper": "全大写",
         "q_h_runin": "接排",
         "q_h_align": "对齐",
@@ -989,6 +996,14 @@ Q_LABELS_EN = {
     "reference_new_page": "References on a new page",
     "reference_heading_bold": "Reference heading bold",
     "reference_heading_centered": "Reference heading centered",
+    "abstract_first_line_indent_in": "Abstract first-line indent",
+    "abstract_new_page": "Abstract on a new page",
+    "running_head_required": "Running head required",
+    "page_number_include_author_name": "Page number includes author name",
+    "caption_font_size_pt": "Caption font size",
+    "caption_line_spacing": "Caption line spacing",
+    "caption_position_table": "Table caption position",
+    "caption_position_figure": "Figure caption position",
 }
 
 Q_HELP_EN = {
@@ -1026,6 +1041,14 @@ Q_HELP_EN = {
     "reference_new_page": "Yes = insert a page break before the reference heading; No = not required; — = unspecified",
     "reference_heading_bold": "Yes = bold; No = explicitly not bold (MLA); — = unspecified",
     "reference_heading_centered": "Yes = centered; No = explicitly left-aligned (IEEE); — = unspecified",
+    "abstract_first_line_indent_in": "Abstract body first-line indent; APA abstracts are flush left (0). Leave blank to skip",
+    "abstract_new_page": "Yes = page break before the Abstract heading (APA Professional); No = not required; — = unspecified",
+    "running_head_required": "Yes = a running head in the header (short title or last name). Leave as — to skip",
+    "page_number_include_author_name": "Yes = the page number is preceded by the author's last name (MLA's 'Smith 1'). — = unspecified",
+    "caption_font_size_pt": "Figure/table caption font size; leave blank to follow the body text",
+    "caption_line_spacing": "Figure/table caption line spacing; leave blank to follow the body text",
+    "caption_position_table": "Table caption above (top) or below (bottom) the table; APA/IEEE use top. Leave as — to skip",
+    "caption_position_figure": "Figure caption above (top) or below (bottom) the figure; APA/IEEE use bottom. Leave as — to skip",
 }
 
 # 对齐取值的显示名（引擎给的原始值是 left/justify/center/right）

@@ -917,6 +917,93 @@ def test_questionnaire_heading_table_echoes_and_saves(ui, monkeypatch):
     assert hf["2"]["italic"] is True
 
 
+def test_questionnaire_spec_linkage_prefills_and_keeps_user_values(ui):
+    """选参考文献规范 → 空字段按该规范典型值预填；客户填过/保存过的一律不动。
+
+    老板 2026-10-19：客户选中哪个规范，默认值要调整为哪个规范的。
+    预填值的单一真相源是引擎 ``target_from_spec``，UI 不抄一份默认值。
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    from src.engine.questionnaire import target_from_spec
+    from src.ui import i18n
+
+    # 客户上次保存过页边距 1.25 —— 联动绝不能覆盖它
+    ui.questionnaire_data = {"margin_top_in": "1.25"}
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    ieee = target_from_spec("IEEE")
+    style_combo = [c for c in _descendants(win, ttk.Combobox)
+                   if tuple(str(v) for v in c.cget("values")) == ("APA", "MLA", "IEEE")][0]
+    style_combo.set("IEEE")
+    ui.root.update_idletasks()
+
+    combos = [c.get() for c in _descendants(win, ttk.Combobox)]
+    entries = [e.get() for e in _descendants(win, tk.Entry)]
+    # 客户保存过的值原样保留
+    assert "1.25" in entries, "联动覆盖了客户已保存的页边距"
+    # 空字段按 IEEE 典型值预填（单一真相源 = target_from_spec("IEEE")）
+    assert str(ieee.page["font_size_pt"]) in entries          # "10.0"
+    assert str(ieee.heading_levels) in entries                # "5"
+    assert str(ieee.page["font_family"]) in entries           # Times New Roman（正文字体是文本框）
+    assert str(ieee.page["body_alignment"]) in combos         # justify（下拉）
+    # 栏数联动为 IEEE 双栏（与复核弹窗同一个词）
+    one = i18n.t(ui.lang, "review_one_column")
+    two = i18n.t(ui.lang, "review_two_column")
+    col_combo = [c for c in _descendants(win, ttk.Combobox)
+                 if tuple(str(v) for v in c.cget("values")) == (one, two)][0]
+    assert col_combo.get() == two, "IEEE 应联动为双栏"
+    # 参考文献细项：IEEE 顺序编码 = 是
+    yes = i18n.t(ui.lang, "bool_yes")
+    numbered = [c for c in _descendants(win, ttk.Combobox)
+                if tuple(str(v) for v in c.cget("values")) == (yes, i18n.t(ui.lang, "bool_no"))]
+    assert any(c.get() == yes for c in numbered), "IEEE 顺序编码应预填为「是」"
+    # 表题位置预填 top、图题 bottom（IEEE/APA 口径；choice 前面带「—」档）
+    none_txt = i18n.t(ui.lang, "q_none")
+    pos = [c.get() for c in _descendants(win, ttk.Combobox)
+           if tuple(str(v) for v in c.cget("values")) == (none_txt, "top", "bottom")]
+    assert sorted(pos) == ["bottom", "top"], pos
+
+
+def test_questionnaire_sections_are_collapsible(ui):
+    """三大区块要能折叠：点标题收起（内容不可见），再点展开恢复。
+
+    老板 2026-10-19：这些大的几个方面要能折叠，填完后可以折叠。
+    """
+    import tkinter as tk
+
+    from src.ui import i18n
+
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    def mapped_entries():
+        return [e for e in _descendants(win, tk.Entry) if e.winfo_ismapped()]
+
+    before = len(mapped_entries())
+    assert before > 0, "展开状态下应有可见的输入框"
+
+    page_title = i18n.t(ui.lang, "q_sec_page")
+    # 折叠头：标题在左、chevron 在右；点整行（标题行的 Frame）切换
+    title_lbls = [w for w in _descendants(win, tk.Label)
+                   if w.cget("text").endswith(page_title)]
+    assert title_lbls, "找不到可折叠区块标题（Page layout）"
+    head = title_lbls[0].master   # 标题行 Frame，绑定了点击切换
+
+    head.event_generate("<Button-1>")
+    ui.root.update_idletasks()
+    after = len(mapped_entries())
+    assert after < before, "点击区块标题后没有收起（可见输入框数量未减少）"
+
+    head.event_generate("<Button-1>")
+    ui.root.update_idletasks()
+    assert len(mapped_entries()) == before, "再次点击后没有重新展开"
+
+
 def test_questionnaire_heading_table_feeds_target(ui, monkeypatch):
     """手填的每级明细要真的进 TargetProfile（不能只存在界面里）。"""
     from src.ui import app as app_mod

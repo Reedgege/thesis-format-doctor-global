@@ -144,6 +144,15 @@ class DocumentProfile:
     reference_new_page: Optional[bool] = None         # 参考文献标题是否另起一页（分页符/段前分页）；无参考文献段=None
     has_abstract: bool = False                        # 文档是否含 Abstract / 摘要 段落（专业版要求）
     has_author_note: bool = False                     # 文档是否含 Author Note / 作者注 段落（专业版要求）
+    # —— 摘要页特化（v2.3.67）：摘要正文段的口径与正文不同（APA 摘要不首行缩进、另起一页）——
+    abstract_first_line_indent_in: Optional[float] = None  # 摘要正文段实测首行缩进（英寸）；无摘要段=None
+    abstract_new_page: Optional[bool] = None          # 摘要是否另起一页（段前分页/上一段末尾分页符）；无摘要段=None
+    # —— 图表 caption 采样（v2.3.67）——
+    caption_count: int = 0                            # 识别到的 Caption 样式段落数
+    caption_font_size_pt: Optional[float] = None      # 图表标题实测字号（众数）；无 caption=None
+    caption_line_spacing: Optional[float] = None      # 图表标题实测行距（众数）；无 caption=None
+    # 表题位置：caption 段落与最近表格的相对位置（"top"/"bottom"/None=无表格 caption）
+    caption_table_positions: list = field(default_factory=list)
     # —— MLA 专用探测字段（Purdue OWL general_format + 样例论文）——
     title_text: str = ""                              # 首页标题段文本（首个居中段落）
     title_alignment: Optional[str] = None             # 标题对齐标签（center/left/...）
@@ -185,6 +194,9 @@ class HeadingFormatSample:
     size_pt: Optional[float] = None      # 字号（磅）
     number_prefix: Optional[str] = None  # 编号形态：number/roman/upper_letter/lower_letter/lower_roman/number_paren/None
     uppercase: Optional[bool] = None     # 标题文本是否全大写
+    # v2.3.67：段前分页（pageBreakBefore）。读 pPr/w:pageBreakBefore；三态 None=读不到
+    # 或未显式设置（段前分页由样式承载时读不到直接值，此时留 None 由 checker 决定不硬判）。
+    page_break_before: Optional[bool] = None
 
     def to_dict(self) -> dict:
         return {
@@ -193,6 +205,7 @@ class HeadingFormatSample:
             "font_family": self.font_family,
             "size_pt": self.size_pt,
             "number_prefix": self.number_prefix, "uppercase": self.uppercase,
+            "page_break_before": self.page_break_before,
         }
 
 
@@ -477,12 +490,23 @@ def _sample_heading_format(para, doc_pf, doc_default_font=None) -> "HeadingForma
     if txt and txt.replace(" ", "").isalpha():
         uppercase = txt == txt.upper()
 
+    # 段前分页（v2.3.67）：读段落直接格式 pPr/pageBreakBefore；读不到（None 或样式承载）
+    # 保持 None，由 checker 决定不硬判。三态：True/False/None。
+    pbb: Optional[bool] = None
+    try:
+        _pf_pbb = getattr(para.paragraph_format, "page_break_before", None)
+        if _pf_pbb is not None:
+            pbb = bool(_pf_pbb)
+    except Exception:
+        pbb = None
+
     # 编号前缀：启发式识别标题起始编号形态
     number_prefix = _detect_number_prefix(txt)
 
     return HeadingFormatSample(
         alignment=al, bold=bold, italic=italic, indent=indent, indent_in=indent_in,
         font_family=font, size_pt=size, number_prefix=number_prefix, uppercase=uppercase,
+        page_break_before=pbb,
     )
 
 
@@ -976,6 +1000,130 @@ def _scan_front_matter(paras) -> tuple[bool, bool]:
         if "author note" in t or "作者注" in t:
             has_auth = True
     return has_abs, has_auth
+
+
+def find_abstract_section(paras) -> tuple[Optional[int], list[int]]:
+    """定位摘要段：返回 (摘要标题段下标, 摘要正文段下标列表)。
+
+    **单一真相源**：checker（判摘要格式）与 fixer（施加摘要格式）共用本函数，
+    避免「检查判这一段、修正改另一段」的漂移（与 find_reference_section 同理）。
+
+    识别规则（保守，仅认正面信号）：
+    - 摘要标题 = 样式级标题（heading_level 非 None）且文本（去空格、小写）等于
+      "abstract" / "摘要" / "abstract page"（APA 常见 "Abstract" 一级标题）。
+    - 摘要正文 = 标题之后、下一个样式级标题之前的所有非空段。
+    - 找不到样式级标题的 "Abstract" 时返回 (None, [])，绝不把加粗正文误判成摘要标题。
+    """
+    paras = list(paras)
+    for i, para in enumerate(paras):
+        text = (para.text or "").strip()
+        low = text.lower().replace(" ", "")
+        if low in ("abstract", "摘要", "abstractpage") and heading_level(para) is not None:
+            body: list[int] = []
+            for j in range(i + 1, len(paras)):
+                pj = paras[j]
+                if heading_level(pj) is not None:
+                    break
+                if (pj.text or "").strip():
+                    body.append(j)
+            return i, body
+    return None, []
+
+
+# 图表 caption 识别（v2.3.67）：Word 内置 "Caption" 样式 + 文本前缀启发式双保险。
+# 很多学生用「Table 1」「Figure 2」「表 1」「图 2」作为标题段，但没套 Caption 样式；
+# 只认样式会漏掉一大半。前缀式兜底（保守：前缀后必须跟数字或标题文字）。
+_CAPTION_STYLE_KEYWORDS = ("caption", "图注", "表注", "图表标题", "captions")
+_CAPTION_PREFIX_RE = re.compile(
+    r"^(?:table|figure|fig\.|tab\.|表|图)\s*\d+", re.IGNORECASE)
+
+
+def is_caption_paragraph(para) -> bool:
+    """判断一段是否是图表标题（Caption）。
+
+    双保险：① 样式名含 "caption" 关键词；② 文本以 "Table N" / "Figure N" / "表 N" /
+    "图 N" 开头（学生常不套 Caption 样式）。保守：前缀后必须跟数字，避免把普通句子误判。
+    """
+    try:
+        style_name = (para.style.name or "").lower() if para.style else ""
+    except Exception:
+        style_name = ""
+    if any(k in style_name for k in _CAPTION_STYLE_KEYWORDS):
+        return True
+    text = (para.text or "").strip()
+    if not text:
+        return False
+    return bool(_CAPTION_PREFIX_RE.match(text))
+
+
+def _sample_captions(doc, prof: "DocumentProfile") -> None:
+    """采样图表标题（Caption 段落）的字号 / 行距 / 与表格的相对位置。
+
+    仅读不判；判定在 checker.py。字号/行距取众数（多张图表标题通常同口径）；
+    表题位置遍历 body 元素顺序，看 caption 段落与最近 w:tbl 的前后关系。
+    """
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return
+    cap_paras = [p for p in paras if is_caption_paragraph(p)]
+    if not cap_paras:
+        return
+    prof.caption_count = len(cap_paras)
+    sizes: Counter = Counter()
+    spacings: list = []
+    for p in cap_paras:
+        sz = _max_run_size_pt(p)
+        if sz is not None:
+            sizes[sz] += 1
+        sp = _line_spacing_of(p.paragraph_format)
+        if sp is not None:
+            spacings.append(sp)
+    if sizes:
+        prof.caption_font_size_pt = sizes.most_common(1)[0][0]
+    if spacings:
+        prof.caption_line_spacing = Counter(
+            round(s, 2) for s in spacings).most_common(1)[0][0]
+    # 表题位置：遍历 body 子元素，caption 段落（w:p）与最近 w:tbl 的前后关系。
+    # 只记「caption 段落紧邻表格」的情况（中间无其它段落），否则位置判不准就不记。
+    try:
+        from docx.text.paragraph import Paragraph
+        body = doc.element.body
+        seq = list(body.iterchildren())
+        positions: list = []
+        for i, child in enumerate(seq):
+            if child.tag != qn("w:p"):
+                continue
+            para = Paragraph(child, doc)
+            if not is_caption_paragraph(para):
+                continue
+            # 找前后最近的非空 w:p 之外最近的 w:tbl（跳过紧邻的空段）
+            prev_tbl = False
+            next_tbl = False
+            j = i - 1
+            while j >= 0 and seq[j].tag == qn("w:p"):
+                _pt = (Paragraph(seq[j], doc).text or "").strip()
+                if _pt:
+                    break
+                j -= 1
+            if j >= 0 and seq[j].tag == qn("w:tbl"):
+                prev_tbl = True
+            k = i + 1
+            while k < len(seq) and seq[k].tag == qn("w:p"):
+                _pt = (Paragraph(seq[k], doc).text or "").strip()
+                if _pt:
+                    break
+                k += 1
+            if k < len(seq) and seq[k].tag == qn("w:tbl"):
+                next_tbl = True
+            if prev_tbl and not next_tbl:
+                positions.append("bottom")   # 表格在上、caption 在下 → 表题在表格下方
+            elif next_tbl and not prev_tbl:
+                positions.append("top")      # caption 在上、表格在下 → 表题在表格上方
+        if positions:
+            prof.caption_table_positions = positions
+    except Exception:
+        prof.caption_table_positions = []
 
 
 # ---------------------------------------------------------------------------
@@ -1650,6 +1798,36 @@ def _read_docx_impl(doc) -> DocumentProfile:
     except Exception:
         prof.has_abstract = False
         prof.has_author_note = False
+
+    # —— 摘要页特化采样（v2.3.67）：摘要正文段的首行缩进 + 是否另起一页 ——
+    # 摘要正文（APA 不首行缩进）与正文（0.5″ 首行缩进）口径相反，必须单独采样，
+    # 否则「正文首行缩进」会把摘要段一起刷成 0.5″（越权）。
+    try:
+        _abs_head, _abs_body = find_abstract_section(paras)
+        if _abs_head is not None and _abs_body:
+            # 首行缩进：取摘要正文段的众数（与正文缩进口径一致，三级回退）
+            _abs_indents: Counter = Counter()
+            for _j in _abs_body:
+                _fli = _inch(_pf_attr(paras[_j], doc_pf, "first_line_indent"))
+                _abs_indents[0.0 if _fli is None else _fli] += 1
+            if _abs_indents:
+                prof.abstract_first_line_indent_in = _abs_indents.most_common(1)[0][0]
+            # 是否另起一页：段前分页 或 上一段末尾分页符（复用参考文献同一口径）
+            _prev_abs = paras[_abs_head - 1] if _abs_head > 0 else None
+            prof.abstract_new_page = _reference_starts_new_page(
+                _prev_abs, paras[_abs_head])
+    except Exception:
+        prof.abstract_first_line_indent_in = None
+        prof.abstract_new_page = None
+
+    # —— 图表 caption 采样（v2.3.67）——
+    try:
+        _sample_captions(doc, prof)
+    except Exception:
+        prof.caption_count = 0
+        prof.caption_font_size_pt = None
+        prof.caption_line_spacing = None
+        prof.caption_table_positions = []
 
     return prof
 

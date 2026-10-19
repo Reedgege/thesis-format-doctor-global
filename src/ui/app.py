@@ -51,7 +51,7 @@ from ..engine.docx_reader import DocxReadError, PAPER_SIZES
 from ..engine.fixer import compute_changes, fix_docx, same_file, _compute_changes
 from ..engine.questionnaire import (
     FIELD_RANGES, QUESTIONNAIRE_SCHEMA, TargetProfile, build_target,
-    apply_page_overrides, PAGE_NUMBER_POSITIONS,
+    apply_page_overrides, PAGE_NUMBER_POSITIONS, target_from_spec,
 )
 from ..engine.specs import SPEC_ORDER, spec_display
 from ..license import license as lic
@@ -2942,15 +2942,31 @@ class App:
         """
         tr = self.tr
         F = self.F
-        win = ModalShell(self.root, tr("q_title"), width=640, height=720,
+        # v2.3.67 实测（probe_table_width + probe_dpi）：明细表 11 列自然宽 756
+        # （96 DPI 口径）+ 内容左右各 24 padding = 804，780 连滚动条都不够 → 末三列
+        # （Num/UPPER/Run-in）被裁。且 point 制字体随系统 DPI 渲染，老板机器 150%
+        # 缩放时实际要 1.5 倍宽 —— 定宽必须乘缩放系数，否则高分屏照样裁。
+        _Q_WIDTH = min(int(840 * self._ui_scale()),
+                       self.root.winfo_screenwidth() - 16)
+        win = ModalShell(self.root, tr("q_title"), width=_Q_WIDTH, height=720,
                          sticky_actions=True)
         self._track(win)
+        # 居中是按父窗算的，弹窗比父窗宽时会推出屏幕左缘；夹一次保证整窗在屏内
+        try:
+            win.update_idletasks()
+            _sx = max(8, min(win.winfo_x(),
+                             self.root.winfo_screenwidth() - _Q_WIDTH - 8))
+            if _sx != win.winfo_x():
+                win.geometry("+%d+%d" % (_sx, win.winfo_y()))
+        except Exception:
+            pass
         body = win.content
         saved = dict(self.questionnaire_data or {})
 
         tk.Label(body, text=tr("q_hint"), bg=theme.SURFACE, fg=theme.TEXT_2,
                  font=F["F_HELP"], anchor="w", justify="left",
-                 wraplength=560).pack(fill="x", pady=(0, 4))
+                 wraplength=int(620 * self._ui_scale())).pack(
+                     fill="x", pady=(0, 4))
 
         one_txt = tr("review_one_column")
         two_txt = tr("review_two_column")
@@ -2962,14 +2978,23 @@ class App:
                                else one_txt)
 
         vars_: dict = {}
+        first_wrap = None      # 第一个可折叠区块的外壳，预填提示行要插在它前面
         for gi, (gkey, gtitle) in enumerate((("page", "q_sec_page"),
                                              ("heading", "q_sec_heading"),
                                              ("reference", "q_sec_refs"))):
             fields = [f for f in QUESTIONNAIRE_SCHEMA if f.get("group") == gkey]
             if not fields:
                 continue
-            self._review_section(body, tr(gtitle), 0 if gi == 0 else theme.SECTION_GAP)
-            grid = tk.Frame(body, bg=theme.SURFACE)
+            # v2.3.67：三大区块可折叠（老板：要能折叠，填完后可以折叠）。
+            # 收起只是 pack_forget，变量与控件都活着——收起后再选参考文献规范，
+            # 每级明细的预填照样生效，重新展开就能看到。
+            sec, wrap = self._collapsible_section(
+                body, tr(gtitle), opened=True,
+                pad=0 if gi == 0 else theme.SECTION_GAP,
+                on_toggle=lambda: self._fit_modal(win, _Q_WIDTH))
+            if first_wrap is None:
+                first_wrap = wrap
+            grid = tk.Frame(sec, bg=theme.SURFACE)
             grid.pack(fill="x", pady=(0, 4))
             grid.columnconfigure(0, weight=1, uniform="qcol")
             grid.columnconfigure(1, weight=1, uniform="qcol")
@@ -2982,7 +3007,156 @@ class App:
             if gkey == "heading":
                 # 层级数这个数字只是"有几级"，真正干活的参数在下面这张明细表里
                 lvl_var = vars_.get("heading_levels", (None, None))[1]
-                self._q_heading_table(body, saved, vars_, lvl_var)
+                self._q_heading_table(sec, saved, vars_, lvl_var)
+
+        # —— 参考文献规范 → 默认值联动（老板 2026-10-19：客户选中哪个规范，
+        #    默认值要调整为哪个规范的）——
+        # 规则：只预填客户「没填过」的字段；客户手填过/上次保存过的值一律不动。
+        # 预填本身也不算"客户填过"——切到另一个规范时，预填值跟着新规范走。
+        state = {"prefilling": False}
+        touched: set = set()
+
+        prefill_lbl = tk.Label(body, text="", bg=theme.SURFACE, fg=theme.PRIMARY,
+                               font=F["F_FOOT"], anchor="w", justify="left",
+                               wraplength=int(620 * self._ui_scale()))
+
+        def _show_prefill_hint(style_key):
+            prefill_lbl.configure(text=tr("q_prefilled", style_key))
+            try:
+                prefill_lbl.pack(fill="x", pady=(4, 0), before=first_wrap)
+            except Exception:
+                prefill_lbl.pack(fill="x", pady=(4, 0))
+
+        def _note_touch(key):
+            def _on(*_a):
+                if not state["prefilling"]:
+                    touched.add(key)
+            return _on
+
+        for _key, _entry in vars_.items():
+            if _key in ("_hf_opts", "heading_formats"):
+                continue
+            try:
+                _entry[1].trace_add("write", _note_touch(_key))
+            except Exception:
+                pass
+
+        _HF_ROW_KEYS = ("font", "size", "bold", "italic", "page_break_before",
+                        "align", "indent", "num", "upper", "runin")
+        for _row in (vars_.get("heading_formats") or []):
+            for _vk in _HF_ROW_KEYS:
+                _row[_vk].trace_add(
+                    "write", _note_touch(("hf", _row["lvl"], _vk)))
+
+        # 上次保存过的值 = 客户此前的明确选择，规范联动绝不覆盖
+        touched.update(k for k in saved.keys() if k != "heading_formats")
+        _HF_FIELD_OF = {"font": "font_family", "size": "size_pt",
+                        "align": "alignment", "indent": "indent_in",
+                        "num": "number_prefix", "upper": "uppercase",
+                        "runin": "run_in", "bold": "bold", "italic": "italic",
+                        "page_break_before": "page_break_before"}
+        for _k, _v in (saved.get("heading_formats") or {}).items():
+            try:
+                _lvl = int(_k)
+            except (TypeError, ValueError):
+                continue
+            for _vk in _HF_ROW_KEYS:
+                if _HF_FIELD_OF[_vk] in (_v or {}):
+                    touched.add(("hf", _lvl, _vk))
+
+        def _apply_spec_defaults(style_key):
+            """把「空着」的字段按所选规范的典型值预填。
+
+            值的单一真相源是引擎的 ``target_from_spec``——UI 不抄一份规范默认值，
+            规范改了这里自动跟上。paper_size 永远不预填（纸型是通用维度，
+            规范不许替客户决定 Letter/A4）。
+            """
+            try:
+                t = target_from_spec(style_key)
+            except Exception:
+                return
+            state["prefilling"] = True
+            try:
+                for field in QUESTIONNAIRE_SCHEMA:
+                    key = field["key"]
+                    if key in ("reference_style", "paper_size"):
+                        continue
+                    entry = vars_.get(key)
+                    if not entry:
+                        continue
+                    val = getattr(t, key, None)
+                    if val is None and key in TargetProfile.PAGE_KEYS:
+                        # 页面字段（页边距/字体/行距…）在 TargetProfile 里
+                        # 承载于 page 字典，不是直接属性
+                        val = (t.page or {}).get(key)
+                    kind = entry[0]
+                    if kind == "tri":
+                        if key in touched or val is None \
+                                or entry[1].get() != tr("q_none"):
+                            continue
+                        entry[1].set(tr("bool_yes") if val else tr("bool_no"))
+                    elif kind == "bool":
+                        if key in touched or not isinstance(val, bool):
+                            continue
+                        entry[1].set(tr("bool_yes") if val else tr("bool_no"))
+                    elif kind == "cols":
+                        if key in touched or val not in (1, 2):
+                            continue
+                        entry[1].set(two_txt if val == 2 else one_txt)
+                    else:
+                        if key in touched or val is None:
+                            continue
+                        sval = str(val)
+                        opts = field.get("options") or []
+                        # choice 字段即便显示着 schema 默认值，只要客户没手改
+                        # （touched 未记录）就跟着所选规范走——老板：默认值要
+                        # 调整为所选规范的。客户手改过/保存过的由 touched 挡住。
+                        if opts and sval not in opts:
+                            continue
+                        entry[1].set(sval)
+                # 每级标题明细：整行一个都没手改过才预填
+                hf_opts = vars_.get("_hf_opts") or {}
+                tri_disp = {v: d for v, d in hf_opts.get("tris", [])}
+                align_disp = {v: d for v, d in hf_opts.get("aligns", [])}
+                num_disp = {v: d for v, d in hf_opts.get("prefixes", [])}
+                for row in (vars_.get("heading_formats") or []):
+                    lvl = row["lvl"]
+                    fmt = (t.heading_formats or {}).get(lvl)
+                    if not fmt:
+                        continue
+                    if any(("hf", lvl, vk) in touched for vk in _HF_ROW_KEYS):
+                        continue
+                    if fmt.get("font_family"):
+                        row["font"].set(str(fmt["font_family"]))
+                    if fmt.get("size_pt") is not None:
+                        row["size"].set(str(fmt["size_pt"]))
+                    if fmt.get("indent_in") is not None:
+                        row["indent"].set(str(fmt["indent_in"]))
+                    if fmt.get("alignment"):
+                        row["align"].set(
+                            align_disp.get(fmt["alignment"], tr("q_none")))
+                    if fmt.get("number_prefix"):
+                        row["num"].set(
+                            num_disp.get(fmt["number_prefix"], tr("q_none")))
+                    for vk, fk in (("bold", "bold"), ("italic", "italic"),
+                                   ("page_break_before", "page_break_before"),
+                                   ("upper", "uppercase"), ("runin", "run_in")):
+                        if fmt.get(fk) is not None:
+                            row[vk].set(tri_disp.get(fmt[fk], tr("q_none")))
+            finally:
+                state["prefilling"] = False
+            _show_prefill_hint(style_key)
+
+        _rs = vars_.get("reference_style")
+
+        def _on_style_change(*_a):
+            if not state["prefilling"]:
+                style = _rs[1].get().strip()
+                if style:
+                    _apply_spec_defaults(style)
+
+        if _rs:
+            _rs[1].trace_add("write", _on_style_change)
 
         def _save():
             data: dict = {}
@@ -3062,7 +3236,8 @@ class App:
                 if npre:
                     item["number_prefix"] = npre
                 for key2, varkey in (("bold", "bold"), ("italic", "italic"),
-                                     ("uppercase", "upper"), ("run_in", "runin")):
+                                     ("uppercase", "upper"), ("run_in", "runin"),
+                                     ("page_break_before", "page_break_before")):
                     tv = _opt_val(hf_opts.get("tris"), row[varkey].get())
                     if tv is not None:
                         item[key2] = tv
@@ -3082,7 +3257,7 @@ class App:
 
         win.add_primary_action(tr("q_save"), command=_save)
         win.add_cancel_action(tr("q_cancel"))
-        self._fit_modal(win, 640)
+        self._fit_modal(win, _Q_WIDTH)
 
     def _q_field(self, cell, field, store, saved, col_var, one_txt, two_txt):
         """问卷弹窗里的单个字段：标签 / 输入控件 / 下方小字帮助。
@@ -3178,24 +3353,22 @@ class App:
 
         tk.Label(parent, text=tr("q_h_table_hint"), bg=theme.SURFACE, fg=theme.TEXT_3,
                  font=F["F_FOOT"], anchor="w", justify="left",
-                 wraplength=560).pack(fill="x", pady=(2, 6))
+                 wraplength=int(620 * self._ui_scale())).pack(fill="x", pady=(2, 6))
 
         table = tk.Frame(parent, bg=theme.SURFACE)
         table.pack(fill="x", pady=(0, 6))
 
-        # 每级**两行**摆：单行 9 个控件在 640 宽的弹窗里放不下（实测 UPPER / Run-in
-        # 被右边裁掉，正是"按钮文字显示不全"那类毛病）。两行后每行都留有余量。
-        hdr1 = {1: tr("q_h_font"), 2: tr("q_h_size"), 3: tr("q_h_bold"), 4: tr("q_h_italic")}
-        hdr2 = {1: tr("q_h_align"), 2: tr("q_h_indent"), 3: tr("q_h_num"),
-                4: tr("q_h_upper"), 5: tr("q_h_runin")}
-        for col, text in hdr1.items():
+        # v2.3.67 重排（老板实测截图「非常乱」）：旧版每级占两行、两组表头夹在
+        # 控件行中间，列位对不上。现在**每级一行**、表头只有一行，11 列与控件
+        # 严格同列对齐；弹窗同步加宽到 700 放得下。
+        hdr = {1: tr("q_h_font"), 2: tr("q_h_size"), 3: tr("q_h_bold"),
+               4: tr("q_h_italic"), 5: tr("q_h_pagebreak"),
+               6: tr("q_h_align"), 7: tr("q_h_indent"), 8: tr("q_h_num"),
+               9: tr("q_h_upper"), 10: tr("q_h_runin")}
+        for col, text in hdr.items():
             tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_3,
                      font=F["F_FOOT"], anchor="w").grid(
                 row=0, column=col, sticky="w", padx=(0, 8), pady=(0, 2))
-        for col, text in hdr2.items():
-            tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_3,
-                     font=F["F_FOOT"], anchor="w").grid(
-                row=1, column=col, sticky="w", padx=(0, 8), pady=(0, 4))
 
         saved_hf: dict = {}
         for k, v in (saved.get("heading_formats") or {}).items():
@@ -3214,8 +3387,7 @@ class App:
         for lvl in range(1, 10):          # schema 里 heading_levels 上限是 9
             cur = saved_hf.get(lvl, {})
             ws: list = []
-            r1 = lvl * 2               # 每个层级占两行（表头占 0/1 行）
-            r2 = lvl * 2 + 1
+            r = lvl                       # 每级一行（表头占第 0 行）
 
             def _lab(text, col, row):
                 w = tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_2,
@@ -3242,30 +3414,33 @@ class App:
                 ws.append(w)
                 return var
 
-            _lab(tr("q_h_lvl", lvl), 0, r1)
+            _lab(tr("q_h_lvl", lvl), 0, r)
             font_var = tk.StringVar(master=table, value=str(cur.get("font_family") or ""))
-            cb_font = ttk.Combobox(table, textvariable=font_var, width=12,
+            cb_font = ttk.Combobox(table, textvariable=font_var, width=10,
                                    font=F["F_SMALL"],
                                    values=["Times New Roman", "Arial", "Calibri",
                                            "Cambria", "Georgia", "SimSun", "SimHei",
                                            "KaiTi", "FangSong"])
-            cb_font.grid(row=r1, column=1, sticky="w", padx=(0, 8), pady=(0, 3))
+            cb_font.grid(row=r, column=1, sticky="w", padx=(0, 8), pady=(0, 3))
             ws.append(cb_font)
-            size_var = _entry(2, r1, cur.get("size_pt"), 4)
-            bold_var = _combo(3, r1, tris, cur.get("bold"), 5)
-            ital_var = _combo(4, r1, tris, cur.get("italic"), 5)
-            # 第二行：对齐 / 缩进 / 编号 / 全大写 / 接排（第 1 列留空，与字体列对齐）
-            al_var = _combo(1, r2, aligns, cur.get("alignment"), 8)
-            ind_var = _entry(2, r2, cur.get("indent_in"), 4)
-            num_var = _combo(3, r2, prefixes, cur.get("number_prefix"), 7)
-            up_var = _combo(4, r2, tris, cur.get("uppercase"), 5)
-            runin_var = _combo(5, r2, tris, cur.get("run_in"), 5)
+            size_var = _entry(2, r, cur.get("size_pt"), 4)
+            bold_var = _combo(3, r, tris, cur.get("bold"), 5)
+            ital_var = _combo(4, r, tris, cur.get("italic"), 5)
+            # 标题分页（page_break_before）三态：—=不规定，是/否=明确要求。
+            # 与加粗/斜体同口径走 tris，AI 导入可设、手填也能设，二者一致。
+            pbb_var = _combo(5, r, tris, cur.get("page_break_before"), 6)
+            al_var = _combo(6, r, aligns, cur.get("alignment"), 7)
+            ind_var = _entry(7, r, cur.get("indent_in"), 4)
+            num_var = _combo(8, r, prefixes, cur.get("number_prefix"), 7)
+            up_var = _combo(9, r, tris, cur.get("uppercase"), 5)
+            runin_var = _combo(10, r, tris, cur.get("run_in"), 5)
 
             state = {"show": True}
             rows.append({
                 "lvl": lvl, "state": state, "widgets": ws,
                 "font": font_var, "size": size_var, "bold": bold_var,
-                "italic": ital_var, "align": al_var, "indent": ind_var,
+                "italic": ital_var, "page_break_before": pbb_var,
+                "align": al_var, "indent": ind_var,
                 "num": num_var, "upper": up_var, "runin": runin_var,
             })
 
@@ -3707,6 +3882,19 @@ class App:
         title_lbl.bind("<Button-1>", lambda e: _toggle())
         # 默认折叠（pane 尚未 pack）
 
+    def _ui_scale(self) -> float:
+        """系统 DPI 缩放系数（96 DPI = 1.0，150% 缩放 = 1.5）。
+
+        本应用整体是 DPI-naive 的：tkinter 的坐标在 DPI-aware 进程里是物理像素，
+        但 point 制字体按真实 DPI 渲染 —— 150% 屏上同一排控件实际占 1.5 倍宽。
+        老板机器就是 150%（2026-10-19 实测截图：明细表末三列被物理裁掉，正是这个
+        原因）。给宽度敏感的弹窗按此系数放大定宽，不动全局。
+        """
+        try:
+            return max(1.0, self.root.winfo_fpixels("1i") / 96.0)
+        except Exception:
+            return 1.0
+
     def _fit_modal(self, win, width: int):
         """把弹窗调到内容的真实高度，并保证**整窗留在屏幕工作区内**。
 
@@ -3951,6 +4139,28 @@ class App:
             tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],
                      anchor="w", justify="left").pack(fill="x", padx=12, pady=(0, 2))
 
+        # —— 摘要 / Running head / 图表 caption（v2.3.67 新增维度，只读展示）——
+        self._review_section(inner, tr("review_frontmatter"), theme.SECTION_GAP)
+        _fm_lines = [
+            "%s: %s" % (_lbl("abstract_first_line_indent_in"),
+                        _num_txt(target.abstract_first_line_indent_in, "″")),
+            "%s: %s" % (_lbl("abstract_new_page"), _tri_txt(target.abstract_new_page)),
+            "%s: %s" % (_lbl("running_head_required"), _tri_txt(target.running_head_required)),
+            "%s: %s" % (_lbl("page_number_include_author_name"),
+                        _tri_txt(target.page_number_include_author_name)),
+            "%s: %s" % (_lbl("caption_font_size_pt"),
+                        _num_txt(target.caption_font_size_pt, "pt")),
+            "%s: %s" % (_lbl("caption_line_spacing"),
+                        _num_txt(target.caption_line_spacing, "x")),
+            "%s: %s" % (_lbl("caption_position_table"),
+                        target.caption_position_table or _none),
+            "%s: %s" % (_lbl("caption_position_figure"),
+                        target.caption_position_figure or _none),
+        ]
+        for ln in _fm_lines:
+            tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],
+                     anchor="w", justify="left").pack(fill="x", padx=12, pady=(0, 2))
+
         # —— ④ Style Rules（只读，由 resolve_spec 解析）——
         self._review_section(inner, tr("review_style"), theme.SECTION_GAP)
         try:
@@ -3992,6 +4202,51 @@ class App:
         tk.Label(parent, text=title, bg=theme.SURFACE, fg=theme.PRIMARY,
                  font=self.F["F_LABEL"], anchor="w").pack(
             fill="x", padx=12, pady=(pad, 4))
+
+    def _collapsible_section(self, parent, title, opened=True, pad=0,
+                             on_toggle=None):
+        """可折叠小节（老板 2026-10-19：手填问卷的大区块要能折叠，填完可收起）。
+
+        标题行就是开关：标题在左、chevron 标记在**右**（▾ 展开 / ▸ 收起）——
+        右侧折叠箭头符合多数人的视觉习惯。点整行切换。收起只是 ``pack_forget``，
+        变量与控件都还活着——收起「标题层级」后选参考文献规范，每级明细的
+        规范联动预填照样生效，重新展开就能看到。
+
+        返回 ``(内容容器, 外壳)``；外壳给调用方当 pack 排序锚点用。
+        """
+        wrap = tk.Frame(parent, bg=theme.SURFACE)
+        wrap.pack(fill="x", pady=(pad, 2))
+        # 标题行：左标题 + 右 chevron，两个都绑点击
+        head = tk.Frame(wrap, bg=theme.SURFACE, cursor="hand2")
+        head.pack(fill="x", padx=12, pady=(0, 4))
+        tk.Label(head, text=title, bg=theme.SURFACE, fg=theme.PRIMARY,
+                 font=self.F["F_LABEL"], anchor="w").pack(side="left")
+        mark_lbl = tk.Label(head, text="▾" if opened else "▸",
+                           bg=theme.SURFACE, fg=theme.PRIMARY,
+                           font=self.F["F_LABEL"], anchor="e")
+        mark_lbl.pack(side="right")
+        holder = tk.Frame(wrap, bg=theme.SURFACE)
+        if opened:
+            holder.pack(fill="x")
+        st = {"open": opened}
+
+        def _toggle(_e=None):
+            st["open"] = not st["open"]
+            if st["open"]:
+                holder.pack(fill="x")
+                mark_lbl.configure(text="▾")
+            else:
+                holder.pack_forget()
+                mark_lbl.configure(text="▸")
+            if on_toggle:
+                try:
+                    on_toggle()
+                except Exception:
+                    pass
+            return "break"
+
+        head.bind("<Button-1>", _toggle)
+        return holder, wrap
 
     def _execute_check(self, target, win=None):
         """真正跑体检（复核确认后调用）：原 _run 的检查逻辑。"""

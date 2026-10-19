@@ -89,6 +89,11 @@ class HeadingLevelFormat:
     size_pt: Optional[float] = None      # None = 与正文同字号
     number_prefix: Optional[str] = None  # 见上；None = 不加章节编号
     uppercase: bool = False              # 标题文本全大写（IEEE 约定）
+    # v2.3.67：段前分页（pageBreakBefore）。三态：None=本级不规定 / True=该级标题必须
+    # 另起一页 / False=明确不另起一页。海外学术市场高频诉求：Journal Article 章首不分页、
+    # Dissertation 每章（通常是 L1）强制另起一页。落在段落 pPr/pageBreakBefore（纯格式、
+    # 幂等、不写 styleId）。
+    page_break_before: Optional[bool] = None
     desc: str = ""                       # 给用户的英文批注描述
 
 
@@ -161,6 +166,19 @@ class StyleSpec:
     running_head_kind: str = "apa"               # running head 形态："apa"=短标题(专业版) / "mla"=姓氏+页码；仅 running_head=True 时生效
     reference_heading_bold: bool = True          # 参考文献标题是否须加粗：APA=True（粗体居中）、MLA=False（居中不加粗）
     reference_heading_bold_mode: str = "require"  # "require"=必须加粗(APA) / "forbid"=禁止加粗(MLA)；仅影响提示文案与判定
+    # —— 摘要页特化（v2.3.67）——
+    # APA 7th 摘要正文**不首行缩进**（顶格）且专业版摘要**另起一页**；其它风格默认中性值。
+    # None = 该风格不规定（由学校模板 / 问卷 / AI 决定），不臆造。
+    abstract_first_line_indent_in: Optional[float] = None   # 摘要正文首行缩进（英寸）；None=不规定
+    abstract_new_page: Optional[bool] = None                 # 摘要是否另起一页；None=不规定
+    # —— 图表 caption（v2.3.67）——
+    # 图表标题的字号/行距可修（识别 Caption 样式段落）；表题/图题的「上方还是下方」位置
+    # 只能提示（python-docx 无高层 API 可靠判定图片 caption 位置，图片内嵌在段落 drawing 里）。
+    # None = 该风格不规定（由学校模板 / 问卷 / AI 决定）。APA/IEEE 表题在上、图题在下。
+    caption_font_size_pt: Optional[float] = None             # 图表标题字号（磅）
+    caption_line_spacing: Optional[float] = None             # 图表标题行距（倍数）
+    caption_position_table: Optional[str] = None             # "top" / "bottom"（表题在表格上方/下方）
+    caption_position_figure: Optional[str] = None            # "top" / "bottom"（图题在图上方/下方）
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -185,6 +203,12 @@ class StyleSpec:
         "font_allowlist_sizes": dict(self.font_allowlist_sizes),
         "running_head_max_chars": self.running_head_max_chars,
         "reference_alpha_sort_hint": self.reference_alpha_sort_hint,
+        "abstract_first_line_indent_in": self.abstract_first_line_indent_in,
+        "abstract_new_page": self.abstract_new_page,
+        "caption_font_size_pt": self.caption_font_size_pt,
+        "caption_line_spacing": self.caption_line_spacing,
+        "caption_position_table": self.caption_position_table,
+        "caption_position_figure": self.caption_position_figure,
         "notes": self.notes,
         }
 
@@ -335,6 +359,10 @@ def describe_heading(f: "HeadingLevelFormat") -> str:
         bits.append("numbered (%s)" % f.number_prefix)
     if f.run_in:
         bits.append("run-in with body text")
+    if f.page_break_before is True:
+        bits.append("page break before")
+    elif f.page_break_before is False:
+        bits.append("no page break before")
     return ", ".join(bits) if bits else "format not specified"
 
 
@@ -386,6 +414,7 @@ def heading_level_format_from_dict(raw: dict) -> "HeadingLevelFormat":
         size_pt=_num("size_pt"),
         number_prefix=prefix,
         uppercase=bool(_tri("uppercase")),
+        page_break_before=_tri("page_break_before"),
         desc=str(raw.get("desc") or "").strip(),
     )
     if not f.desc:
@@ -427,7 +456,11 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
                # （单一真相源；清单由该表的键序列派生，避免两处各写一份走样）。
                font_allowlist: tuple = tuple(APA_FONT_SIZES),
                running_head_max_chars: Optional[int] = None,
-               reference_alpha_sort_hint: bool = True) -> StyleSpec:
+               reference_alpha_sort_hint: bool = True,
+               abstract_first_line_indent_in: Optional[float] = 0.0,
+               abstract_new_page: Optional[bool] = None,
+               caption_position_table: Optional[str] = "top",
+               caption_position_figure: Optional[str] = "bottom") -> StyleSpec:
     """构造一个 APA 7th 规范档（学生/专业共享同一套正文/标题/参考文献规则，仅前置材料不同）。
 
     新增的 APA 专属维度（页码位置 / 参考文献另起一页 / 字体允许清单 / 页眉≤50字符 /
@@ -468,6 +501,10 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         font_allowlist_sizes=dict(APA_FONT_SIZES),
         running_head_max_chars=running_head_max_chars,
         reference_alpha_sort_hint=reference_alpha_sort_hint,
+        abstract_first_line_indent_in=abstract_first_line_indent_in,
+        abstract_new_page=abstract_new_page,
+        caption_position_table=caption_position_table,
+        caption_position_figure=caption_position_figure,
         notes=notes,
     )
 
@@ -496,6 +533,7 @@ _APA_PRO = _apa_spec(
     running_head=True, expect_abstract=True, expect_author_note=True,
     title_page_kind="professional",
     running_head_max_chars=50,
+    abstract_new_page=True,   # 专业版摘要须另起一页（紧跟标题页之后独立一页）
     notes="Professional edition: requires a running head (short title in the header + page number); "
           "the title page is Author + Affiliation (superscript numbers) + Author Note; must include "
           "an Abstract + Keywords; content footnotes are allowed (2.13). Body and reference rules are "
@@ -554,6 +592,9 @@ SPECS: dict[str, StyleSpec] = {
         paper_size=None,   # IEEEtran 官方模板 A4 / US Letter 两版并存 → 不规定，由模板决定
         heading_formats=IEEE_HEADING,
         title_page=TitlePageFormat(True, True, True),
+        # 图表 caption（v2.3.67）：IEEE 表题在表格上方、图题在图下方（IEEEtran 约定）。
+        caption_position_table="top",
+        caption_position_figure="bottom",
         notes="Numeric (sequential) citation system [1]; section headings use Roman/Arabic "
               "numbering (I. / A. / 1.): level 1 centered + bold + UPPERCASE, level 2 flush-left "
               "+ bold, deeper levels italic. This option targets the standard IEEE two-column "

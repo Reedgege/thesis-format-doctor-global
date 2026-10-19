@@ -48,9 +48,13 @@ _how_to_fill: |-
   requirement states it; otherwise omit it (do not infer it from the citation style).
   heading_formats is where the per-level heading requirements go. It is a map keyed by
   heading level (1 = top level). Each level accepts the same fields:
-    font_family, size_pt, bold, italic, uppercase, run_in, alignment, indent_in, number_prefix
-  - bold / italic / uppercase / run_in are true or false. Omit any of them when the
-    requirement says nothing about that property for that level (do not guess).
+    font_family, size_pt, bold, italic, uppercase, run_in, alignment, indent_in, number_prefix,
+    page_break_before
+  - bold / italic / uppercase / run_in / page_break_before are true or false. Omit any of them
+    when the requirement says nothing about that property for that level (do not guess).
+  - page_break_before = whether this heading level must start on a new page (true = page break
+    before the heading, e.g. a dissertation chapter; false = explicitly no page break, e.g. a
+    journal article). Omit it when the requirement says nothing.
   - alignment must be one of left / center / right / justify.
   - indent_in is the first-line indent of that heading level, in inches (0 = flush left).
   - number_prefix is the chapter-number style used by that level:
@@ -198,6 +202,63 @@ fields:
     unit: ""
     example: true
     note: true / false. Omit when unspecified (IEEE is left-aligned).
+  - key: abstract_first_line_indent_in
+    label: Abstract first-line indent
+    unit: in
+    example: 0.0
+    note: >-
+      Abstract body first-line indent. APA abstracts are flush left (0.0); most styles do not
+      indent the abstract. Omit when the requirement says nothing about it.
+  - key: abstract_new_page
+    label: Abstract starts on a new page
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      true = the Abstract begins on a new page (APA Professional); false = it continues on the
+      same page. Omit when unspecified.
+  - key: running_head_required
+    label: Running head required
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      true = a running head is required in the header (short title for APA Professional, last name
+      + page number for MLA). Omit when the requirement says nothing about it.
+  - key: page_number_include_author_name
+    label: Page number includes author name
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      true = the page number is preceded by the author's last name (MLA's "Smith 1"). Omit when
+      unspecified. The name itself cannot be auto-generated; this only checks/reminds.
+  - key: caption_font_size_pt
+    label: Caption font size
+    unit: pt
+    example: 10.0
+    note: Figure/table caption font size. Omit to follow the body text.
+  - key: caption_line_spacing
+    label: Caption line spacing
+    unit: x
+    example: 1.0
+    note: Figure/table caption line spacing. Omit to follow the body text.
+  - key: caption_position_table
+    label: Table caption position
+    unit: ""
+    example: top
+    allowed: [top, bottom]
+    note: >-
+      top = the table caption sits ABOVE the table (APA/IEEE); bottom = below the table. Omit when
+      unspecified. This is a hint only (not auto-fixed).
+  - key: caption_position_figure
+    label: Figure caption position
+    unit: ""
+    example: bottom
+    allowed: [top, bottom]
+    note: >-
+      top = the figure caption sits ABOVE the figure; bottom = below the figure (APA/IEEE). Omit
+      when unspecified. This is a hint only (not auto-fixed).
 
 example_filled:
   margin_top_in: 1.0
@@ -249,3 +310,13 @@ example_filled:
   # reference_new_page: true
   # reference_heading_bold: true
   # reference_heading_centered: true
+  # The abstract and captions are often formatted differently from the body text.
+  # Omit any of these when the requirement says nothing about them.
+  # abstract_first_line_indent_in: 0.0   # APA abstracts are flush left
+  # abstract_new_page: true              # APA Professional: Abstract on its own page
+  # running_head_required: true          # APA Professional / MLA require a running head
+  # page_number_include_author_name: true  # MLA: "Smith 1"
+  # caption_font_size_pt: 10.0
+  # caption_line_spacing: 1.0
+  # caption_position_table: top          # APA/IEEE: caption above the table
+  # caption_position_figure: bottom      # APA/IEEE: caption below the figure

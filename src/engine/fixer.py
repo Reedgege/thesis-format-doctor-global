@@ -40,11 +40,11 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from .checker import ALIGN_LABEL, run_check, Finding, FixAction  # 对齐标签单一来源（避免两处硬编码）
 from .docx_reader import (
     DocxReadError, heading_level, is_heading, is_pseudo_heading, read_docx,
-    reference_paragraph_indices, find_reference_section,
+    reference_paragraph_indices, find_reference_section, find_abstract_section,
     pseudo_heading_level_map, PAPER_SIZES, describe_paper_size, detect_title_page,
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
     detect_static_page_number, _para_has_page_field, _run_font_name,
-    _para_text_excl_fields,
+    _para_text_excl_fields, is_caption_paragraph,
 )
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec, generic_heading_formats,
@@ -181,6 +181,121 @@ def _abstract_body_indices(doc) -> set:
             if (para.text or "").strip():
                 idxs.add(i)
     return idxs
+
+
+def _abstract_section(doc) -> tuple[Optional[int], list]:
+    """摘要段定位（复用 reader 的单一真相源）：返回 (标题段下标, 正文段下标列表)。
+
+    找不到摘要标题时返回 (None, [])。checker 与 fixer 共用同一识别逻辑，
+    避免「检查判这段、修正改另一段」的漂移。
+    """
+    return find_abstract_section(list(doc.paragraphs))
+
+
+def _apply_abstract_indent(doc, indent_in: float) -> bool:
+    """设置摘要正文段的首行缩进（APA 摘要顶格 = 0）。
+
+    只动摘要正文段（标题之后、下一标题之前的段落），不碰摘要标题与其它正文。
+    摘要正文段本来就在正文首行缩进的豁免集合里，这里再正向设置目标缩进值。
+    """
+    try:
+        want = float(indent_in)
+    except (ValueError, TypeError):
+        return False
+    _head, body_idx = _abstract_section(doc)
+    if not body_idx:
+        return False
+    changed = False
+    for j in body_idx:
+        if 0 <= j < len(doc.paragraphs):
+            pf = doc.paragraphs[j].paragraph_format
+            cur = pf.first_line_indent
+            if cur is None or abs(float(cur.inches) - want) > 1e-3:
+                try:
+                    pf.first_line_indent = Inches(want)
+                    changed = True
+                except Exception:
+                    pass
+    return changed
+
+
+def _apply_abstract_new_page(doc, new_page: bool) -> bool:
+    """摘要标题是否另起一页（段前分页 pageBreakBefore）。
+
+    True = 摘要标题前强制分页；False = 明确不另起（清段前分页，不动上一段末尾的分页符）。
+    只动摘要标题段的 paragraph_format.page_break_before，幂等。
+    """
+    _head, _body = _abstract_section(doc)
+    if _head is None:
+        return False
+    para = doc.paragraphs[_head]
+    pf = para.paragraph_format
+    try:
+        cur = bool(pf.page_break_before)
+    except Exception:
+        cur = False
+    want = bool(new_page)
+    if cur == want:
+        return False
+    try:
+        pf.page_break_before = want
+        return True
+    except Exception:
+        return False
+
+
+def _caption_paragraphs(doc) -> list:
+    """收集图表标题（Caption）段落：复用 reader 的单一真相源识别。"""
+    out = []
+    for p in doc.paragraphs:
+        if is_caption_paragraph(p):
+            out.append(p)
+    return out
+
+
+def _apply_caption_size(doc, size_pt: float) -> bool:
+    """设置图表标题字号（逐 run，不碰字体）。识别 Caption 段落。"""
+    try:
+        want = Pt(float(size_pt))
+    except (ValueError, TypeError):
+        return False
+    caps = _caption_paragraphs(doc)
+    if not caps:
+        return False
+    changed = False
+    for para in caps:
+        for run in para.runs:
+            if _is_comment_run(run):
+                continue
+            try:
+                if run.font.size != want:
+                    run.font.size = want
+                    changed = True
+            except Exception:
+                pass
+    return changed
+
+
+def _apply_caption_spacing(doc, spacing: float) -> bool:
+    """设置图表标题行距（倍数制）。识别 Caption 段落。"""
+    try:
+        sp = float(spacing)
+    except (ValueError, TypeError):
+        return False
+    caps = _caption_paragraphs(doc)
+    if not caps:
+        return False
+    changed = False
+    for para in caps:
+        cur = para.paragraph_format.line_spacing
+        try:
+            same = cur is not None and abs(float(cur) - sp) <= 1e-6
+        except (TypeError, ValueError):
+            same = False
+        if not same:
+            para.paragraph_format.line_spacing = sp
+            changed = True
+    return changed
 
 
 def _is_block_quote(para) -> bool:
@@ -1285,6 +1400,16 @@ def _format_heading_one(para, f, body_font, body_size):
                     pass
     if f.run_in and _ensure_trailing_period(para):
         changed = True
+    # 段前分页（v2.3.67）：三态。None=本级不规定（不碰）；True/False 直接写 pPr/pageBreakBefore。
+    # 幂等靠 is 比较（paragraph_format.page_break_before 三态 True/False/None）。
+    _pbb = getattr(f, "page_break_before", None)
+    if _pbb is not None:
+        try:
+            if bool(pf.page_break_before) != bool(_pbb):
+                pf.page_break_before = bool(_pbb)
+                changed = True
+        except Exception:
+            pass
     return changed
 
 
@@ -1915,6 +2040,22 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if _pn_info:
             applied["page_number"] = _pn_info
 
+    # 摘要页特化（v2.3.67）：只有客户/学校/AI 显式要求时 checker 才绑 FixAction。
+    if "abstract_indent" in fix_dims and target.abstract_first_line_indent_in is not None:
+        if _apply_abstract_indent(doc, target.abstract_first_line_indent_in):
+            applied["abstract_first_line_indent_in"] = target.abstract_first_line_indent_in
+    if "abstract_new_page" in fix_dims and target.abstract_new_page is not None:
+        if _apply_abstract_new_page(doc, target.abstract_new_page):
+            applied["abstract_new_page"] = target.abstract_new_page
+
+    # 图表 caption 字号/行距（v2.3.67）：只有客户/学校/AI 显式要求时 checker 才绑 FixAction。
+    if "caption_size" in fix_dims and target.caption_font_size_pt is not None:
+        if _apply_caption_size(doc, target.caption_font_size_pt):
+            applied["caption_font_size_pt"] = target.caption_font_size_pt
+    if "caption_spacing" in fix_dims and target.caption_line_spacing is not None:
+        if _apply_caption_spacing(doc, target.caption_line_spacing):
+            applied["caption_line_spacing"] = target.caption_line_spacing
+
     # 字体白名单的「字体 → 字号」配对：逐 run 按各自字体改字号，不动 w:rFonts。
     if "font_size_by_font" in fix_dims:
         _pairs = getattr(spec, "font_allowlist_sizes", None) if spec is not None else None
@@ -2025,6 +2166,10 @@ _DIM_LABELS = {
         "paper_size": "Paper size",
         "page_number": "Page number",
         "font_size_by_font": "Body size for this font",
+        "abstract_indent": "Abstract first-line indent",
+        "abstract_new_page": "Abstract on new page",
+        "caption_size": "Caption font size",
+        "caption_spacing": "Caption line spacing",
         "title_page": "Title page", "block_quote": "Block quotation",
         "ref_hanging": "Reference hanging indent", "ref_numbering": "Reference numbering",
         "heading_lvl": "Level %s heading",
@@ -2044,6 +2189,10 @@ _DIM_LABELS = {
         "paper_size": "纸张大小",
         "page_number": "页码位置",
         "font_size_by_font": "正文字号（按字体）",
+        "abstract_indent": "摘要首行缩进",
+        "abstract_new_page": "摘要另起一页",
+        "caption_size": "图表标题字号",
+        "caption_spacing": "图表标题行距",
         "title_page": "标题页", "block_quote": "块引用",
         "ref_hanging": "参考文献悬挂缩进", "ref_numbering": "参考文献编号",
         "heading_lvl": "第 %s 级标题",
@@ -2242,7 +2391,38 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
         if _line:
             lines.append(_line)
 
-    # —— 正文字号（按客户所用字体配对）——
+    # —— 摘要页特化（v2.3.67）——
+    # 摘要首行缩进 + 是否另起一页，两行独立预览；与 fixer 实际施加一致（fix_dims 门控）。
+    if _gate("abstract_indent") and target.abstract_first_line_indent_in is not None:
+        _cur_abs_fli = getattr(prof, "abstract_first_line_indent_in", None)
+        if _cur_abs_fli is not None and abs(float(_cur_abs_fli) - float(target.abstract_first_line_indent_in)) > 0.01:
+            lines.append("%s: %g″ → %g″" % (
+                _dim_label(L, "abstract_indent"),
+                float(_cur_abs_fli), float(target.abstract_first_line_indent_in)))
+    if _gate("abstract_new_page") and target.abstract_new_page is not None:
+        _cur_abs_np = getattr(prof, "abstract_new_page", None)
+        if _cur_abs_np is not None and bool(_cur_abs_np) != bool(target.abstract_new_page):
+            if L == "zh":
+                lines.append("%s：%s" % (_dim_label(L, "abstract_new_page"),
+                                         "接排 → 另起一页" if target.abstract_new_page else "另起一页 → 接排"))
+            else:
+                lines.append("%s: %s" % (_dim_label(L, "abstract_new_page"),
+                                         "same page → new page" if target.abstract_new_page
+                                         else "new page → same page"))
+
+    # —— 图表 caption 字号/行距（v2.3.67）——
+    if _gate("caption_size") and target.caption_font_size_pt is not None:
+        _cur_cap_size = getattr(prof, "caption_font_size_pt", None)
+        if _cur_cap_size is not None and abs(float(_cur_cap_size) - float(target.caption_font_size_pt)) > 0.01:
+            lines.append("%s: %g → %g pt" % (
+                _dim_label(L, "caption_size"),
+                float(_cur_cap_size), float(target.caption_font_size_pt)))
+    if _gate("caption_spacing") and target.caption_line_spacing is not None:
+        _cur_cap_sp = getattr(prof, "caption_line_spacing", None)
+        if _cur_cap_sp is not None and abs(float(_cur_cap_sp) - float(target.caption_line_spacing)) > 0.01:
+            lines.append("%s: %g → %g x" % (
+                _dim_label(L, "caption_spacing"),
+                float(_cur_cap_sp), float(target.caption_line_spacing)))
     # 只改字号、不换字体：用 Calibri 就按 Calibri 的规范字号（11pt），用 Times New Roman
     # 就按 12pt，正文混用两种字体时**各改各的**（所以逐字体列，不只列主字体）。
     if _gate("font_size_by_font"):
@@ -2433,6 +2613,13 @@ def _heading_change_lines(prof, target: TargetProfile, L: str) -> list:
             if want_b is None or got_b is None or bool(want_b) == bool(got_b):
                 continue
             bits.append(on if want_b else off)
+        # 段前分页（v2.3.67）：三态，want None=不规定，got None=读不到（跳过）
+        if want.page_break_before is not None and got.page_break_before is not None \
+                and bool(want.page_break_before) != bool(got.page_break_before):
+            bits.append(("段前分页" if want.page_break_before else "取消段前分页")
+                        if L == "zh" else
+                        ("page break before" if want.page_break_before
+                         else "no page break before"))
         if not bits:
             continue
         label = _dim_label(L, "heading_lvl") % lvl

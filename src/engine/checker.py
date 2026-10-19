@@ -10,11 +10,13 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .docx_reader import (DocumentProfile, read_docx, DocxReadError,
-                          describe_paper_size, identify_paper_size)
+                          describe_paper_size, identify_paper_size,
+                          find_abstract_section)
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT, origin_of_source
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec,
                     resolve_heading_formats, describe_heading, size_for_font)
@@ -579,6 +581,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 if bool(got_b) != bool(want_b):
                     exp_bits.append(label if want_b else "not " + label)
                     act_bits.append(label if got_b else "not " + label)
+            # 段前分页（v2.3.67）：三态。want 为 None=不规定；got 为 None=读不到（可能由
+            # 样式承载）→ 不硬判，只记 unreadable；两者都非 None 且不一致才判 fail。
+            if want.page_break_before is not None:
+                if got.page_break_before is None:
+                    unreadable.append("page break before")
+                elif bool(got.page_break_before) != bool(want.page_break_before):
+                    exp_bits.append("page break before" if want.page_break_before
+                                    else "no page break before")
+                    act_bits.append("page break before" if got.page_break_before
+                                    else "no page break before")
 
             def _actual_text() -> str:
                 bits = list(act_bits)
@@ -1067,6 +1079,260 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 source="spec",
             ))
 
+    # —— 摘要页特化（v2.3.67）——
+    # 摘要正文口径与正文相反：APA 摘要**不首行缩进**（顶格）、专业版摘要**另起一页**。
+    # 以前「正文首行缩进 0.5″」会把摘要段一起刷成 0.5″（越权），「参考文献另起一页」也不管摘要。
+    # 目标显式给出（spec/school/user/ai）才判；None = 不规定 → 不碰。
+    _abs_fli = target.abstract_first_line_indent_in
+    _abs_np = target.abstract_new_page
+    # 目标没显式给摘要字段、但规范带了（如 APA 专业版 abstract_new_page=True）→ 用规范值
+    if _abs_fli is None:
+        _abs_fli = apa_spec.abstract_first_line_indent_in
+    if _abs_np is None:
+        _abs_np = apa_spec.abstract_new_page
+    if _abs_fli is not None or _abs_np is not None:
+        # 直接用 prof 已采样值（不重复读文件）；摘要段是否存在由采样值是否 None 判断
+        _abs_fli_origin = target.resolution.get("abstract_first_line_indent_in") \
+            if target.abstract_first_line_indent_in is not None else "spec"
+        _abs_np_origin = target.resolution.get("abstract_new_page") \
+            if target.abstract_new_page is not None else "spec"
+        if _abs_fli is not None:
+            _cur_fli = prof.abstract_first_line_indent_in
+            if _cur_fli is None:
+                # 无摘要段 → 不判缺失（很多论文摘要与正文同页/无独立摘要段）
+                findings.append(Finding(
+                    dimension="abstract_indent", severity="info",
+                    message="Abstract first-line indent",
+                    expected="Abstract text is flush left (no first-line indent)"
+                    if abs(float(_abs_fli)) < 1e-3 else
+                    f"Abstract text first-line indent = {_abs_fli:g}″",
+                    actual="No Abstract section detected (nothing to change)",
+                    source=_abs_fli_origin,
+                ))
+            elif abs(float(_cur_fli) - float(_abs_fli)) > 0.01:
+                findings.append(Finding(
+                    dimension="abstract_indent", severity="warn",
+                    message="Abstract first-line indent",
+                    expected=f"{_abs_fli:g}″",
+                    actual=f"{_cur_fli:g}″",
+                    source=_abs_fli_origin,
+                ))
+            else:
+                findings.append(Finding(
+                    dimension="abstract_indent", severity="pass",
+                    message="Abstract first-line indent",
+                    expected=f"{_abs_fli:g}″",
+                    actual=f"{_cur_fli:g}″",
+                    source=_abs_fli_origin,
+                ))
+        if _abs_np is not None:
+            _cur_np = prof.abstract_new_page
+            if _cur_np is None:
+                findings.append(Finding(
+                    dimension="abstract_new_page", severity="info",
+                    message="Abstract on new page",
+                    expected="Abstract begins on a new page"
+                    if _abs_np else "Abstract does not start on a new page",
+                    actual="No Abstract section detected",
+                    source=_abs_np_origin,
+                ))
+            elif bool(_cur_np) != bool(_abs_np):
+                findings.append(Finding(
+                    dimension="abstract_new_page", severity="warn",
+                    message="Abstract on new page",
+                    expected="begins on a new page" if _abs_np else "continues on the same page",
+                    actual="begins on a new page" if _cur_np else "continues on the same page",
+                    source=_abs_np_origin,
+                ))
+            else:
+                findings.append(Finding(
+                    dimension="abstract_new_page", severity="pass",
+                    message="Abstract on new page",
+                    expected="begins on a new page" if _abs_np else "continues on the same page",
+                    actual="Matches",
+                    source=_abs_np_origin,
+                ))
+
+    # —— Running head 显式维度（v2.3.67）——
+    # 客户/学校/AI 显式声明「要 running head」或「页码含作者姓氏」时硬判；
+    # 否则回落到已有 spec 驱动的 info 提示（APA 专业版 / MLA）。文本内容（短标题/姓氏）
+    # 涉及「改内容」且无法可靠自动生成 → 只提示客户手动补；页码位置由 page_number 维度可修。
+    _rh_req = target.running_head_required
+    _rh_name = target.page_number_include_author_name
+    _rh_origin = target.resolution.get("running_head_required") or \
+        target.resolution.get("page_number_include_author_name") or "spec"
+    _rh_origin = origin_of_source(_rh_origin) or "spec"
+    if _rh_req is not None or _rh_name is not None:
+        _rh_text = prof.header_text or ""
+        _rh_has_text = bool(_rh_text.strip())
+        _rh_has_page = bool(prof.page_number_present) or bool(re.search(r"\d", _rh_text))
+        # ① 是否要求 running head
+        if _rh_req is True:
+            if not _rh_has_text and not _rh_has_page:
+                findings.append(Finding(
+                    dimension="running_head", severity="warn",
+                    message="Running head",
+                    expected="A running head in the header (short title or last name + page number)",
+                    actual="No running-head text or page number detected in the header",
+                    source=_rh_origin,
+                ))
+            else:
+                findings.append(Finding(
+                    dimension="running_head", severity="pass",
+                    message="Running head",
+                    expected="A running head in the header",
+                    actual=_rh_text[:60] or "(page number in header)",
+                    source=_rh_origin,
+                ))
+        elif _rh_req is False:
+            # 明确不要求 running head：不判缺失，仅当有多余页眉文本时温和提示
+            if _rh_has_text:
+                findings.append(Finding(
+                    dimension="running_head", severity="info",
+                    message="Running head (not required)",
+                    expected="No running head required",
+                    actual=f"Header text detected: {_rh_text[:60]!r}",
+                    source=_rh_origin,
+                ))
+        # ② 页码是否含作者姓氏（MLA 的「Smith 1」形态）
+        if _rh_name is True:
+            _name_part = re.sub(r"\d+", "", _rh_text).strip()
+            _has_name = bool(re.search(r"[A-Za-z]", _name_part))
+            if not _has_name:
+                findings.append(Finding(
+                    dimension="running_head_name", severity="warn",
+                    message="Running head author name",
+                    expected="Your last name followed by the page number (e.g., 'Smith 1')",
+                    actual="No author name detected in the header",
+                    source=_rh_origin,
+                ))
+            else:
+                findings.append(Finding(
+                    dimension="running_head_name", severity="pass",
+                    message="Running head author name",
+                    expected="Last name + page number",
+                    actual=_rh_text[:60],
+                    source=_rh_origin,
+                ))
+
+    # —— 图表 caption（v2.3.67）——
+    # 字号/行距可查可修（识别 Caption 段落）；表题/图题位置只提示（图片 caption 位置
+    # 无法可靠判定）。目标显式给出才判；None = 不规定。
+    _cap_size = target.caption_font_size_pt
+    _cap_spacing = target.caption_line_spacing
+    _cap_tbl_pos = target.caption_position_table
+    _cap_fig_pos = target.caption_position_figure
+    # 目标没显式给、但规范带了 → 用规范值（来源 spec → 只提示语气）
+    if _cap_size is None:
+        _cap_size = apa_spec.caption_font_size_pt
+    if _cap_spacing is None:
+        _cap_spacing = apa_spec.caption_line_spacing
+    if _cap_tbl_pos is None:
+        _cap_tbl_pos = apa_spec.caption_position_table
+    if _cap_fig_pos is None:
+        _cap_fig_pos = apa_spec.caption_position_figure
+    _has_captions = bool(getattr(prof, "caption_count", 0))
+    # ① 字号（可修）
+    if _cap_size is not None:
+        _cap_size_origin = target.resolution.get("caption_font_size_pt", "spec")
+        _cur_cap_size = prof.caption_font_size_pt
+        if not _has_captions or _cur_cap_size is None:
+            findings.append(Finding(
+                dimension="caption_size", severity="info",
+                message="Figure/table caption font size",
+                expected=f"{_cap_size:g} pt",
+                actual="No captions detected" if not _has_captions else "Could not read caption size",
+                source=_cap_size_origin,
+            ))
+        elif abs(float(_cur_cap_size) - float(_cap_size)) > 0.01:
+            findings.append(Finding(
+                dimension="caption_size", severity="warn",
+                message="Figure/table caption font size",
+                expected=f"{_cap_size:g} pt",
+                actual=f"{_cur_cap_size:g} pt",
+                source=_cap_size_origin,
+            ))
+        else:
+            findings.append(Finding(
+                dimension="caption_size", severity="pass",
+                message="Figure/table caption font size",
+                expected=f"{_cap_size:g} pt",
+                actual=f"{_cur_cap_size:g} pt",
+                source=_cap_size_origin,
+            ))
+    # ② 行距（可修）
+    if _cap_spacing is not None:
+        _cap_spacing_origin = target.resolution.get("caption_line_spacing", "spec")
+        _cur_cap_sp = prof.caption_line_spacing
+        if not _has_captions or _cur_cap_sp is None:
+            findings.append(Finding(
+                dimension="caption_spacing", severity="info",
+                message="Figure/table caption line spacing",
+                expected=f"{_cap_spacing:g}x",
+                actual="No captions detected" if not _has_captions else "Could not read caption spacing",
+                source=_cap_spacing_origin,
+            ))
+        elif abs(float(_cur_cap_sp) - float(_cap_spacing)) > 0.01:
+            findings.append(Finding(
+                dimension="caption_spacing", severity="warn",
+                message="Figure/table caption line spacing",
+                expected=f"{_cap_spacing:g}x",
+                actual=f"{_cur_cap_sp:g}x",
+                source=_cap_spacing_origin,
+            ))
+        else:
+            findings.append(Finding(
+                dimension="caption_spacing", severity="pass",
+                message="Figure/table caption line spacing",
+                expected=f"{_cap_spacing:g}x",
+                actual=f"{_cur_cap_sp:g}x",
+                source=_cap_spacing_origin,
+            ))
+    # ③ 表题位置（只提示）
+    if _cap_tbl_pos is not None:
+        _cap_tbl_origin = target.resolution.get("caption_position_table", "spec")
+        _tbl_positions = getattr(prof, "caption_table_positions", None) or []
+        if not _tbl_positions:
+            findings.append(Finding(
+                dimension="caption_position_table", severity="info",
+                message="Table caption position",
+                expected="table caption " + ("above the table" if _cap_tbl_pos == "top" else "below the table"),
+                actual="No table caption position could be determined",
+                source=_cap_tbl_origin,
+            ))
+        else:
+            _mode_pos = Counter(_tbl_positions).most_common(1)[0][0]
+            _mode_label = "above" if _mode_pos == "top" else "below"
+            _want_label = "above" if _cap_tbl_pos == "top" else "below"
+            if _mode_pos != _cap_tbl_pos:
+                findings.append(Finding(
+                    dimension="caption_position_table", severity="info",
+                    message="Table caption position",
+                    expected="table caption " + _want_label + " the table",
+                    actual="table caption " + _mode_label + " the table",
+                    source=_cap_tbl_origin,
+                ))
+            else:
+                findings.append(Finding(
+                    dimension="caption_position_table", severity="pass",
+                    message="Table caption position",
+                    expected="table caption " + _want_label + " the table",
+                    actual="Matches",
+                    source=_cap_tbl_origin,
+                ))
+    # ④ 图题位置（只提示）：图片 caption 位置无法可靠判定，仅当有 caption 时给说明性提示
+    if _cap_fig_pos is not None:
+        _cap_fig_origin = target.resolution.get("caption_position_figure", "spec")
+        _fig_want = "above the figure" if _cap_fig_pos == "top" else "below the figure"
+        findings.append(Finding(
+            dimension="caption_position_figure", severity="info",
+            message="Figure caption position",
+            expected="figure caption " + _fig_want,
+            actual="Figure caption position is not auto-checked (figures are embedded in paragraphs); "
+                   "verify it manually",
+            source=_cap_fig_origin,
+        ))
+
     # —— 前置材料：按各自 tier 分流（学生/专业差异项，不混用）——
     # 专业版（expect_abstract / expect_author_note = True）才提示「应有」；
     # 学生版（均 False）不要求，仅在「多写了作者注」时温和提示非必需。
@@ -1262,6 +1528,27 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 按各自字体查自己的规范字号，正文混用 TNR 与 Calibri 时才能各改各的。
     if font_size_by_font:
         _fix_value["font_size_by_font"] = dict(allow_pairs)
+    # 摘要页特化：**只有客户/学校/AI 显式要求时才动手**（来源 spec 时只提示）。
+    # 理由与页码位置一致 —— 摘要是否缩进/另起一页，不同学校要求不同，APA 的
+    # 「顶格 + 另起一页」只是典型值，不能替客户拍板去改摘要页。
+    if target.abstract_first_line_indent_in is not None \
+            and origin_of_source(target.resolution.get("abstract_first_line_indent_in")) \
+            in ("user", "school", "ai_import"):
+        _fix_value["abstract_indent"] = float(target.abstract_first_line_indent_in)
+    if target.abstract_new_page is not None \
+            and origin_of_source(target.resolution.get("abstract_new_page")) \
+            in ("user", "school", "ai_import"):
+        _fix_value["abstract_new_page"] = bool(target.abstract_new_page)
+    # 图表 caption 字号/行距可修：**只有客户/学校/AI 显式要求时才动手**（spec 只提示）。
+    # caption 位置只提示（不绑 fix）。
+    if target.caption_font_size_pt is not None \
+            and origin_of_source(target.resolution.get("caption_font_size_pt")) \
+            in ("user", "school", "ai_import"):
+        _fix_value["caption_size"] = float(target.caption_font_size_pt)
+    if target.caption_line_spacing is not None \
+            and origin_of_source(target.resolution.get("caption_line_spacing")) \
+            in ("user", "school", "ai_import"):
+        _fix_value["caption_spacing"] = float(target.caption_line_spacing)
 
     for f in findings:
         if f.severity == "pass":
