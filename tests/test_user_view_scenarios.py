@@ -23,7 +23,8 @@ from docx.shared import Inches, Pt
 from src.engine.checker import run_check
 from src.engine.docx_reader import read_docx
 from src.engine.fixer import _compute_changes, _detect_title_page, fix_docx
-from src.engine.questionnaire import TargetProfile, target_from_template_docx
+from src.engine.questionnaire import (TargetProfile, target_from_spec,
+                                        target_from_template_docx)
 from src.engine.report import build_report
 from src.engine.specs import get_spec
 
@@ -204,6 +205,58 @@ def test_template_mode_uses_template_headings(tmp_path):
     for head in SECTIONS:
         p = [x for x in doc.paragraphs if x.text.strip() == head][0]
         assert p.runs[0].font.name == "Times New Roman", "%s 没被修" % head
+
+
+# ---------------------------------------------------------------- 5. 别拿一级格式套二级
+def test_deeper_headings_untouched_when_template_declares_only_one_level(tmp_path):
+    """学校模板只声明了 1 级标题格式时，二级标题绝不能套一级格式。
+
+    实测事故：模板只示范章标题 → 修正器用 fmt_map.get(lvl) or fmt_map.get(deepest)
+    回退 → 二级标题被改成 14pt 加粗**居中**，整篇层级关系崩掉；而预览里只写了
+    「Level 1 heading: Left → Center」一个字都没提二级标题。
+    """
+    p = tmp_path / "h1h2.docx"
+    doc = Document()
+    doc.add_heading("Chapter One", level=1)
+    doc.add_paragraph("Body text here.")
+    doc.add_heading("Section 1.1", level=2)
+    doc.add_paragraph("More body text.")
+    doc.save(p)
+
+    target = TargetProfile(
+        page={"font_family": "Times New Roman", "font_size_pt": 12.0, "line_spacing": 2.0},
+        heading_levels=1,
+        heading_formats={1: {"font_family": "Times New Roman", "size_pt": 14.0,
+                             "bold": True, "alignment": "center"}},
+        resolution={"heading_formats": "school"},
+    )
+    prof, findings = run_check(str(p), target)
+    out = tmp_path / "h1h2_out.docx"
+    fix_docx(str(p), str(out), target, findings=findings)
+
+    d = Document(str(out))
+    h2 = [x for x in d.paragraphs if x.text.strip() == "Section 1.1"][0]
+    assert h2.paragraph_format.alignment is None, "二级标题被套了一级格式（居中）"
+    assert h2.runs[0].font.size is None or h2.runs[0].font.size.pt != 14.0
+    # 一级标题照样要修
+    h1 = [x for x in d.paragraphs if x.text.strip() == "Chapter One"][0]
+    assert h1.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def test_deeper_heading_falls_back_when_spec_declares_full_levels(tmp_path):
+    """对照：APA 规范声明了 5 级，文档出现第 6 级 → 回退到第 5 级格式（旧行为保留）。"""
+    p = tmp_path / "h6.docx"
+    doc = Document()
+    doc.add_paragraph("Deep Heading", style="Heading 6")
+    doc.add_paragraph("Body.")
+    doc.save(p)
+    target = target_from_spec("APA-Student")   # 真实产品路径（spec 的 5 级格式会灌进 target）
+    _, findings = run_check(str(p), target)
+    out = tmp_path / "h6_out.docx"
+    fix_docx(str(p), str(out), target, findings=findings)
+    h6 = Document(str(out)).paragraphs[0]
+    # APA 第 5 级 = 左对齐 + 加粗 + 斜体 + 首行缩进 0.5″
+    assert h6.paragraph_format.first_line_indent is not None, "第 6 级应回退到第 5 级格式"
 
 
 # ---------------------------------------------------------------- 4. 报告必须说人话

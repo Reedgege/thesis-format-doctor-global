@@ -1614,7 +1614,17 @@ def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | No
         if item is None:
             continue
         lvl, is_pseudo = item
-        f = fmt_map.get(lvl) or fmt_map.get(deepest)
+        f = fmt_map.get(lvl)
+        if f is None:
+            # 目标没有给这一级格式。两种情形必须区别对待（v2.3.71 客户视角实测）：
+            #   ① 目标**只声明了部分层级**（学校模板常常只示范章标题，问卷也只填了 1 级）
+            #      → 更深层级**没有任何依据**，绝不能拿一级格式去套：实测把二级标题也改成
+            #        14pt 加粗居中，整篇层级关系当场崩掉，而且预览里一个字都没提。
+            #   ② 规范声明了完整多级（APA/IEEE 五级），文档却更深（第 6 级）
+            #      → 回退到已声明的最深一级，保持旧行为（编号体系不断档）。
+            if len(fmt_map) <= 1:
+                continue
+            f = fmt_map.get(deepest)
         if f is None:
             continue
         # 后置部分（References/Appendix…）IEEE 不编号，仅套格式
