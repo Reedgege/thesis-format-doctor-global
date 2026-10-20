@@ -988,20 +988,31 @@ def test_questionnaire_sections_are_collapsible(ui):
     assert before > 0, "展开状态下应有可见的输入框"
 
     page_title = i18n.t(ui.lang, "q_sec_page")
-    # 折叠头：标题在左、chevron 在右；点整行（标题行的 Frame）切换
+    # 折叠头：标题在左、chevron 在右。用户真实点击的是标题文字 Label（子控件），
+    # 之前只绑在 Frame 上——点子 Label 不触发，测试却直接对 Frame 发事件导致假绿。
+    # 这里就模拟真实点击子控件，作为回归护栏。
     title_lbls = [w for w in _descendants(win, tk.Label)
                    if w.cget("text").endswith(page_title)]
     assert title_lbls, "找不到可折叠区块标题（Page layout）"
-    head = title_lbls[0].master   # 标题行 Frame，绑定了点击切换
+    title_lbl = title_lbls[0]   # 用户真实点的就是标题文字控件
 
-    head.event_generate("<Button-1>")
+    title_lbl.event_generate("<Button-1>")
     ui.root.update_idletasks()
     after = len(mapped_entries())
     assert after < before, "点击区块标题后没有收起（可见输入框数量未减少）"
 
-    head.event_generate("<Button-1>")
+    title_lbl.event_generate("<Button-1>")
     ui.root.update_idletasks()
     assert len(mapped_entries()) == before, "再次点击后没有重新展开"
+
+    # 专项：直接点右侧小箭头（mark_lbl）也必须折叠——老板原话就是"小箭头点了没反应"。
+    head_frame = title_lbl.master
+    chevrons = [w for w in head_frame.winfo_children()
+                if isinstance(w, tk.Label) and w.cget("text") in ("▾", "▸")]
+    assert chevrons, "找不到折叠用的 chevron 标记"
+    chevrons[0].event_generate("<Button-1>")
+    ui.root.update_idletasks()
+    assert len(mapped_entries()) < before, "点击右侧小箭头后没有收起"
 
 
 def test_questionnaire_heading_table_feeds_target(ui, monkeypatch):

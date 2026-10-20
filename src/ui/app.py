@@ -4216,14 +4216,18 @@ class App:
         """
         wrap = tk.Frame(parent, bg=theme.SURFACE)
         wrap.pack(fill="x", pady=(pad, 2))
-        # 标题行：左标题 + 右 chevron，两个都绑点击
+        # 标题行：左标题 + 右 chevron。
+        # ⚠️ Tk 的 bindtags 不含中间 Frame：点标题文字/箭头（子 Label）时事件
+        # 不会冒泡到 head Frame，只绑 Frame 会导致「点箭头/标题没反应」。
+        # 所以标题文字与箭头两个 Label 各自也要绑点击（点 Frame 间隙也行）。
         head = tk.Frame(wrap, bg=theme.SURFACE, cursor="hand2")
         head.pack(fill="x", padx=12, pady=(0, 4))
-        tk.Label(head, text=title, bg=theme.SURFACE, fg=theme.PRIMARY,
-                 font=self.F["F_LABEL"], anchor="w").pack(side="left")
+        title_lbl = tk.Label(head, text=title, bg=theme.SURFACE, fg=theme.PRIMARY,
+                            font=self.F["F_LABEL"], anchor="w", cursor="hand2")
+        title_lbl.pack(side="left")
         mark_lbl = tk.Label(head, text="▾" if opened else "▸",
                            bg=theme.SURFACE, fg=theme.PRIMARY,
-                           font=self.F["F_LABEL"], anchor="e")
+                           font=self.F["F_LABEL"], anchor="e", cursor="hand2")
         mark_lbl.pack(side="right")
         holder = tk.Frame(wrap, bg=theme.SURFACE)
         if opened:
@@ -4246,6 +4250,8 @@ class App:
             return "break"
 
         head.bind("<Button-1>", _toggle)
+        title_lbl.bind("<Button-1>", _toggle)
+        mark_lbl.bind("<Button-1>", _toggle)
         return holder, wrap
 
     def _execute_check(self, target, win=None):
