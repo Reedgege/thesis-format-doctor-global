@@ -44,9 +44,12 @@ _DIM_LABEL = {
     "line_spacing": "Line spacing", "heading_levels": "Heading levels",
     "body_alignment": "Body alignment", "first_line_indent_in": "Body first-line indent",
     "header_distance_in": "Header distance from top",
+    "space_before_pt": "Space before paragraph",
     "space_after_pt": "Space after paragraph",
     "columns": "Column layout",
     "reference_style": "Reference format", "reference_hanging_indent_in": "Reference hanging indent",
+    "reference_space_before_pt": "Reference entry space before",
+    "reference_space_after_pt": "Reference entry space after",
     "reference_numbered": "Reference numbering",
 }
 
@@ -81,7 +84,8 @@ def _fmt_val(key: str, v) -> str:
         return f"{v}pt"
     if key == "line_spacing":
         return f"{v}x"
-    if key == "space_after_pt":
+    if key in ("space_before_pt", "space_after_pt",
+               "reference_space_before_pt", "reference_space_after_pt"):
         return f"{v}pt"
     if key == "body_alignment":
         return _ALIGN_LABEL.get(str(v), str(v))

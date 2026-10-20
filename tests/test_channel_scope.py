@@ -219,9 +219,13 @@ def test_doc_title_is_not_compared_as_heading_level(tmp_path):
     prof, findings = run_check(paper, t)
 
     # 检查结论里不许出现「L1 应当是 14pt 左对齐而实际 16pt 居中」这种张冠李戴
+    # ⚠️ v2.3.75 起只筛「字号 / 对齐」两项：新加的段前段后 / 行距维度会合法地报出
+    # 「模板章标题段前 24pt、论文是 0pt」——那不是张冠李戴，正是模板驱动该说的话，
+    # 用 `assert not bad` 一刀切会把这个正确结论误判成本用例失败。
     bad = [f for f in findings
            if f.dimension == "heading" and f.severity != "pass"
-           and "heading format" in f.message.lower()]
+           and "heading format" in f.message.lower()
+           and ("16 pt" in (f.actual or "") or "center" in (f.actual or "").lower())]
     assert not bad, [(f.message, f.expected, f.actual) for f in bad]
 
     # 并且报告里必须有一条「认出论文大标题、没参与层级比对」的说明（客户才知道没漏检）

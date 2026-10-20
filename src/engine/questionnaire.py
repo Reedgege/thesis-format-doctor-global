@@ -104,6 +104,9 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "first_line_indent_in", "label": "正文首行缩进", "group": "page", "type": "float",
      "default": 0.5, "unit": "英寸", "range": (0.0, 2.0),
      "help": "常见 0.5 英寸；0 = 不缩进（IEEE）"},
+    {"key": "space_before_pt", "label": "段前间距", "group": "page", "type": "float",
+     "default": 0.0, "unit": "磅", "range": (0.0, 72.0),
+     "help": "常见 0 = 段间不留空行；学校模板若规定「段前 6 磅」按模板填"},
     {"key": "space_after_pt", "label": "段后间距", "group": "page", "type": "float",
      "default": 0.0, "unit": "磅", "range": (0.0, 72.0),
      "help": "常见 0 = 段间不留空行，用首行缩进区分段落"},
@@ -176,6 +179,14 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "reference_line_spacing", "label": "条目行距", "group": "reference", "type": "float",
      "default": "", "unit": "倍", "range": (0.8, 4.0),
      "help": "留空=跟随正文；1.0=单倍（多数学校条目要求单倍）"},
+    # v2.3.75：条目之间的段前/段后。「条目之间不要空行」是学校硬要求里很常见的一条，
+    # 此前只有行距，管不住「每条之间多出 6 磅」——检查也看不见。
+    {"key": "reference_space_before_pt", "label": "条目段前", "group": "reference", "type": "float",
+     "default": "", "unit": "磅", "range": (0.0, 72.0),
+     "help": "常见 0=条目之间不空行；留空=不规定"},
+    {"key": "reference_space_after_pt", "label": "条目段后", "group": "reference", "type": "float",
+     "default": "", "unit": "磅", "range": (0.0, 72.0),
+     "help": "常见 0=条目之间不空行；留空=不规定"},
     {"key": "reference_new_page", "label": "参考文献另起一页", "group": "reference", "type": "tri",
      "default": "", "unit": "", "help": "选「是」=标题前插分页；选「否」=明确不要求；留「—」=不规定"},
     {"key": "reference_heading_bold", "label": "参考文献标题加粗", "group": "reference", "type": "tri",
@@ -242,6 +253,8 @@ class TargetProfile:
     reference_font_family: Optional[str] = None
     reference_size_pt: Optional[float] = None
     reference_line_spacing: Optional[float] = None
+    reference_space_before_pt: Optional[float] = None   # 条目段前（磅，v2.3.75）
+    reference_space_after_pt: Optional[float] = None    # 条目段后（磅，v2.3.75）
     reference_new_page: Optional[bool] = None
     reference_heading_bold: Optional[bool] = None
     reference_heading_centered: Optional[bool] = None
@@ -304,7 +317,8 @@ class TargetProfile:
 
     PAGE_KEYS = ("margin_top_in", "margin_bottom_in", "margin_left_in",
                  "margin_right_in", "font_family", "font_size_pt", "line_spacing",
-                 "body_alignment", "first_line_indent_in", "space_after_pt",
+                 "body_alignment", "first_line_indent_in",
+                 "space_before_pt", "space_after_pt",
                  "header_distance_in")
 
     # 标题页格式（不进 PAGE_KEYS：只作用于标题页那几行，与正文口径分开）
@@ -313,7 +327,11 @@ class TargetProfile:
 
     # 参考文献细项（不进 PAGE_KEYS：它们只作用于参考文献段，与正文口径分开）
     REFERENCE_KEYS = ("reference_font_family", "reference_size_pt",
-                      "reference_line_spacing", "reference_new_page",
+                      "reference_line_spacing",
+                      # v2.3.75：条目之间的段前/段后（「条目之间不空行」是硬要求，
+                      # 以前只有行距，管不住「每条之间多出 6 磅」）
+                      "reference_space_before_pt", "reference_space_after_pt",
+                      "reference_new_page",
                       "reference_heading_bold", "reference_heading_centered")
 
     # 摘要页特化（不进 PAGE_KEYS：它们只作用于摘要正文段，与正文口径分开）
@@ -478,7 +496,9 @@ def _coerce(schema: dict, raw: dict) -> dict:
 # 每级标题格式的字段白名单与取值归一（手填问卷 / AI 填表 / 学校模板三路共用一套）
 HEADING_LEVEL_KEYS = ("alignment", "bold", "italic", "run_in", "indent", "indent_in",
                       "font_family", "size_pt", "number_prefix", "uppercase",
-                      "page_break_before")
+                      "page_break_before",
+                      # v2.3.75：段前 / 段后（磅）与行距倍数（三态，空=不规定）
+                      "space_before_pt", "space_after_pt", "line_spacing")
 
 _HEADING_ALIGN = ("left", "center", "right", "justify")
 _HEADING_PREFIX = ("number", "roman", "upper_letter", "lower_letter",
@@ -503,7 +523,8 @@ def _coerce_heading_level(raw: dict) -> dict:
                     out[k] = v.strip().lower() in ("1", "true", "yes", "y")
                 else:
                     out[k] = bool(v)
-            elif k in ("indent_in", "size_pt"):
+            elif k in ("indent_in", "size_pt", "space_before_pt", "space_after_pt",
+                       "line_spacing"):
                 out[k] = float(v)
             elif k == "alignment":
                 s = str(v).strip().lower()
@@ -718,6 +739,8 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         page["body_alignment"] = doc_profile.body_alignment
     if doc_profile.first_line_indent_in is not None:
         page["first_line_indent_in"] = round(float(doc_profile.first_line_indent_in), 3)
+    if doc_profile.space_before_pt is not None:
+        page["space_before_pt"] = round(float(doc_profile.space_before_pt), 1)
     if doc_profile.space_after_pt is not None:
         page["space_after_pt"] = round(float(doc_profile.space_after_pt), 1)
     # 页眉距页顶（MLA 9th 要求 ½″）：学校模板读出则硬判，读不到则留空（不臆造）
@@ -841,13 +864,17 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         ref_num = spec_ref.numbered
         resolution["reference_numbered"] = "spec"
 
-    # ② 条目字体 / 字号 / 行距：模板实测（模板里条目常与正文不同口径）
+    # ② 条目字体 / 字号 / 行距 / 段前段后：模板实测（模板里条目常与正文不同口径）
     for _key, _val, _round in (("reference_font_family",
                                 getattr(doc_profile, "reference_font_family", None), None),
                                ("reference_size_pt",
                                 getattr(doc_profile, "reference_size_pt", None), 1),
                                ("reference_line_spacing",
-                                getattr(doc_profile, "reference_line_spacing", None), 2)):
+                                getattr(doc_profile, "reference_line_spacing", None), 2),
+                               ("reference_space_before_pt",
+                                getattr(doc_profile, "reference_space_before_pt", None), 1),
+                               ("reference_space_after_pt",
+                                getattr(doc_profile, "reference_space_after_pt", None), 1)):
         if _val is None or _val == "":
             continue
         ref_extra[_key] = round(float(_val), _round) if _round else str(_val)

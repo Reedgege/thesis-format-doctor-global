@@ -907,14 +907,30 @@ def _apply_first_line_indent(page: dict, paras: list) -> bool:
 
 def _apply_space_after(page: dict, paras: list) -> bool:
     """段后间距。如实返回「是否真改了」（原来无返回值 → 汇总批注假报）。"""
-    val = page.get("space_after_pt")
+    return _apply_para_spacing(page, paras, "space_after_pt", "space_after")
+
+
+def _apply_space_before(page: dict, paras: list) -> bool:
+    """段前间距（v2.3.75）。与段后同一条实现，避免两处口径走样。"""
+    return _apply_para_spacing(page, paras, "space_before_pt", "space_before")
+
+
+def _apply_para_spacing(page: dict, paras: list, key: str, attr: str) -> bool:
+    """把 page[key] 的磅值写到 paras 每个段落的 ``paragraph_format.<attr>``。
+
+    ⚠️ 必须清掉 w:beforeLines / w:afterLines：Word 里「行」单位优先，只写磅值等于没改。
+    """
+    val = page.get(key)
     if val is None:
         return False
     pt = Pt(float(val))
     changed = False
     for para in paras:
-        if para.paragraph_format.space_after != pt:
-            para.paragraph_format.space_after = pt
+        if _drop_lines_spacing(para, "w:beforeLines" if attr == "space_before"
+                               else "w:afterLines"):
+            changed = True
+        if getattr(para.paragraph_format, attr) != pt:
+            setattr(para.paragraph_format, attr, pt)
             changed = True
     return changed
 
@@ -1037,7 +1053,8 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
                             fix_hang: bool = True, fix_number: bool = True,
                             fix_font: bool = False, fix_size: bool = False,
                             fix_spacing: bool = False, fix_new_page: bool = False,
-                            fix_heading: bool = False, fix_rewrite: bool = False) -> dict:
+                            fix_heading: bool = False, fix_rewrite: bool = False,
+                            fix_sb: bool = False, fix_sa: bool = False) -> dict:
     """参考文献：格式层 + （IEEE 时）best-effort 引文格式重写。
 
     - 悬挂缩进 + （编号制时）补顺序前缀；
@@ -1049,7 +1066,8 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
       非 APA 模式或无法安全解析的条目一律不动其文本。
     """
     info = {"hanging_applied": False, "numbering_added": 0, "rewritten": 0,
-            "entry_reformatted": 0, "heading_formatted": 0, "new_page_applied": False}
+            "entry_reformatted": 0, "entry_spacing_applied": 0,
+            "heading_formatted": 0, "new_page_applied": False}
     if not ref_indices:
         return info
     entries = [doc.paragraphs[i] for i in ref_indices]
@@ -1085,6 +1103,18 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
         for para in entries:
             if _format_reference_entry(para, want_font, want_size, want_sp):
                 info["entry_reformatted"] += 1
+
+    # —— 条目之间的段前 / 段后（v2.3.75）——
+    # 「条目之间不空行」= before/after 都为 0；以前只有行距，管不住「每条之间多出 6 磅」。
+    _sb = target.reference_space_before_pt if fix_sb else None
+    _sa = target.reference_space_after_pt if fix_sa else None
+    if _sb is not None or _sa is not None:
+        n = 0
+        for para in entries:
+            if _apply_entry_spacing(para, _sb, _sa):
+                n += 1
+        if n:
+            info["entry_spacing_applied"] = n
 
     # —— 参考文献标题段：另起一页 / 加粗 / 居中 ——
     if fix_new_page or fix_heading:
@@ -1136,6 +1166,28 @@ def _is_page_break_only(run) -> bool:
     except Exception:
         return False
     return False
+
+
+def _apply_entry_spacing(para, before_pt=None, after_pt=None) -> bool:
+    """把一个参考文献条目的段前 / 段后落到直接格式上，返回是否有改动（幂等）。
+
+    写磅值前必须清掉 w:beforeLines / w:afterLines（Word 里「行」单位优先）。
+    """
+    changed = False
+    pf = para.paragraph_format
+    for attr, ln, val in (("space_before", "w:beforeLines", before_pt),
+                          ("space_after", "w:afterLines", after_pt)):
+        if val is None:
+            continue
+        if _drop_lines_spacing(para, ln):
+            changed = True
+        try:
+            if getattr(pf, attr) != Pt(float(val)):
+                setattr(pf, attr, Pt(float(val)))
+                changed = True
+        except Exception:
+            pass
+    return changed
 
 
 def _format_reference_entry(para, font=None, size_pt=None, line_spacing=None) -> bool:
@@ -1415,7 +1467,56 @@ def _format_heading_one(para, f, body_font, body_size):
                 changed = True
         except Exception:
             pass
+    # 段前 / 段后 / 行距（v2.3.75）：三态，None=本级不规定（一个字节都不写）。
+    # ⚠️ 写磅值前**必须删掉 w:beforeLines / w:afterLines** —— OOXML 规定两者并存时
+    # 「行」单位优先，只写 w:before 等于没改（学校模板普遍用「行」单位，这个坑必踩）。
+    for _attr, _ln, _pt in (("space_before", "w:beforeLines",
+                             getattr(f, "space_before_pt", None)),
+                            ("space_after", "w:afterLines",
+                             getattr(f, "space_after_pt", None))):
+        if _pt is None:
+            continue
+        if _drop_lines_spacing(para, _ln):
+            changed = True
+        try:
+            cur = getattr(pf, _attr)
+            if cur is None or abs(float(cur.pt) - float(_pt)) > 0.05:
+                setattr(pf, _attr, Pt(float(_pt)))
+                changed = True
+        except Exception:
+            pass
+    _ls = getattr(f, "line_spacing", None)
+    if _ls is not None:
+        try:
+            # pf.line_spacing 在「固定值/最小值」时是 Length 而非倍数，与 float 比较
+            # 必不相等 → 顺带把固定值改成倍数行距（这正是我们要的）。
+            if pf.line_spacing != float(_ls):
+                pf.line_spacing = float(_ls)     # python-docx：float → MULTIPLE
+                changed = True
+        except Exception:
+            pass
     return changed
+
+
+def _drop_lines_spacing(para, ln_attr: str) -> bool:
+    """删掉 pPr/w:spacing 上的 ``w:beforeLines`` / ``w:afterLines``。
+
+    「行」单位一旦留着，Word 会忽略我们写进去的 ``w:before`` / ``w:after`` 磅值 ——
+    修正看起来跑完了，打开文档却一点没变。返回是否真的删掉了东西（计入幂等改动数）。
+    """
+    try:
+        pPr = para._p.pPr
+        if pPr is None:
+            return False
+        sp = pPr.find(qn("w:spacing"))
+        if sp is None:
+            return False
+        if sp.get(qn(ln_attr)) is None:
+            return False
+        del sp.attrib[qn(ln_attr)]
+        return True
+    except Exception:
+        return False
 
 
 def _ensure_trailing_period(para) -> bool:
@@ -1849,6 +1950,10 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
         b = _before(prof, "first_line_indent_in")
         btxt = f"{float(b):.2f}\"" if b != "unknown" else "none"
         lines.append(f"First-line indent: {btxt}  →  {float(applied['first_line_indent_in']):.2f}\"")
+    if applied.get("space_before_pt") is not None:
+        b = _before(prof, "space_before_pt")
+        btxt = f"{b} pt" if b != "unknown" else "0 pt"
+        lines.append(f"Space before paragraph: {btxt}  →  {applied['space_before_pt']} pt")
     if applied.get("space_after_pt") is not None:
         b = _before(prof, "space_after_pt")
         btxt = f"{b} pt" if b != "unknown" else "0 pt"
@@ -1861,6 +1966,10 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
             bits.append("hanging indent applied")
         if ref_info.get("numbering_added"):
             bits.append(f"{ref_info['numbering_added']} entries numbered [1]..")
+        if ref_info.get("entry_reformatted"):
+            bits.append(f"entry font/size/spacing on {ref_info['entry_reformatted']} entries")
+        if ref_info.get("entry_spacing_applied"):
+            bits.append(f"space before/after on {ref_info['entry_spacing_applied']} entries")
         lines.append(f"Reference list ({target.reference_style}): " + "; ".join(bits))
         if ref_info.get("rewritten"):
             lines.append(
@@ -2087,6 +2196,9 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             applied["first_line_indent_in"] = page.get("first_line_indent_in")
         if "space_after" in fix_dims and _apply_space_after(page, indent_targets):
             applied["space_after_pt"] = page.get("space_after_pt")
+        # 段前间距（v2.3.75）：与段后同一批段落、同一条实现。
+        if "space_before" in fix_dims and _apply_space_before(page, indent_targets):
+            applied["space_before_pt"] = page.get("space_before_pt")
         if "header_distance" in fix_dims and _apply_header_distance(doc, page):
             applied["header_distance_in"] = page.get("header_distance_in")
         # 块引用：左缩进 0.5″、首行不缩进（已从上方的 indent_targets 豁免，这里单独正向施加）。
@@ -2146,7 +2258,7 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # 单倍行距」而没选任何引用风格，旧写法会让这些修正整段跳过（填了也不生效）。
     _ref_dims = {"reference_hanging_indent", "reference_numbered", "reference_font",
                  "reference_size", "reference_spacing", "reference_new_page",
-                 "reference_heading"}
+                 "reference_heading", "reference_space_before", "reference_space_after"}
     if target.reference_style or (_ref_dims & fix_dims):
         ref_info = _apply_reference_format(
             doc, target, ref_indices,
@@ -2158,6 +2270,8 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             fix_new_page="reference_new_page" in fix_dims,
             fix_heading="reference_heading" in fix_dims,
             fix_rewrite=_ref_reported,
+            fix_sb="reference_space_before" in fix_dims,
+            fix_sa="reference_space_after" in fix_dims,
         )
         summary["reference_style"] = target.reference_style
         summary["reference_hanging_indent_in"] = target.reference_hanging_indent_in
@@ -2235,7 +2349,8 @@ _DIM_LABELS = {
         "margin_left": "Left margin", "margin_right": "Right margin",
         "font_family": "Body font", "font_size": "Font size",
         "line_spacing": "Line spacing", "body_alignment": "Body alignment",
-        "first_line_indent": "First-line indent", "space_after": "Space after paragraph",
+        "first_line_indent": "First-line indent",
+        "space_before": "Space before paragraph", "space_after": "Space after paragraph",
         "header_distance": "Header distance from top",
         "columns": "Column layout",
         "paper_size": "Paper size",
@@ -2250,6 +2365,8 @@ _DIM_LABELS = {
         "heading_lvl": "Level %s heading",
         "ref_font": "Reference entry font", "ref_size": "Reference entry font size",
         "ref_spacing": "Reference entry line spacing",
+        "ref_space_before": "Reference entry space before",
+        "ref_space_after": "Reference entry space after",
         "ref_new_page": "References on new page",
         "ref_heading": "Reference heading format",
         "ref_entry": "Reference entry format",
@@ -2259,7 +2376,8 @@ _DIM_LABELS = {
         "margin_left": "左页边距", "margin_right": "右页边距",
         "font_family": "正文字体", "font_size": "正文字号",
         "line_spacing": "行距", "body_alignment": "正文对齐",
-        "first_line_indent": "正文首行缩进", "space_after": "段后间距",
+        "first_line_indent": "正文首行缩进",
+        "space_before": "段前间距", "space_after": "段后间距",
         "header_distance": "页眉距页顶",
         "columns": "栏数",
         "paper_size": "纸张大小",
@@ -2274,6 +2392,8 @@ _DIM_LABELS = {
         "heading_lvl": "第 %s 级标题",
         "ref_font": "参考文献条目字体", "ref_size": "参考文献条目字号",
         "ref_spacing": "参考文献条目行距",
+        "ref_space_before": "参考文献条目段前",
+        "ref_space_after": "参考文献条目段后",
         "ref_new_page": "参考文献另起一页",
         "ref_heading": "参考文献标题格式",
         "ref_entry": "参考文献条目格式",
@@ -2476,6 +2596,11 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
                           page.get("first_line_indent_in"), '"', lang)
         if line:
             lines.append(line)
+    if _gate("space_before"):
+        line = _diff_line(_dim_label(L, "space_before"), getattr(prof, "space_before_pt", None),
+                          page.get("space_before_pt"), "pt", lang)
+        if line:
+            lines.append(line)
     if _gate("space_after"):
         line = _diff_line(_dim_label(L, "space_after"), prof.space_after_pt,
                           page.get("space_after_pt"), "pt", lang)
@@ -2659,6 +2784,18 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
                           target.reference_size_pt, "pt", lang)
         if line:
             lines.append(line)
+    if _gate("reference_space_before"):
+        line = _diff_line(_dim_label(L, "ref_space_before"),
+                          getattr(prof, "reference_space_before_pt", None),
+                          target.reference_space_before_pt, "pt", lang)
+        if line:
+            lines.append(line)
+    if _gate("reference_space_after"):
+        line = _diff_line(_dim_label(L, "ref_space_after"),
+                          getattr(prof, "reference_space_after_pt", None),
+                          target.reference_space_after_pt, "pt", lang)
+        if line:
+            lines.append(line)
     if _gate("reference_spacing"):
         line = _diff_line(_dim_label(L, "ref_spacing"), prof.reference_line_spacing,
                           target.reference_line_spacing, "x", lang)
@@ -2809,6 +2946,25 @@ def _heading_change_lines(prof, target: TargetProfile, L: str,
                            or str(want.number_prefix)))
         if want.uppercase and got.uppercase is False:
             bits.append("全大写" if L == "zh" else "UPPERCASE")
+        # 段前 / 段后 / 行距（v2.3.75）：预览必须逐项写出来。
+        # 与 checker 的 Level N 检查同源 —— 检查报「段前 12pt 实为 0pt」，
+        # 预览这里就得出「段前 0pt → 12pt」，两边口径一致才算「按检查结果修」。
+        for _label_zh, _label_en, _wv, _gv, _unit in (
+                ("段前", "space before",
+                 getattr(want, "space_before_pt", None),
+                 getattr(got, "space_before_pt", None), "pt"),
+                ("段后", "space after",
+                 getattr(want, "space_after_pt", None),
+                 getattr(got, "space_after_pt", None), "pt"),
+                ("行距", "line spacing",
+                 getattr(want, "line_spacing", None),
+                 getattr(got, "line_spacing", None), "x")):
+            if _wv is None or _gv is None:
+                continue
+            if abs(float(_gv) - float(_wv)) <= (0.1 if _unit == "pt" else 0.01):
+                continue
+            bits.append("%s %g%s → %g%s" % (_label_zh if L == "zh" else _label_en,
+                                            float(_gv), _unit, float(_wv), _unit))
         if not bits:
             continue
         label = _dim_label(L, "heading_lvl") % lvl

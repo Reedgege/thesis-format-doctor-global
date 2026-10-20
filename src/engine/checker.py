@@ -531,16 +531,22 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             expected=f'{exp}″', actual=actual, source=origin,
         ))
 
-    # —— 段后间距（段落级）——
-    if target.page.get("space_after_pt") is not None:
-        exp = float(target.page["space_after_pt"])
-        origin = target.resolution.get("space_after_pt", "spec")
-        sev, actual = _cmp_num(prof.space_after_pt, exp,
+    # —— 段前 / 段后间距（段落级）——
+    # v2.3.75：补上「段前」。旧版只有段后，等于段落间距永远只能核一半 ——
+    # 学校模板写着「段前 6 磅」时检查器一个字不提，修正器也没法改。
+    for _dim, _key, _msg, _attr in (
+            ("space_before", "space_before_pt", "Space before paragraph", "space_before_pt"),
+            ("space_after", "space_after_pt", "Space after paragraph", "space_after_pt")):
+        if target.page.get(_key) is None:
+            continue
+        exp = float(target.page[_key])
+        origin = target.resolution.get(_key, "spec")
+        sev, actual = _cmp_num(getattr(prof, _attr, None), exp,
                                SPACE_TOL_FAIL, SPACE_TOL_WARN, "pt")
         sev = _downgrade(sev, origin, is_page_or_heading=True,
-                         dim="space_after", spec_key=target.spec_key)
+                         dim=_dim, spec_key=target.spec_key)
         findings.append(Finding(
-            dimension="space_after", severity=sev, message="Space after paragraph",
+            dimension=_dim, severity=sev, message=_msg,
             expected=f"{exp}pt", actual=actual, source=origin,
         ))
 
@@ -680,6 +686,31 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                                     else "no page break before")
                     act_bits.append("page break before" if got.page_break_before
                                     else "no page break before")
+            # 段前 / 段后 / 行距（v2.3.75）：三态。读侧永不返回 None（整条链没写就是
+            # Word 缺省的 0 磅 / 1.0 倍），所以这里报出来的每一条都是**真实可见的差异**，
+            # 修正器按同一条规则落盘。容差 0.1 磅（twips 换磅的舍入余量）。
+            for _label, _wv, _gv in (
+                    ("space before", getattr(want, "space_before_pt", None),
+                     getattr(got, "space_before_pt", None)),
+                    ("space after", getattr(want, "space_after_pt", None),
+                     getattr(got, "space_after_pt", None))):
+                if _wv is None:
+                    continue
+                if _gv is None:
+                    unreadable.append(_label)
+                    continue
+                if abs(float(_gv) - float(_wv)) > 0.1:
+                    exp_bits.append("%s %g pt" % (_label, float(_wv)))
+                    act_bits.append("%s %g pt" % (_label, float(_gv)))
+            _wls = getattr(want, "line_spacing", None)
+            if _wls is not None:
+                _gls = getattr(got, "line_spacing", None)
+                if _gls is None:
+                    # 固定值/最小值的行距无法折算成倍数 → 如实记「读不到」，不硬判
+                    unreadable.append("line spacing")
+                elif abs(float(_gls) - float(_wls)) > 0.01:
+                    exp_bits.append("line spacing %gx" % float(_wls))
+                    act_bits.append("line spacing %gx" % float(_gls))
 
             def _actual_text() -> str:
                 bits = list(act_bits)
@@ -883,7 +914,12 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             ("reference_size_pt", "reference_size", "Reference entry font size", "pt",
              (SIZE_TOL_FAIL, SIZE_TOL_WARN)),
             ("reference_line_spacing", "reference_spacing", "Reference entry line spacing", "x",
-             (SPACING_TOL_FAIL, SPACING_TOL_WARN))):
+             (SPACING_TOL_FAIL, SPACING_TOL_WARN)),
+            # v2.3.75：条目之间的段前/段后（「条目之间不空行」是学校硬要求里常见的一条）
+            ("reference_space_before_pt", "reference_space_before",
+             "Reference entry space before", "pt", (SPACE_TOL_FAIL, SPACE_TOL_WARN)),
+            ("reference_space_after_pt", "reference_space_after",
+             "Reference entry space after", "pt", (SPACE_TOL_FAIL, SPACE_TOL_WARN))):
         _want = getattr(target, _key, None)
         if _want is None:
             continue
@@ -902,8 +938,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 _sev, _act = "fail", str(_got)
             _exp = str(_want)
         else:
-            _got = (prof.reference_size_pt if _key == "reference_size_pt"
-                    else prof.reference_line_spacing)
+            _got = getattr(prof, _key, None)
             if _got is None:
                 # 读不到就只提示，不判 warn/fail（条目常继承正文字号，读不到不等于不合规）
                 _sev = "info"
@@ -1606,6 +1641,8 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         "line_spacing": target.page.get("line_spacing"),
         "alignment": target.page.get("body_alignment"),
         "first_line_indent": target.page.get("first_line_indent_in"),
+        # v2.3.75：正文段前（此前只有段后，段落间距只能核一半）
+        "space_before": target.page.get("space_before_pt"),
         "space_after": target.page.get("space_after_pt"),
         "header_distance": target.page.get("header_distance_in"),
         "columns": target.columns,
@@ -1617,6 +1654,8 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     for _k, _dim in (("reference_font_family", "reference_font"),
                      ("reference_size_pt", "reference_size"),
                      ("reference_line_spacing", "reference_spacing"),
+                     ("reference_space_before_pt", "reference_space_before"),
+                     ("reference_space_after_pt", "reference_space_after"),
                      ("reference_new_page", "reference_new_page"),
                      ("reference_heading", "reference_heading")):
         if _k == "reference_heading":

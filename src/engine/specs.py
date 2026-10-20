@@ -37,6 +37,9 @@ class PageLayout:
     # 默认 None = 不强制；具体各风格典型值见下方 _BODY_LAYOUT 表（单一真相）。
     body_alignment: Optional[str] = None            # left / justify / center / right
     first_line_indent_in: Optional[float] = None    # 正文首行缩进（英寸）；0 = 不缩进
+    # v2.3.75：段前 + 段后（磅）。此前只有段后，等于「段落间距」永远只能修一半 ——
+    # 学校模板写着「段前 6 磅」时既读不到也改不了。两者语义一致，三态 None=不规定。
+    space_before_pt: Optional[float] = None         # 段前间距（磅）
     space_after_pt: Optional[float] = None          # 段后间距（磅）
     header_distance_in: Optional[float] = None       # 页眉距页顶（英寸）；MLA 9th 要求 ½″
 
@@ -94,6 +97,17 @@ class HeadingLevelFormat:
     # Dissertation 每章（通常是 L1）强制另起一页。落在段落 pPr/pageBreakBefore（纯格式、
     # 幂等、不写 styleId）。
     page_break_before: Optional[bool] = None
+    # v2.3.75：**段前 / 段后 / 行距** —— 三态，None=本级不规定（一个字节都不写）。
+    # 老板 2026-10-20 追问「调整格式之中，段前段后有没有考虑？是核心的东西」。
+    # 事实核查：此前整条链路只有正文段后一项（PageLayout.space_after_pt），标题级
+    # 完全没有 spacing 字段 —— 学校模板写着「章标题段前 12 磅」，读不到、查不出、
+    # 也改不了。规范侧确有硬要求：APA 7th §2.21「Do not add extra space before or
+    # after headings」+「Double-space the entire paper」，故 APA 五级显式给
+    # before=0 / after=0 / line=2.0；IEEE 官方未规定具体磅值（IEEEtran 模板各自为政），
+    # 一律留 None，绝不臆造。
+    space_before_pt: Optional[float] = None
+    space_after_pt: Optional[float] = None
+    line_spacing: Optional[float] = None     # 倍数（2.0=双倍）；None=不规定
     desc: str = ""                       # 给用户的英文批注描述
 
 
@@ -261,18 +275,26 @@ def size_for_font(family: Optional[str],
 # ⚠️ 一律**关键字传参**：v2.3.65 给 HeadingLevelFormat 增补 indent_in / font_family
 # 两个字段，插在 size_pt 之前；旧的位置写法会让第 6~9 位参数整体错位（"roman" 会
 # 落到 font_family、"desc" 会落到 number_prefix → 编号前缀被塞进标题正文）。
+#
+# v2.3.75：**段前/段后/行距**按 APA 7th 原文给死 ——
+#   §2.21 "Do not add blank lines before or after headings"（标题上下都不许空行）
+#   §2.21 "Double-space the entire paper"（含标题，故行距 2.0）
+# 这三项只在「规范基线」模式（客户选的/系统判定为 APA）下生效，模板/手动/AI 一律以
+# 客户提供的为准（spec_is_baseline 门控）—— 绝不拿 APA 去覆盖学校的段前磅值。
+_APA_SPACING = {"space_before_pt": 0.0, "space_after_pt": 0.0, "line_spacing": 2.0}
+
 APA_HEADING: dict[int, HeadingLevelFormat] = {
-    1: HeadingLevelFormat(alignment="center", bold=True,
-                          desc="centered, bold, title case"),
-    2: HeadingLevelFormat(alignment="left", bold=True,
-                          desc="flush-left, bold, title case"),
-    3: HeadingLevelFormat(alignment="left", bold=True, italic=True,
-                          desc="flush-left, bold italic, title case"),
+    1: HeadingLevelFormat(alignment="center", bold=True, **_APA_SPACING,
+                          desc="centered, bold, title case, no extra space above/below"),
+    2: HeadingLevelFormat(alignment="left", bold=True, **_APA_SPACING,
+                          desc="flush-left, bold, title case, no extra space above/below"),
+    3: HeadingLevelFormat(alignment="left", bold=True, italic=True, **_APA_SPACING,
+                          desc="flush-left, bold italic, title case, no extra space above/below"),
     4: HeadingLevelFormat(alignment="left", bold=True, run_in=True,
-                          indent=True, indent_in=0.5,
+                          indent=True, indent_in=0.5, **_APA_SPACING,
                           desc="indented, bold, title case, ending with a period (run-in)"),
     5: HeadingLevelFormat(alignment="left", bold=True, italic=True, run_in=True,
-                          indent=True, indent_in=0.5,
+                          indent=True, indent_in=0.5, **_APA_SPACING,
                           desc="indented, bold italic, title case, ending with a period (run-in)"),
 }
 
@@ -363,6 +385,18 @@ def describe_heading(f: "HeadingLevelFormat") -> str:
         bits.append("page break before")
     elif f.page_break_before is False:
         bits.append("no page break before")
+    # 段前 / 段后：两者都为 0 时合并成一句（APA 的原话就是 "no extra space"），
+    # 其余情形如实分开报 —— 报告里必须让客户看得见磅值。
+    _sb, _sa = f.space_before_pt, f.space_after_pt
+    if _sb is not None and _sa is not None and float(_sb) == 0.0 and float(_sa) == 0.0:
+        bits.append("no extra space above or below")
+    else:
+        if _sb is not None:
+            bits.append("%g pt before" % float(_sb))
+        if _sa is not None:
+            bits.append("%g pt after" % float(_sa))
+    if f.line_spacing is not None:
+        bits.append("%gx line spacing" % float(f.line_spacing))
     return ", ".join(bits) if bits else "format not specified"
 
 
@@ -415,6 +449,9 @@ def heading_level_format_from_dict(raw: dict) -> "HeadingLevelFormat":
         number_prefix=prefix,
         uppercase=bool(_tri("uppercase")),
         page_break_before=_tri("page_break_before"),
+        space_before_pt=_num("space_before_pt"),
+        space_after_pt=_num("space_after_pt"),
+        line_spacing=_num("line_spacing"),
         desc=str(raw.get("desc") or "").strip(),
     )
     if not f.desc:
@@ -621,28 +658,30 @@ SPECS: dict[str, StyleSpec] = {
 }
 
 # ---------------------------------------------------------------------------
-# 正文段落级排版典型值（单一真相）：(对齐方式, 首行缩进英寸, 段后间距磅)
+# 正文段落级排版典型值（单一真相）：(对齐方式, 首行缩进英寸, 段前磅, 段后磅)
 # 说明：均为「该风格典型文稿」的兜底参考，检查时 spec 来源会降级为 info；
 #       学校模板 / 问卷 / AI 显式给出时才硬判。
-# 依据：APA 7 / MLA 9 均为左对齐 + 首行缩进 0.5″ + 段间无空行；
-#       IEEE 正文两端对齐、首行不缩进、段间无空行（IEEEtran 默认）。
+# 依据：APA 7 / MLA 9 均为左对齐 + 首行缩进 0.5″ + 段间无空行（§2.21：段前段后都不许
+#       加空行）；IEEE 正文两端对齐、首行不缩进、段间无空行（IEEEtran 默认）。
 # ---------------------------------------------------------------------------
 _BODY_LAYOUT: dict[str, tuple] = {
-    "APA-Student":     ("left",    0.5,  0.0),
-    "APA-Professional": ("left",   0.5,  0.0),
-    "MLA":     ("left",    0.5,  0.0),
-    "IEEE":    ("justify", 0.0,  0.0),
-    "Other":   (None,      None, None),
+    "APA-Student":     ("left",    0.5,  0.0,  0.0),
+    "APA-Professional": ("left",   0.5,  0.0,  0.0),
+    "MLA":     ("left",    0.5,  0.0,  0.0),
+    "IEEE":    ("justify", 0.0,  0.0,  0.0),
+    "Other":   (None,      None, None, None),
 }
 
-for _k, (_al, _fi, _sa) in _BODY_LAYOUT.items():
+for _k, (_al, _fi, _sb, _sa) in _BODY_LAYOUT.items():
     if _k in SPECS:
         SPECS[_k].page.body_alignment = _al
         SPECS[_k].page.first_line_indent_in = _fi
+        SPECS[_k].page.space_before_pt = _sb
         SPECS[_k].page.space_after_pt = _sa
 
 # 正文段落级排版的字段名（供 questionnaire / checker / report 复用，避免各处硬编码）
-BODY_LAYOUT_KEYS = ("body_alignment", "first_line_indent_in", "space_after_pt")
+BODY_LAYOUT_KEYS = ("body_alignment", "first_line_indent_in",
+                    "space_before_pt", "space_after_pt")
 
 # 页边距维度单一真相：(TargetProfile.page 字段名, docx 分节属性名, 显示标签)
 # 供 checker / fixer / report 共用，避免三处各抄一份映射。

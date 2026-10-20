@@ -3207,7 +3207,11 @@ class App:
                 if font:
                     item["font_family"] = font
                 for key2, varkey, label in (("size_pt", "size", tr("q_h_size")),
-                                            ("indent_in", "indent", tr("q_h_indent"))):
+                                            ("indent_in", "indent", tr("q_h_indent")),
+                                            # v2.3.75：段前 / 段后（磅）与行距倍数
+                                            ("space_before_pt", "space_before", tr("q_h_before")),
+                                            ("space_after_pt", "space_after", tr("q_h_after")),
+                                            ("line_spacing", "line_spacing", tr("q_h_lsp"))):
                     txt = row[varkey].get().strip()
                     if not txt:
                         continue
@@ -3225,6 +3229,13 @@ class App:
                             tr("q_h_lvl", row["lvl"]), label, txt))
                     if key2 == "indent_in" and not (0.0 <= item[key2] <= 3.0):
                         warnings.append("%s · %s = %s  (0–3)" % (
+                            tr("q_h_lvl", row["lvl"]), label, txt))
+                    if key2 in ("space_before_pt", "space_after_pt") \
+                            and not (0.0 <= item[key2] <= 120.0):
+                        warnings.append("%s · %s = %s  (0–120)" % (
+                            tr("q_h_lvl", row["lvl"]), label, txt))
+                    if key2 == "line_spacing" and not (0.5 <= item[key2] <= 5.0):
+                        warnings.append("%s · %s = %s  (0.5–5)" % (
                             tr("q_h_lvl", row["lvl"]), label, txt))
                 al = _opt_val(hf_opts.get("aligns"), row["align"].get())
                 if al:
@@ -3367,7 +3378,9 @@ class App:
         hdr = {1: tr("q_h_font"), 2: tr("q_h_size"), 3: tr("q_h_bold"),
                4: tr("q_h_italic"), 5: tr("q_h_pagebreak"),
                6: tr("q_h_align"), 7: tr("q_h_indent"), 8: tr("q_h_num"),
-               9: tr("q_h_upper"), 10: tr("q_h_runin")}
+               9: tr("q_h_upper"), 10: tr("q_h_runin"),
+               # v2.3.75：段前 / 段后 / 行距（老板 2026-10-20：段前段后是调整格式的核心）
+               11: tr("q_h_before"), 12: tr("q_h_after"), 13: tr("q_h_lsp")}
         for col, text in hdr.items():
             tk.Label(table, text=text, bg=theme.SURFACE, fg=theme.TEXT_3,
                      font=F["F_FOOT"], anchor="w").grid(
@@ -3437,6 +3450,10 @@ class App:
             num_var = _combo(8, r, prefixes, cur.get("number_prefix"), 7)
             up_var = _combo(9, r, tris, cur.get("uppercase"), 5)
             runin_var = _combo(10, r, tris, cur.get("run_in"), 5)
+            # v2.3.75：段前 / 段后（磅）与行距倍数。留空 = 不规定（一个字节都不写）。
+            before_var = _entry(11, r, cur.get("space_before_pt"), 4)
+            after_var = _entry(12, r, cur.get("space_after_pt"), 4)
+            lsp_var = _entry(13, r, cur.get("line_spacing"), 4)
 
             state = {"show": True}
             rows.append({
@@ -3445,6 +3462,8 @@ class App:
                 "italic": ital_var, "page_break_before": pbb_var,
                 "align": al_var, "indent": ind_var,
                 "num": num_var, "upper": up_var, "runin": runin_var,
+                "space_before": before_var, "space_after": after_var,
+                "line_spacing": lsp_var,
             })
 
         def _sync_rows(*_a):

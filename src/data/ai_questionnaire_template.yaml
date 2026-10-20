@@ -21,7 +21,8 @@ _how_to_fill: |-
   ① flat top-level key-values (matching fields[].key); or
   ② wrapped in a filled object (e.g. filled: {...}).
   Leave unknown items blank or omit them; do not invent values.
-  Units: margins / indents in inches, font size / space-after in points, line spacing as a multiple
+  Units: margins / indents in inches, font size / space-before / space-after in points,
+  line spacing as a multiple
   (2.0 = double, 1.5 = one-and-a-half, 1.0 = single).
   body_alignment must be one of left / justify / center / right
   (left = left-aligned, justify = justified).
@@ -49,9 +50,13 @@ _how_to_fill: |-
   heading_formats is where the per-level heading requirements go. It is a map keyed by
   heading level (1 = top level). Each level accepts the same fields:
     font_family, size_pt, bold, italic, uppercase, run_in, alignment, indent_in, number_prefix,
-    page_break_before
+    page_break_before, space_before_pt, space_after_pt, line_spacing
   - bold / italic / uppercase / run_in / page_break_before are true or false. Omit any of them
     when the requirement says nothing about that property for that level (do not guess).
+  - space_before_pt / space_after_pt are the space above / below that heading level, in points
+    (0 = explicitly no extra space). Omit them when the requirement says nothing.
+  - line_spacing is that heading level's line-spacing multiple (2.0 = double). Omit it when the
+    requirement says nothing.
   - page_break_before = whether this heading level must start on a new page (true = page break
     before the heading, e.g. a dissertation chapter; false = explicitly no page break, e.g. a
     journal article). Omit it when the requirement says nothing.
@@ -101,6 +106,10 @@ fields:
     label: Body first-line indent
     unit: in
     example: 0.5
+  - key: space_before_pt
+    label: Space before paragraph
+    unit: pt
+    example: 0.0
   - key: space_after_pt
     label: Space after paragraph
     unit: pt
@@ -158,7 +167,8 @@ fields:
     note: >-
       Map of heading level (1 = top level) to that level's requirements. Fields per level:
       font_family, size_pt, bold, italic, uppercase, run_in, alignment (left/center/right/justify),
-      indent_in (inches), number_prefix (number/roman/upper_letter/lower_letter/lower_roman/number_paren).
+      indent_in (inches), number_prefix (number/roman/upper_letter/lower_letter/lower_roman/number_paren),
+      page_break_before, space_before_pt, space_after_pt, line_spacing.
   - key: reference_style
     label: Reference format
     unit: ""
@@ -193,6 +203,16 @@ fields:
     unit: x
     example: 1.0
     note: Omit to follow the body text. 1.0 = single (common for entries).
+  - key: reference_space_before_pt
+    label: Space before each reference entry
+    unit: pt
+    example: 0.0
+    note: 0 = no blank line between entries (the usual requirement). Omit if unspecified.
+  - key: reference_space_after_pt
+    label: Space after each reference entry
+    unit: pt
+    example: 0.0
+    note: 0 = no blank line between entries (the usual requirement). Omit if unspecified.
   - key: reference_new_page
     label: References start on a new page
     unit: ""
@@ -276,6 +296,7 @@ example_filled:
   line_spacing: 2.0
   body_alignment: left
   first_line_indent_in: 0.5
+  space_before_pt: 0.0
   space_after_pt: 0.0
   # header_distance_in: 0.5   # optional — only when the requirement states it (MLA 9)
   columns: 1
@@ -292,12 +313,18 @@ example_filled:
       bold: true
       alignment: center
       number_prefix: number
+      # Space above / below the heading, in points (a very common requirement).
+      space_before_pt: 12
+      space_after_pt: 6
+      # line_spacing: 1.5
     2:
       font_family: KaiTi
       size_pt: 14
       bold: true
       italic: false
       alignment: left
+      space_before_pt: 6
+      space_after_pt: 6
     3:
       font_family: SimSun
       size_pt: 12

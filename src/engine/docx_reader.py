@@ -109,6 +109,7 @@ class DocumentProfile:
     body_alignment: Optional[str] = None               # left / justify / center / right
     first_line_indent_in: Optional[float] = None       # 正文首行缩进（英寸）
     space_after_pt: Optional[float] = None             # 段后间距（磅）
+    space_before_pt: Optional[float] = None            # 段前间距（磅，v2.3.75）
     table_paragraph_count: int = 0                     # 纳入采样的表格段落数
     heading_styles: list = field(default_factory=list) # 用到的标题样式名
     heading_levels_used: int = 0
@@ -130,6 +131,8 @@ class DocumentProfile:
     reference_font_family: Optional[str] = None
     reference_size_pt: Optional[float] = None
     reference_line_spacing: Optional[float] = None
+    reference_space_before_pt: Optional[float] = None   # 条目段前（磅，v2.3.75）
+    reference_space_after_pt: Optional[float] = None    # 条目段后（磅，v2.3.75）
     header_text: str = ""                              # 页眉可见文本（剔除 PAGE 域结果，用于 running head 长度/内容检查）
     page_number_present: bool = False                 # 页眉/页脚中是否存在页码（PAGE 域 **或** 手打静态页码）
     page_number_right_aligned: Optional[bool] = None  # 含页码段落是否右对齐（APA 要求 top-right）；无法判定=None
@@ -202,6 +205,12 @@ class HeadingFormatSample:
     # v2.3.67：段前分页（pageBreakBefore）。读 pPr/w:pageBreakBefore；三态 None=读不到
     # 或未显式设置（段前分页由样式承载时读不到直接值，此时留 None 由 checker 决定不硬判）。
     page_break_before: Optional[bool] = None
+    # v2.3.75：段前 / 段后（磅）与行距倍数。学校模板里「章标题段前 12 磅、段后 6 磅、
+    # 单倍行距」是最常见的硬要求之一；此前引擎连字段都没有，读了也存不下。
+    # 读不到一律按 Word 缺省（0 磅 / 1.0 倍）→ 永不返回 None，避免「假读不到」。
+    space_before_pt: Optional[float] = None
+    space_after_pt: Optional[float] = None
+    line_spacing: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -211,6 +220,9 @@ class HeadingFormatSample:
             "size_pt": self.size_pt,
             "number_prefix": self.number_prefix, "uppercase": self.uppercase,
             "page_break_before": self.page_break_before,
+            "space_before_pt": self.space_before_pt,
+            "space_after_pt": self.space_after_pt,
+            "line_spacing": self.line_spacing,
         }
 
 
@@ -569,10 +581,17 @@ def _sample_heading_format(para, doc_pf, doc_default_font=None) -> "HeadingForma
     # 编号前缀：启发式识别标题起始编号形态
     number_prefix = _detect_number_prefix(txt)
 
+    # 段前 / 段后 / 行距（v2.3.75）：三级回退 + 「行」单位换算。
+    # 段前段后走 _spacing_pair_of_para（直读 XML，认 w:beforeLines）；行距走
+    # _line_spacing_of_para（固定值/最小值如实返回 None，由 checker 记「读不到」）。
+    sb, sa = _spacing_pair_of_para(para, base_size_pt=size)
+    ls = _line_spacing_of_para(para)
+
     return HeadingFormatSample(
         alignment=al, bold=bold, italic=italic, indent=indent, indent_in=indent_in,
         font_family=font, size_pt=size, number_prefix=number_prefix, uppercase=uppercase,
         page_break_before=pbb,
+        space_before_pt=sb, space_after_pt=sa, line_spacing=ls,
     )
 
 
@@ -697,6 +716,98 @@ def _pf_attr(para, doc_pf, attr):
         except Exception:
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# 段前 / 段后（spacing before/after）—— v2.3.75
+#
+# 为什么不能用 `_pf_attr(para, doc_pf, "space_before")`：python-docx 的属性只映射
+# **`w:before` / `w:after`（twips，1/20 磅）**，而中文学校模板里极其常见的写法是
+# 「段前 0.5 行 / 段后 1 行」，落盘成 **`w:beforeLines` / `w:afterLines`（单位 1/100 行）**。
+# 直接读属性会得到 None → 被当成「段前 0 磅」→ 模板里写死的要求读不到、检查报 pass、
+# 客户点修正也不会改（又一个「假通过」）。这里直读 XML 并做「行 → 磅」换算。
+# ---------------------------------------------------------------------------
+# 「1 行」折成多少磅：Word 单倍行距下正文行高 ≈ 1.2 × 字号（不同字体略有浮动，
+# 中文宋体约 1.3）。取 1.2 是 Word 自身的换算基准，误差 <1 磅，用于比对足够。
+_LINE_TO_PT = 1.2
+
+
+def _ppr_spacing_pair(pPr, base_size_pt=None):
+    """从一个 pPr 元素读段前/段后（磅）。读不到返回 None（不是 0）。
+
+    OOXML 语义：`w:beforeLines` 与 `w:before` 同时存在时 **`*Lines` 优先**，
+    这里遵循同一优先级。
+    """
+    if pPr is None:
+        return None, None
+    try:
+        sp = pPr.find(qn("w:spacing"))
+    except Exception:
+        sp = None
+    if sp is None:
+        return None, None
+    size = float(base_size_pt) if base_size_pt else 12.0
+    out: list = []
+    for pt_attr, ln_attr in (("w:before", "w:beforeLines"),
+                             ("w:after", "w:afterLines")):
+        v: Optional[float] = None
+        raw_lines = sp.get(qn(ln_attr))
+        if raw_lines is not None:
+            try:
+                v = round(float(raw_lines) / 100.0 * _LINE_TO_PT * size, 1)
+            except (TypeError, ValueError):
+                v = None
+        if v is None:
+            raw = sp.get(qn(pt_attr))
+            if raw is not None:
+                try:
+                    v = round(float(raw) / 20.0, 1)
+                except (TypeError, ValueError):
+                    v = None
+        out.append(v)
+    return out[0], out[1]
+
+
+def _spacing_pair_of_para(para, base_size_pt=None):
+    """段前/段后（磅），三级回退：段落 → 段落样式链 → 文档默认（**逐属性**回退）。
+
+    语义与行距/对齐同口径：整条链都没写 → Word 渲染就是 0 磅，返回 ``(0.0, 0.0)``
+    而不是 ``(None, None)``。否则「模板要求段前 6 磅、文档一个字节没写」会被判成
+    「读不到」→ 检查出 info、修正器却照改，两处口径不一致。
+    """
+    if base_size_pt is None:
+        try:
+            base_size_pt = _max_run_size_pt(para)
+        except Exception:
+            base_size_pt = None
+    elems: list = []
+    try:
+        if para._p.pPr is not None:
+            elems.append(para._p.pPr)
+    except Exception:
+        pass
+    try:
+        st = para.style
+    except Exception:
+        st = None
+    while st is not None:                     # Heading 2 → Heading 1 → Normal
+        try:
+            if st.element.pPr is not None:
+                elems.append(st.element.pPr)
+        except Exception:
+            pass
+        st = getattr(st, "base_style", None)
+    before: Optional[float] = None
+    after: Optional[float] = None
+    for el in elems:
+        b, a = _ppr_spacing_pair(el, base_size_pt)
+        if before is None:
+            before = b
+        if after is None:
+            after = a
+        if before is not None and after is not None:
+            break
+    return (0.0 if before is None else before), (0.0 if after is None else after)
 
 
 def _looks_like_reference_entry(text: str) -> bool:
@@ -1720,6 +1831,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
     align_counter: Counter = Counter()
     indent_counter: Counter = Counter()
     space_after_counter: Counter = Counter()
+    space_before_counter: Counter = Counter()
     for para in body_paras:
         al_raw = _pf_attr(para, doc_pf, "alignment")
         al = _ALIGN_MAP.get(al_raw) if al_raw is not None else "left"
@@ -1727,8 +1839,13 @@ def _read_docx_impl(doc) -> DocumentProfile:
             align_counter[al] += 1
         fli = _inch(_pf_attr(para, doc_pf, "first_line_indent"))
         indent_counter[0.0 if fli is None else fli] += 1
-        sa = _pt(_pf_attr(para, doc_pf, "space_after"))
+        # 段前 / 段后：直读 XML（认 w:beforeLines / w:afterLines「行」单位），
+        # 不再只认 w:after。旧写法读 python-docx 的 space_after，模板写「段后 0.5 行」
+        # 时读到 None → 计入 0.0 → 检查报「段后 0 磅，合规」，客户看到的空行
+        # 比要求大一倍也不管。
+        sb, sa = _spacing_pair_of_para(para)
         space_after_counter[0.0 if sa is None else sa] += 1
+        space_before_counter[0.0 if sb is None else sb] += 1
 
     if align_counter:
         prof.body_alignment = align_counter.most_common(1)[0][0]
@@ -1736,6 +1853,8 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.first_line_indent_in = indent_counter.most_common(1)[0][0]
     if space_after_counter:
         prof.space_after_pt = space_after_counter.most_common(1)[0][0]
+    if space_before_counter:
+        prof.space_before_pt = space_before_counter.most_common(1)[0][0]
 
     # —— 字体 / 字号 / 行距 / 标题（正文段落 + 表格段落）——
     font_counter: Counter = Counter()
@@ -1882,6 +2001,8 @@ def _read_docx_impl(doc) -> DocumentProfile:
         ref_fonts: Counter = Counter()
         ref_sizes: Counter = Counter()
         ref_spacings: list = []
+        ref_sb: list = []
+        ref_sa: list = []
         for i in ref_indices:
             para_i = paras[i]
             for r in para_i.runs:
@@ -1896,6 +2017,10 @@ def _read_docx_impl(doc) -> DocumentProfile:
             sp_i = _line_spacing_of_para(para_i)
             if sp_i is not None:
                 ref_spacings.append(sp_i)
+            # 条目之间的段前/段后（v2.3.75）：认「行」单位，读不到按 0 磅计入
+            _b, _a = _spacing_pair_of_para(para_i)
+            ref_sb.append(0.0 if _b is None else _b)
+            ref_sa.append(0.0 if _a is None else _a)
         if ref_fonts:
             prof.reference_font_family = ref_fonts.most_common(1)[0][0]
         if ref_sizes:
@@ -1903,6 +2028,10 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if ref_spacings:
             prof.reference_line_spacing = Counter(
                 round(s, 2) for s in ref_spacings).most_common(1)[0][0]
+        if ref_sb:
+            prof.reference_space_before_pt = Counter(ref_sb).most_common(1)[0][0]
+        if ref_sa:
+            prof.reference_space_after_pt = Counter(ref_sa).most_common(1)[0][0]
 
     # —— 页眉 / 页码 / 参考文献另起一页（轻量读取，仅用于保守提示，不修改文档）——
     try:
