@@ -192,7 +192,9 @@ _spec_display = spec_display
 # 这里的名字仍是设计稿线描图标名，映射表在 src/ui/icon_loader.ICON_NAME_MAP。
 # row_paper_title 单独用 "paper"，以便与左卡大标题 "doc" -> your_documents 区分。
 _FIELD_ICONS = {
-    "row_spec_title": "quote",
+    # v2.3.62 改版把规范行的键从 row_spec_title 改成 source_title，图标映射没跟上
+    # → 「格式来源」行的引号图标静默丢失（2026-10-20 老板发现）。quote -> citation_style PNG。
+    "source_title": "quote",
     "row_paper_title": "paper",
     "row_template_title": "bank",
 }
@@ -1504,7 +1506,7 @@ class App:
             # v2.3.19：Citation style 的引号图标视觉偏重，单独缩小一点，
             # 让它跟其它字段行图标（paper/bank/code/gear）更协调。
             badge_size = (theme.BADGE_SIZE - 4
-                          if key == "row_spec_title" else theme.BADGE_SIZE)
+                          if key == "source_title" else theme.BADGE_SIZE)
             IconBadge(row, _FIELD_ICONS[key], size=badge_size,
                       bg=theme.SURFACE).pack(side="left")
         tk.Label(row, text=self.tr(key), bg=theme.SURFACE, fg=theme.TEXT,
@@ -1859,7 +1861,9 @@ class App:
         self._school_frame = sec
         h = tk.Frame(sec, bg=theme.SURFACE)
         h.pack(fill="x")
-        IconBadge(h, "doc", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
+        # v2.3.62 重做面板时误用了 "doc"（→ your_documents 文档图标，与左卡大标题撞图标）；
+        # 学校模板行按设计稿一直用 "bank"（→ university_template 圆顶大楼图标）。
+        IconBadge(h, "bank", size=theme.BADGE_SIZE, bg=theme.SURFACE).pack(side="left")
         tk.Label(h, text=tr("adv_school_title"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_SUBTITLE"], anchor="w").pack(side="left", padx=(8, 0))
         tk.Label(sec, text=tr("adv_school_desc"), bg=theme.SURFACE, fg=theme.TEXT_2,
