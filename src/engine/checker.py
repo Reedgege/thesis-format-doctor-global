@@ -232,15 +232,32 @@ def _check_reference(style: str, entries: list, spec, source: str = "spec") -> F
 
     source: 该结论的来源标注（FR4 要求「并标注该结论来源」）。
     """
+    # 客户读的报告里不许出现内部键名：spec_key 缺失时 style 会是 "Other"，
+    # 原样写进 expected 会让客户以为「应该写成 Other」（v2.3.71 客户视角实测）。
+    _disp = "" if str(style or "").strip().lower() in ("", "other", "none") else style
+    style = _disp
     if not entries:
         return Finding("reference", "warn",
                        "No reference entries detected (missing References / Bibliography / Works Cited section)",
                        expected=style, actual="0 entries", source=source)
     tokens = spec.reference.checks if spec and spec.reference.checks else ()
     if not tokens:
+        # v2.3.71（客户视角）：这里原来写的是
+        #   "Custom/unregistered check items (N entries); please verify against your school template"
+        # 客户读不懂（"Custom/unregistered" 是我们的内部概念），而且 expected 直接打出
+        # "Other" 这种内部键名，客户会误以为「应该写成 Other」。真正该说清的是两件事：
+        #   · 没选引用风格 → 参考文献根本没被检查；选了 APA/MLA/IEEE 才会查；
+        #   · 该风格没有内置条目检查 → 需要人工核对。
+        if str(style or "").strip().lower() in ("", "other", "none"):
+            return Finding("reference", "info",
+                           "Reference style not specified — reference entries were NOT checked. "
+                           "Choose APA, MLA or IEEE to have them checked",
+                           expected="", actual=f"{len(entries)} entries found", source=source)
         return Finding("reference", "info",
-                       f"Custom/unregistered check items ({len(entries)} entries); please verify against your school template",
-                       expected=style, actual=f"{len(entries)} entries", source=source)
+                       f"Reference style {style} has no built-in entry checks; "
+                       f"{len(entries)} entries were found — please verify them manually "
+                       f"against your school template",
+                       expected="", actual=f"{len(entries)} entries", source=source)
     results = []
     for tok in tokens:
         fn = _REF_CHECKS.get(tok)

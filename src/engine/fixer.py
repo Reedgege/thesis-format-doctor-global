@@ -1933,6 +1933,10 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # v2.3.70：标题维度再**细化到级**（detail 见 _heading_scope 的说明），
     # 并与预览 _compute_changes 共用同一函数 —— 单一真相源，杜绝「预览说改五级、实际改一级」。
     heading_only_levels = _heading_scope(findings)
+    # v2.3.71：标题也必须有**真实结论**才动。检查器给每条 heading Finding 都绑了修正
+    # （含 pass），若不门控，客户拿一份全合规的论文点「修正」→ 预览空、文档却被重排 +
+    # 插入批注（实测 8 个标题 + 8 条批注）。只改检查报了的，是这条链的底线。
+    _heading_reported = _heading_problems_reported(findings)
 
     # 参考文献「内容改写」（APA→IEEE）属于改内容，必须由检查结论驱动：
     # 检查器没报 reference 问题就一个字都不许改（旧版只看 reference_style 就改写）。
@@ -1941,7 +1945,17 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # 标题页段落（标题/作者/单位）：其排版由 spec.title_page 独占管辖，必须在标题
     # 判定**之前**先摘出来 —— 否则标题被标题页流程加粗后会反过来满足伪标题条件，
     # 第二遍被当成章节标题编号（实测把论文大标题编成 "I."，章节编号整体推一位）。
-    tp = _detect_title_page(doc) if spec.title_page is not None else None
+    #
+    # v2.3.71（客户视角实测的真 bug）：**学校模板模式**（spec_key=None → 解析到 Other，
+    # 而 Other 没有 title_page 声明）本来压根不做这步，后果是一连串：
+    #   ① 论文大标题（16pt 居中加粗）被当成伪标题 → 占掉 L1 字号档；
+    #   ② 学生手排的章节标题（14pt）被推成 **L2**；
+    #   ③ 模板只声明 1 级标题格式 → 检查器对 L2 无从比较（不报）、修正器按「只修报错的
+    #      层级」跳过 L2 —— 客户点完「修正」，6 个章节标题一个字都没变，报告却写着已修正。
+    # 所以只要目标声明了标题格式（模板/问卷/AI 任一来源），就要探测标题页并把它们摘出去。
+    _need_title_page_probe = (spec.title_page is not None
+                             or bool(getattr(target, "heading_formats", None)))
+    tp = _detect_title_page(doc) if _need_title_page_probe else None
     tp_ps: set = set()
     if tp:
         for idx in [tp["title"], *tp["authors"]]:
@@ -2122,7 +2136,7 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # 标题样式：直接格式化（不写 styleId）+ 逐段英文批注。
     # 仅当 checker 绑定了 heading 修正动作时才施加（与「检查→修正」单一真相源一致）。
     head_info = {"formatted": 0, "pseudo_formatted": 0, "hierarchy_inferred": 0, "comments": 0}
-    if "heading" in fix_dims:
+    if "heading" in fix_dims and _heading_reported:
         head_info = _apply_heading_format(doc, target, spec, level_map=level_map,
                                           only_levels=heading_only_levels)
     summary["headings_formatted"] = head_info["formatted"]
@@ -2315,6 +2329,24 @@ def _reference_problems_reported(findings) -> bool:
     if findings is None:
         return False
     return any(f.dimension == "reference" and f.severity != "pass" for f in findings)
+
+
+def _heading_problems_reported(findings) -> bool:
+    """检查器是否**真的报了**标题格式问题 —— 决定要不要动标题。
+
+    v2.3.71 客户视角实测的真 bug：检查器为了「客户填了标题参数就得生效」，会给
+    **每一条** heading Finding 绑修正动作（含已通过的）。于是 ``fix_dims`` 里永远有
+    heading，客户拿一份本来就合规的论文点「修正」：
+        · 预览一行都没列（没东西要改），
+        · 文档里 8 个标题被重新套格式、还插进 8 条批注（客户：谁让你动的？）。
+    这不是「多改了点」，是「预览说没改动、实际改了文档」——信任问题。
+
+    现在：只有检查真的报了标题问题（非 pass）才动标题。``findings is None`` 时
+    保守返回 False（宁可不改）。
+    """
+    if findings is None:
+        return False
+    return any(f.dimension == "heading" and f.severity != "pass" for f in findings)
 
 
 def _dim_label(lang, key):
@@ -2636,7 +2668,9 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
     # 只改每级标题参数时若这里不列，App 会判「文档已符合」→ 压根不跑修正，
     # 客户填了一堆参数却什么也没发生（等于假功能）。
     # v2.3.70：与 fix_docx 共用 _heading_scope —— 检查只报了三级，就只列三级的改动行。
-    if _gate("heading"):
+    # v2.3.71：再与 fix_docx 共用 _heading_problems_reported —— 检查没报标题问题就一行都不列
+    # （否则会变成「预览说要改、修了却没改」的反向不一致）。
+    if _gate("heading") and _heading_problems_reported(findings):
         lines.extend(_heading_change_lines(prof, target, L,
                                            only_levels=_heading_scope(findings)))
 

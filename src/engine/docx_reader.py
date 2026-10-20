@@ -286,6 +286,54 @@ def _line_spacing_of(pf) -> Optional[float]:
     return None
 
 
+def _line_spacing_of_para(para, doc_pf=None) -> Optional[float]:
+    """行距倍数，带**样式继承**回退（段落直接 → 段落样式链 → 文档默认/Normal）。
+
+    v2.3.71 客户视角实测发现：绝大多数 Word 文档与学校模板把行距写在 **Normal 样式**
+    上（模板制作者的正常做法），段落本身没有直接格式。旧实现只读
+    ``para.paragraph_format``，于是行距一律读成 None —— 检查器的「行距」维度整个
+    失效：把单倍行距的论文交给本工具，报告照样全绿（假通过，且是我们最该管的一项）。
+
+    语义约定（与「没写 w:jc 就是左对齐」同口径）：
+    - 段落自己是「固定值/最小值」→ 倍数无意义，如实返回 None（**不再往样式回退**，
+      否则会把「固定值 20 磅」误读成样式里的双倍）；
+    - 整条链都没写行距 → Word 渲染就是单倍，返回 1.0（不是 None）。
+    """
+    pf0 = None
+    try:
+        pf0 = para.paragraph_format
+    except Exception:
+        pf0 = None
+    if pf0 is not None:
+        try:
+            rule0 = pf0.line_spacing_rule
+        except Exception:
+            rule0 = None
+        if rule0 in (WD_LINE_SPACING.EXACTLY, WD_LINE_SPACING.AT_LEAST):
+            return None
+
+    candidates: list = []
+    if pf0 is not None:
+        candidates.append(pf0)
+    try:
+        st = para.style
+    except Exception:
+        st = None
+    while st is not None:                      # 沿 base_style 一路向上（Heading→Normal）
+        try:
+            candidates.append(st.paragraph_format)
+        except Exception:
+            pass
+        st = getattr(st, "base_style", None)
+    if doc_pf is not None:
+        candidates.append(doc_pf)
+    for pf in candidates:
+        v = _line_spacing_of(pf)
+        if v is not None:
+            return v
+    return 1.0
+
+
 def _heading_level_from_name(name: Optional[str]) -> Optional[int]:
     """按样式名推断标题层级。
 
@@ -1089,7 +1137,7 @@ def _sample_captions(doc, prof: "DocumentProfile") -> None:
         sz = _max_run_size_pt(p)
         if sz is not None:
             sizes[sz] += 1
-        sp = _line_spacing_of(p.paragraph_format)
+        sp = _line_spacing_of_para(p)
         if sp is not None:
             spacings.append(sp)
     if sizes:
@@ -1325,9 +1373,16 @@ def detect_title_page(doc):
     否则会出现「检查说没问题、修正却动了另一段」的漂移。
 
     判定刻意保守 —— 必须有**标题页正面信号**才认，绝不对无信号文档盲猜：
-    ① 首段不是已识别标题（是标题就交给 heading 流程，不重复处理）；
+    ① 首段不是已识别的**样式**标题（是样式标题就交给 heading 流程，不重复处理）；
     ② 前 40 段内出现 Abstract / Keywords 标签（标题页型论文的强特征）。
     满足后：首段 = 标题；紧随其后 ≤3 段内的短行（≤90 字、非标题、未到摘要）= 作者/单位。
+
+    v2.3.71（客户视角实测）：首段判定从「is_heading（含手排伪标题）」收紧为
+    「样式/outline 标题」+ 「手排大标题必须居中」。旧写法下，一篇**手排标题**的论文
+    首段（16pt 居中加粗）会因 is_heading 为真而直接放弃标题页识别，连锁后果是：
+    该大标题被当成伪标题占掉 L1 字号档 → 学生手排的章节标题（14pt）被推成 L2 →
+    模板只声明 1 级 → 检查不报、修正跳过 → 客户点完「修正」章节标题一个字没变。
+    手排大标题「居中」这道保险是为了避免把左对齐的章节标题误当论文标题摘掉。
     """
     paras = doc.paragraphs
     idx0 = None
@@ -1337,8 +1392,15 @@ def detect_title_page(doc):
             break
     if idx0 is None:
         return None
-    if is_heading(paras[idx0]):
+    if heading_level(paras[idx0]) is not None:
         return None
+    if is_heading(paras[idx0]):
+        # 无样式但形似标题（大字 + 加粗）：只有居中才按「论文大标题」处理
+        _al_raw = paras[idx0].alignment
+        if _al_raw is None:
+            _al_raw = _pf_attr(paras[idx0], None, "alignment")
+        if _ALIGN_MAP.get(_al_raw) != "center":
+            return None
     blob = "\n".join((p.text or "") for p in paras[:min(len(paras), 40)])
     if not re.search(r"(?i)\babstract\b|\bkeywords\b", blob):
         return None
@@ -1650,7 +1712,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # 计入会把「正文字体/字号」的众数带偏（短文档里可能整段判错）。
     # 表格段落另行采样（论文三线表常见，漏掉同样会让判断偏）。
     for para in body_paras:
-        sp = _line_spacing_of(para.paragraph_format)
+        sp = _line_spacing_of_para(para)
         if sp is not None:
             spacing_samples.append(sp)
         _sample_paragraph(para)
@@ -1662,7 +1724,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
             continue
         table_count += 1
         _sample_paragraph(para)
-        sp = _line_spacing_of(para.paragraph_format)
+        sp = _line_spacing_of_para(para)
         if sp is not None:
             spacing_samples.append(sp)
     prof.table_paragraph_count = table_count
@@ -1753,7 +1815,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 sz = _pt(r.font.size)
                 if sz:
                     ref_sizes[sz] += 1
-            sp_i = _line_spacing_of(para_i.paragraph_format)
+            sp_i = _line_spacing_of_para(para_i)
             if sp_i is not None:
                 ref_spacings.append(sp_i)
         if ref_fonts:
