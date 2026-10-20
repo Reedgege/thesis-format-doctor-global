@@ -47,6 +47,8 @@ from .docx_reader import (
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
     detect_static_page_number, _para_has_page_field, _run_font_name,
     _para_text_excl_fields, is_caption_paragraph,
+    # v2.3.77：表格内段落 / 目录识别（与 checker 共用同一实现，单一真相源）
+    iter_table_paragraphs, detect_toc, is_toc_heading,
 )
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec, generic_heading_formats,
@@ -360,6 +362,64 @@ def _apply_caption_spacing_pt(doc, before_pt, after_pt) -> bool:
     if not caps:
         return False
     return _write_para_spacing(caps, before_pt, after_pt)
+
+
+def _is_note_mark_run(run) -> bool:
+    """脚注/尾注的**引用标记** run（正文里那个上标数字）。
+
+    本工具不修改脚注（见 report.KNOWN_LIMITATIONS），所以正文改正文字体/字号时
+    也必须跳过这个标记 —— 否则「不修脚注」的承诺只在脚注正文上成立，标记却被
+    改成正文口径（视觉上标记会变大）。国内版踩过「批注标记被当正文改」的同类坑。
+    """
+    try:
+        r = run._r
+        return (r.find(qn("w:footnoteReference")) is not None
+                or r.find(qn("w:endnoteReference")) is not None)
+    except Exception:
+        return False
+
+
+def _apply_table_spacing_pt(doc, before_pt, after_pt) -> bool:
+    """表格单元格段落的段前/段后（v2.3.77）。
+
+    只动表格里的段落，绝不碰正文 —— 表格与正文是两套口径（表格常 0、正文常有 6–12 磅）。
+    """
+    if before_pt is None and after_pt is None:
+        return False
+    paras = [p for p in iter_table_paragraphs(doc) if (p.text or "").strip()]
+    if not paras:
+        return False
+    return _write_para_spacing(paras, before_pt, after_pt)
+
+
+def _toc_heading_paragraph(doc):
+    """目录标题段（"Contents" / "目录" 那一段）；识别不到返回 None。
+
+    复用 docx_reader.detect_toc —— 与 checker 判的必须是**同一段**，
+    否则「检查说这段、修正改另一段」。目录**条目**一律不返回（域段落，不碰）。
+    """
+    info = detect_toc(doc)
+    if not info:
+        return None
+    hi = info.get("heading")
+    if isinstance(hi, int) and 0 <= hi < len(doc.paragraphs):
+        return doc.paragraphs[hi]
+    return None
+
+
+def _apply_toc_heading_spacing_pt(doc, before_pt, after_pt) -> bool:
+    """目录标题段的段前/段后（v2.3.77）。
+
+    🔴 只改**标题段**，绝不改目录条目：条目是域段落，Word「更新目录(F9)」时会用
+    TOC 1..9 样式整体重排，逐条改直接格式等于白改（客户更新一次就还原）。
+    条目要改只能改 TOC 样式 —— 那属全文档级影响，本工具只提示不动手。
+    """
+    if before_pt is None and after_pt is None:
+        return False
+    para = _toc_heading_paragraph(doc)
+    if para is None:
+        return False
+    return _write_para_spacing([para], before_pt, after_pt)
 
 
 def _is_block_quote(para) -> bool:
@@ -901,6 +961,8 @@ def _apply_font_and_size(page: dict, paras: list) -> bool:
         for run in para.runs:
             if _is_comment_run(run):
                 continue                      # 批注标记不是正文，跳过
+            if _is_note_mark_run(run):
+                continue                      # 脚注/尾注引用标记：本工具不改脚注，也不动它
             if _set_run_font(run, font, size):
                 changed = True
     return changed
@@ -2027,12 +2089,18 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
         b = _before(prof, "space_after_pt")
         btxt = f"{b} pt" if b != "unknown" else "0 pt"
         lines.append(f"Space after paragraph: {btxt}  →  {applied['space_after_pt']} pt")
-    # —— 摘要正文 / 图表标题的段前段后（v2.3.76）：只报真改了的项 ——
+    # —— 摘要正文 / 图表标题 / 表格内段落 / 目录标题 的段前段后（v2.3.76/77）：只报真改了的项 ——
     for _key, _label, _pf_attr in (
             ("abstract_space_before_pt", "Abstract space before", "abstract_space_before_pt"),
             ("abstract_space_after_pt", "Abstract space after", "abstract_space_after_pt"),
             ("caption_space_before_pt", "Caption space before", "caption_space_before_pt"),
-            ("caption_space_after_pt", "Caption space after", "caption_space_after_pt")):
+            ("caption_space_after_pt", "Caption space after", "caption_space_after_pt"),
+            ("table_space_before_pt", "Table cell space before", "table_space_before_pt"),
+            ("table_space_after_pt", "Table cell space after", "table_space_after_pt"),
+            ("toc_heading_space_before_pt", "Contents heading space before",
+             "toc_heading_space_before_pt"),
+            ("toc_heading_space_after_pt", "Contents heading space after",
+             "toc_heading_space_after_pt")):
         if applied.get(_key) is None:
             continue
         _b = _before(prof, _pf_attr)
@@ -2084,7 +2152,8 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
         f"PaperFormat Pro ({name}) \u2014 Format adjustments applied to this document:\n"
         f"{body}\n\n"
         f"Scope: these changes apply to all body paragraphs. Headings, the reference "
-        f"list, and tables are handled separately (see their own comments). No body "
+        f"list, and tables are handled separately (see their own comments). "
+        f"Footnotes and endnotes were left untouched. No body "
         f"text content was added, deleted, or rewritten"
         f"{ieee_ref_note}."
     )
@@ -2247,6 +2316,14 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if isinstance(_ci, int) and 0 <= _ci < len(doc.paragraphs):
             quote_ps.add(doc.paragraphs[_ci]._p)
     indent_exempt_ps = tp_ps | abstract_ps | quote_ps
+    # v2.3.77：目录标题段由「toc_heading_space_*」独占，正文段前/段后与首行缩进不能再刷它
+    # —— 否则两个流程每遍轮流改同一属性，造成「没变却恒报已改」的顺序脆弱。
+    try:
+        _toc_head = _toc_heading_paragraph(doc)
+        if _toc_head is not None:
+            indent_exempt_ps.add(_toc_head._p)
+    except Exception:
+        pass
     indent_targets = [p for p in body_only if p._p not in indent_exempt_ps]
 
     summary: dict = {}
@@ -2345,6 +2422,31 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             applied["caption_space_before_pt"] = _cap_sb
         if _cap_sa is not None:
             applied["caption_space_after_pt"] = _cap_sa
+
+    # 表格内段落段前/段后（v2.3.77）：逐维度独立门控，只动表格单元格段落。
+    _tbl_sb = getattr(target, "table_space_before_pt", None) \
+        if "table_space_before" in fix_dims else None
+    _tbl_sa = getattr(target, "table_space_after_pt", None) \
+        if "table_space_after" in fix_dims else None
+    if (_tbl_sb is not None or _tbl_sa is not None) \
+            and _apply_table_spacing_pt(doc, _tbl_sb, _tbl_sa):
+        if _tbl_sb is not None:
+            applied["table_space_before_pt"] = _tbl_sb
+        if _tbl_sa is not None:
+            applied["table_space_after_pt"] = _tbl_sa
+
+    # 目录标题段段前/段后（v2.3.77）：只动「目录」这一行，条目一律不碰
+    # （条目是域段落，改直接格式会被「更新目录」冲掉）。
+    _toc_sb = getattr(target, "toc_heading_space_before_pt", None) \
+        if "toc_heading_space_before" in fix_dims else None
+    _toc_sa = getattr(target, "toc_heading_space_after_pt", None) \
+        if "toc_heading_space_after" in fix_dims else None
+    if (_toc_sb is not None or _toc_sa is not None) \
+            and _apply_toc_heading_spacing_pt(doc, _toc_sb, _toc_sa):
+        if _toc_sb is not None:
+            applied["toc_heading_space_before_pt"] = _toc_sb
+        if _toc_sa is not None:
+            applied["toc_heading_space_after_pt"] = _toc_sa
 
     # 字体白名单的「字体 → 字号」配对：逐 run 按各自字体改字号，不动 w:rFonts。
     if "font_size_by_font" in fix_dims:
@@ -2469,6 +2571,10 @@ _DIM_LABELS = {
         "caption_spacing": "Caption line spacing",
         "caption_space_before": "Caption space before",
         "caption_space_after": "Caption space after",
+        "table_space_before": "Table cell space before",
+        "table_space_after": "Table cell space after",
+        "toc_heading_space_before": "Contents heading space before",
+        "toc_heading_space_after": "Contents heading space after",
         "title_page": "Title page", "block_quote": "Block quotation",
         "ref_hanging": "Reference hanging indent", "ref_numbering": "Reference numbering",
         "heading_lvl": "Level %s heading",
@@ -2500,6 +2606,10 @@ _DIM_LABELS = {
         "caption_spacing": "图表标题行距",
         "caption_space_before": "图表标题段前间距",
         "caption_space_after": "图表标题段后间距",
+        "table_space_before": "表格内段落段前间距",
+        "table_space_after": "表格内段落段后间距",
+        "toc_heading_space_before": "目录标题段前间距",
+        "toc_heading_space_after": "目录标题段后间距",
         "title_page": "标题页", "block_quote": "块引用",
         "ref_hanging": "参考文献悬挂缩进", "ref_numbering": "参考文献编号",
         "heading_lvl": "第 %s 级标题",
@@ -2833,6 +2943,32 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
         if abs(float(_cur_cap) - float(_want_cap)) > 0.1:
             lines.append("%s: %g pt → %g pt" % (
                 _dim_label(L, _dim), float(_cur_cap), float(_want_cap)))
+
+    # —— 表格内段落段前/段后（v2.3.77）——
+    for _dim, _key in (("table_space_before", "table_space_before_pt"),
+                       ("table_space_after", "table_space_after_pt")):
+        _want_tbl = getattr(target, _key, None)
+        if not _gate(_dim) or _want_tbl is None:
+            continue
+        _cur_tbl = getattr(prof, _key, None)
+        if _cur_tbl is None:
+            continue
+        if abs(float(_cur_tbl) - float(_want_tbl)) > 0.1:
+            lines.append("%s: %g pt → %g pt" % (
+                _dim_label(L, _dim), float(_cur_tbl), float(_want_tbl)))
+
+    # —— 目录标题段段前/段后（v2.3.77）：条目间距只提示、不进预览 ——
+    for _dim, _key in (("toc_heading_space_before", "toc_heading_space_before_pt"),
+                       ("toc_heading_space_after", "toc_heading_space_after_pt")):
+        _want_toc = getattr(target, _key, None)
+        if not _gate(_dim) or _want_toc is None:
+            continue
+        _cur_toc = getattr(prof, _key, None)
+        if _cur_toc is None:
+            continue
+        if abs(float(_cur_toc) - float(_want_toc)) > 0.1:
+            lines.append("%s: %g pt → %g pt" % (
+                _dim_label(L, _dim), float(_cur_toc), float(_want_toc)))
     # 只改字号、不换字体：用 Calibri 就按 Calibri 的规范字号（11pt），用 Times New Roman
     # 就按 12pt，正文混用两种字体时**各改各的**（所以逐字体列，不只列主字体）。
     if _gate("font_size_by_font"):

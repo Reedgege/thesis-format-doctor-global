@@ -154,6 +154,33 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
      "default": 1, "unit": "", "range": (1, 4),
      "help": "1=单栏（多数格式）；2=双栏（IEEE 会议/期刊）"},
 
+    # —— 表格内段落（v2.3.77）——
+    # 表格里「不要多余空行」是学校硬要求里很常见的一条；表格段落的段前段后与正文
+    # 是两套口径（表格通常 0、正文常有 6–12 磅），必须能分开填。
+    {"key": "table_space_before_pt", "label": "表格内段落段前", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
+     "help": "表格单元格里每个段落的段前间距；常见 0（表格内不留空行）；留空=不规定"},
+    {"key": "table_space_after_pt", "label": "表格内段落段后", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
+     "help": "表格单元格里每个段落的段后间距；常见 0；留空=不规定"},
+
+    # —— 目录（TOC，v2.3.77）——
+    # 🔴 目录条目是**域段落**：Word 更新目录(F9)时会用 TOC 1..9 样式整体重排，
+    # 逐条改直接格式会被冲掉。所以只有「目录标题段」可修；条目只提示。
+    {"key": "toc_heading_space_before_pt", "label": "目录标题段前", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "「目录 / Contents」这一段的段前间距；留空=不规定"},
+    {"key": "toc_heading_space_after_pt", "label": "目录标题段后", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "「目录 / Contents」这一段的段后间距；留空=不规定"},
+    {"key": "toc_entry_space_before_pt", "label": "目录条目段前（仅提示）", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
+     "help": "目录条目之间的段前间距。⚠️ 只核对、不自动修改：目录条目由 Word 生成，"
+             "要改请改「TOC 1…9」样式的段前段后"},
+    {"key": "toc_entry_space_after_pt", "label": "目录条目段后（仅提示）", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
+     "help": "目录条目之间的段后间距。⚠️ 只核对、不自动修改（同上，请改 TOC 样式）"},
+
     # —— 标题层级 ——
     {"key": "heading_levels", "label": "标题层级数", "group": "heading", "type": "int",
      "default": 0, "unit": "级", "range": (0, 9), "help": "0=不强制；APA 常 5 级，其余多为学校定"},
@@ -336,6 +363,18 @@ class TargetProfile:
     caption_space_after_pt: Optional[float] = None
     caption_position_table: Optional[str] = None   # "top" / "bottom"
     caption_position_figure: Optional[str] = None  # "top" / "bottom"
+    # —— 表格内段落（v2.3.77）——
+    # 表格单元格段落的段前/段后。与正文分开承载：表格里通常 0、正文常有 6–12 磅，
+    # 混成一个字段就会「改表格顺手把正文也改了」。None = 不规定。
+    table_space_before_pt: Optional[float] = None
+    table_space_after_pt: Optional[float] = None
+    # —— 目录（TOC，v2.3.77）——
+    # 目录标题段可查可修；条目只核对、不自动改（条目是域段落，改直接格式会被
+    # 「更新目录」冲掉，正确做法是改 TOC 1..9 样式）。None = 不规定。
+    toc_heading_space_before_pt: Optional[float] = None
+    toc_heading_space_after_pt: Optional[float] = None
+    toc_entry_space_before_pt: Optional[float] = None
+    toc_entry_space_after_pt: Optional[float] = None
     # 每级标题格式样本（学校模板驱动 / 问卷 / AI 显式给出）：level(int) -> dict
     # {alignment, bold, italic, indent, size_pt, number_prefix, uppercase}。
     # 仅当来源显式提供时才填入；其余入口留空、不臆造。
@@ -374,6 +413,13 @@ class TargetProfile:
     ABSTRACT_KEYS = ("abstract_first_line_indent_in", "abstract_new_page",
                      # v2.3.76：摘要正文段的段前 / 段后
                      "abstract_space_before_pt", "abstract_space_after_pt")
+
+    # 表格内段落（v2.3.77；不进 PAGE_KEYS：只作用于表格单元格段落）
+    TABLE_KEYS = ("table_space_before_pt", "table_space_after_pt")
+
+    # 目录（v2.3.77；不进 PAGE_KEYS：只作用于目录标题段 / 目录条目）
+    TOC_KEYS = ("toc_heading_space_before_pt", "toc_heading_space_after_pt",
+                "toc_entry_space_before_pt", "toc_entry_space_after_pt")
 
     # Running head（不进 PAGE_KEYS：页眉维度，文本内容只提示、页码位置由 page_number 管）
     RUNNING_HEAD_KEYS = ("running_head_required", "page_number_include_author_name")
@@ -618,6 +664,9 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     abs_extra = {k: clean[k] for k in TargetProfile.ABSTRACT_KEYS if k in clean}
     rh_extra = {k: clean[k] for k in TargetProfile.RUNNING_HEAD_KEYS if k in clean}
     cap_extra = {k: clean[k] for k in TargetProfile.CAPTION_KEYS if k in clean}
+    # v2.3.77：表格内段落 / 目录（都只在各自范围内生效，与正文口径分开）
+    tbl_extra = {k: clean[k] for k in TargetProfile.TABLE_KEYS if k in clean}
+    toc_extra = {k: clean[k] for k in TargetProfile.TOC_KEYS if k in clean}
     ref_style = clean.get("reference_style")
     # 🔴 v2.3.73：「按我校要求（自定义）」= 没有选任何内置引用规范。
     # 归一成 None，后面所有「选了规范才做」的分支自然跳过（不核条目体例、不反填规范值）。
@@ -657,6 +706,10 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         resolution[_k] = source
     for _k in cap_extra:
         resolution[_k] = source
+    for _k in tbl_extra:
+        resolution[_k] = source
+    for _k in toc_extra:
+        resolution[_k] = source
     if ref_style is not None:
         resolution["reference_style"] = source
     if ref_hang is not None:
@@ -688,7 +741,7 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     if not page and ref_style is None and heading is None and cols is None \
             and paper is None and page_num is None \
             and not ref_extra and not tp_extra and not abs_extra and not rh_extra \
-            and not cap_extra:
+            and not cap_extra and not tbl_extra and not toc_extra:
         raise ValueError(
             "No valid format fields could be parsed from the input "
             "(margins, font, reference style, and heading levels are all empty). "
@@ -714,6 +767,8 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         **abs_extra,
         **rh_extra,
         **cap_extra,
+        **tbl_extra,
+        **toc_extra,
         heading_formats=heading_formats,
         reference_style=ref_style,
         reference_hanging_indent_in=ref_hang,
@@ -886,6 +941,26 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         tpl_cap[_key] = round(float(_val), _rnd) if _rnd else float(_val)
         resolution[_key] = "school"
 
+    # 表格内段落（v2.3.77）：模板里三线表常见「单元格内不空行」= 0 磅，必须带出来，
+    # 否则客户拿模板选完，表格里多出来的空行永远指不出来。
+    tpl_tbl: dict = {}
+    for _key in TargetProfile.TABLE_KEYS:
+        _val = getattr(doc_profile, _key, None)
+        if _val is None:
+            continue
+        tpl_tbl[_key] = round(float(_val), 1)
+        resolution[_key] = "school"
+
+    # 目录（v2.3.77）：只有模板里真的带目录（TOC 条目）才写，读不到就不臆造。
+    tpl_toc: dict = {}
+    if getattr(doc_profile, "toc_detected", False):
+        for _key in TargetProfile.TOC_KEYS:
+            _val = getattr(doc_profile, _key, None)
+            if _val is None:
+                continue
+            tpl_toc[_key] = round(float(_val), 1)
+            resolution[_key] = "school"
+
     ref_style = reference_style if reference_style in REFERENCE_STYLE_KEYS else None
     ref_hang = None
     ref_num = None
@@ -986,6 +1061,8 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         **tpl_tp,
         **tpl_abs,
         **tpl_cap,
+        **tpl_tbl,
+        **tpl_toc,
         heading_formats=heading_formats,
         reference_style=ref_style,
         reference_hanging_indent_in=ref_hang,
@@ -1074,6 +1151,15 @@ def _overlay_one(merged: TargetProfile, extra: TargetProfile, conflicts: list) -
         merged.resolution[_k] = _origin(_k)
 
     for _k in TargetProfile.CAPTION_KEYS:
+        _v = getattr(extra, _k, None)
+        if _v is None:
+            continue
+        _register(_k, getattr(merged, _k), merged.resolution.get(_k), _v, _origin(_k))
+        setattr(merged, _k, _v)
+        merged.resolution[_k] = _origin(_k)
+
+    # v2.3.77：表格内段落 / 目录 —— 与 caption 同构，逐键叠加并登记来源
+    for _k in TargetProfile.TABLE_KEYS + TargetProfile.TOC_KEYS:
         _v = getattr(extra, _k, None)
         if _v is None:
             continue

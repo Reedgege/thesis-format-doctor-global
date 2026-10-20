@@ -26,6 +26,8 @@ from typing import Optional
 from docx import Document
 from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
+from docx.oxml import parse_xml
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 # 参考文献标题常见写法（含前缀/包含匹配）
 _REF_HEADING_MARKERS = (
@@ -111,6 +113,27 @@ class DocumentProfile:
     space_after_pt: Optional[float] = None             # 段后间距（磅）
     space_before_pt: Optional[float] = None            # 段前间距（磅，v2.3.75）
     table_paragraph_count: int = 0                     # 纳入采样的表格段落数
+    # v2.3.77：表格内单元格段落的段前 / 段后（磅，众数）。表格里「不要多余空行」是
+    # 学校硬要求里很常见的一条，此前完全读不到（表格只被采样了字体/字号/行距）。
+    table_space_before_pt: Optional[float] = None
+    table_space_after_pt: Optional[float] = None
+    # —— 目录（TOC）探测（v2.3.77）——
+    # 目录条目是**域段落**，fixer 一律不碰（改直接格式会被「更新目录」冲掉）；
+    # 这里只负责认出「有没有目录 / 有几条 / 目录标题与条目的实际间距」，
+    # 供 checker 出结论：「目录标题间距」可修，「条目间距」只提示（改样式才是长久之计）。
+    toc_detected: bool = False
+    toc_entry_count: int = 0
+    toc_heading_text: str = ""                          # 目录标题段文本（"Contents" / "目录" …）
+    toc_heading_space_before_pt: Optional[float] = None  # 目录标题段段前（磅）；无目录=None
+    toc_heading_space_after_pt: Optional[float] = None   # 目录标题段段后（磅）；无目录=None
+    toc_entry_space_before_pt: Optional[float] = None    # 目录条目段前（众数，只提示）
+    toc_entry_space_after_pt: Optional[float] = None     # 目录条目段后（众数，只提示）
+    # —— 脚注 / 尾注计数（v2.3.77）——
+    # 本工具**不检查也不修改**脚注/尾注格式（见 report.KNOWN_LIMITATIONS）；
+    # 这两个计数只用于给客户一条「你的文档有 N 条脚注，本工具未检查」的提示，
+    # 避免客户误以为「报告全绿 = 脚注也看过了」。计数跳过 id<=0 的分隔线条目。
+    footnote_count: int = 0
+    endnote_count: int = 0
     heading_styles: list = field(default_factory=list) # 用到的标题样式名
     heading_levels_used: int = 0
     reference_text: str = ""                           # 参考文献段原始文本
@@ -907,6 +930,166 @@ def _iter_table_paragraphs(doc):
                         yield p
                 except Exception:
                     continue
+
+
+def iter_table_paragraphs(doc):
+    """公开入口：遍历表格单元格内的段落（checker / fixer 共用同一实现）。"""
+    return _iter_table_paragraphs(doc)
+
+
+# ---------------------------------------------------------------------------
+# 目录（TOC）识别（v2.3.77）—— 单一真相源，checker 与 fixer 共用
+# ---------------------------------------------------------------------------
+# 目录条目是**域段落**（每个条目带指向 _Toc 书签的超链接、段落里还有 PAGEREF 域），
+# Word 在「更新目录(F9)」时会用 TOC 1..9 样式整体重排 —— 所以：
+#   · 条目间距**不能**逐段改直接格式（改了下次更新目录就还原）；
+#   · 能安全改的只有「目录标题那一段」（它不是域段落）；
+#   · 条目间距只做提示，并明确告诉客户「要改请改 TOC 样式」。
+_TOC_TITLE_RE = re.compile(r"(?i)^\s*(table\s+of\s+contents|contents|目\s*录|目\s*次|目\s*錄)\s*$")
+_TOC_STYLE_ID_RE = re.compile(r"(?i)^toc\s*(\d)$")
+# 目录标题样式：Word 内置 styleId（中文界面名是「目录标题」，但 styleId 恒为 TOCHeading）
+_TOC_HEADING_STYLE_IDS = ("tocheading",)
+
+
+def _style_id_of(para) -> str:
+    """段落所用样式的 styleId（小写）。**绝不用 style.name** —— 中文 Word 会把
+    「TOC 1」显示成「目录 1」，按名字识别必然漏判。"""
+    try:
+        st = para.style
+        if st is None:
+            return ""
+        return str(getattr(st, "style_id", "") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def toc_entry_level(para) -> Optional[int]:
+    """该段是否为目录条目：TOC 1..9 样式 / 指向 _Toc 书签的超链接 / PAGEREF _Toc 域。"""
+    m = _TOC_STYLE_ID_RE.match(_style_id_of(para))
+    if m:
+        return int(m.group(1))
+    try:
+        p = para._p
+    except Exception:
+        return None
+    try:
+        for h in p.iter(qn("w:hyperlink")):
+            if (h.get(qn("w:anchor")) or "").startswith("_Toc"):
+                return 1
+        for it in p.iter(qn("w:instrText")):
+            up = (it.text or "").upper()
+            if "_TOC" in up or up.strip().startswith("TOC"):
+                return 1
+    except Exception:
+        pass
+    return None
+
+
+def is_toc_heading(para) -> bool:
+    """该段是否为「目录」标题段（Contents / 目录 …）。样式优先，文本兜底。"""
+    if _style_id_of(para) in _TOC_HEADING_STYLE_IDS:
+        return True
+    if toc_entry_level(para) is not None:
+        return False                      # 条目本身不算标题（防止把「目录 1」当标题）
+    return bool(_TOC_TITLE_RE.match((para.text or "").strip()))
+
+
+def detect_toc(doc):
+    """识别目录结构，返回 ``{'heading': idx|None, 'entries': [idx, ...]}``；无目录返回 None。
+
+    只认正面信号（TOC 样式 / _Toc 书签超链接 / PAGEREF 域），绝不按「像目录」瞎猜。
+    """
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return None
+    entries = [i for i, p in enumerate(paras) if toc_entry_level(p) is not None]
+    if not entries:
+        return None
+    heading = None
+    # 目录标题：从第一条条目往前最多找 4 段（中间常夹一行「目录」或一个空段）
+    for j in range(entries[0] - 1, max(-1, entries[0] - 5), -1):
+        if is_toc_heading(paras[j]):
+            heading = j
+            break
+    return {"heading": heading, "entries": entries}
+
+
+def _sample_toc(doc, prof: "DocumentProfile") -> None:
+    """采样目录：标题段与条目段的段前/段后（只读不判；判定在 checker）。"""
+    info = detect_toc(doc)
+    if not info:
+        # 文档没有目录 → 所有字段保持 None（**不是 0**），检查据此给 info 而非 fail
+        return
+    prof.toc_detected = True
+    prof.toc_entry_count = len(info["entries"])
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return
+    hi = info.get("heading")
+    if isinstance(hi, int) and 0 <= hi < len(paras):
+        prof.toc_heading_text = (paras[hi].text or "").strip()
+        sb, sa = _spacing_pair_of_para(paras[hi])
+        prof.toc_heading_space_before_pt = sb
+        prof.toc_heading_space_after_pt = sa
+    sb_c: Counter = Counter()
+    sa_c: Counter = Counter()
+    for i in info["entries"]:
+        if not (0 <= i < len(paras)):
+            continue
+        b, a = _spacing_pair_of_para(paras[i])
+        sb_c[0.0 if b is None else b] += 1
+        sa_c[0.0 if a is None else a] += 1
+    if sb_c:
+        prof.toc_entry_space_before_pt = sb_c.most_common(1)[0][0]
+    if sa_c:
+        prof.toc_entry_space_after_pt = sa_c.most_common(1)[0][0]
+
+
+# ---------------------------------------------------------------------------
+# 脚注 / 尾注计数（v2.3.77）—— 只数不改
+# ---------------------------------------------------------------------------
+def count_note_entries(doc, tag: str) -> int:
+    """数脚注（tag="w:footnote"）/ 尾注（tag="w:endnote"）的真实条目数。
+
+    ⚠️ 必须跳过 ``w:id <= 0`` 与带 ``w:type`` 的特殊条目 —— Word 在 footnotes.xml
+    里额外放三条不是正文脚注的东西（separator 分隔线 / continuationSeparator /
+    continuationNotice），把它们数成「脚注」会让提示数量虚高。
+    ⚠️ python-docx **没有脚注模型**：`part_related_by(RT.FOOTNOTES)` 拿到的是裸 Part
+    （没有 ``.element``），只能 ``parse_xml(part.blob)`` 读 —— 我们只读不写，故不必回写。
+    """
+    rel = RT.FOOTNOTES if tag == "w:footnote" else RT.ENDNOTES
+    try:
+        part = doc.part.part_related_by(rel)
+    except Exception:
+        return 0
+    if part is None:
+        return 0
+    try:
+        root = parse_xml(part.blob)
+    except Exception:
+        return 0
+    n = 0
+    try:
+        for el in root.findall(qn(tag)):
+            if el.get(qn("w:type")):
+                continue
+            try:
+                nid = int(el.get(qn("w:id")) or 0)
+            except (TypeError, ValueError):
+                nid = 0
+            if nid <= 0:
+                continue
+            n += 1
+    except Exception:
+        return n
+    return n
+
+
+def _sample_notes(doc, prof: "DocumentProfile") -> None:
+    prof.footnote_count = count_note_entries(doc, "w:footnote")
+    prof.endnote_count = count_note_entries(doc, "w:endnote")
 
 
 # ---------------------------------------------------------------------------
@@ -1781,11 +1964,15 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.reference_heading_centered = (rh.alignment == WD_ALIGN_PARAGRAPH.CENTER)
 
     # 正文段落 = 非标题（含伪标题）、非参考文献段、非空
+    # v2.3.77：目录标题段与目录条目也排除 —— 它们是 Word 生成的目录内容（条目里还有域），
+    # 若混进正文采样，短文档里「正文段前段后/行距/对齐」的众数会被目录口径带偏；
+    # 而且 fixer 本来就不改条目（域守卫），检查按目录口径判、修正不碰，就是「检查/修正不同源」。
     skip = set(ref_indices)
     if ref_start is not None:
         skip.add(ref_start)
     body_paras = [p for i, p in enumerate(paras)
-                  if i not in skip and p.text.strip() and not is_heading(p)]
+                  if i not in skip and p.text.strip() and not is_heading(p)
+                  and toc_entry_level(p) is None and not is_toc_heading(p)]
 
     # —— 标题段探测（MLA/APA：标题居中；MLA 不加粗/不斜体/不下划线）——
     # 首页首个居中段落即视为标题（MLA 标题居中；参考文献标题已排除在 skip 外，另有专门检查）。
@@ -1934,6 +2121,8 @@ def _read_docx_impl(doc) -> DocumentProfile:
 
     # 表格内文字一并采样（论文三线表常见，漏掉会让「正文最常见字体/字号」判断偏）
     table_count = 0
+    tbl_sb: Counter = Counter()
+    tbl_sa: Counter = Counter()
     for para in _iter_table_paragraphs(doc):
         if not para.text.strip():
             continue
@@ -1942,7 +2131,16 @@ def _read_docx_impl(doc) -> DocumentProfile:
         sp = _line_spacing_of_para(para)
         if sp is not None:
             spacing_samples.append(sp)
+        # v2.3.77：表格单元格段落的段前 / 段后单独立计数器 —— 绝不能并进正文众数
+        # （表格里通常是 0，正文却常有 6–12 磅；混在一起两边都会判错）。
+        _tb, _ta = _spacing_pair_of_para(para)
+        tbl_sb[0.0 if _tb is None else _tb] += 1
+        tbl_sa[0.0 if _ta is None else _ta] += 1
     prof.table_paragraph_count = table_count
+    if tbl_sb:
+        prof.table_space_before_pt = tbl_sb.most_common(1)[0][0]
+    if tbl_sa:
+        prof.table_space_after_pt = tbl_sa.most_common(1)[0][0]
 
     if font_counter:
         prof.font_family = font_counter.most_common(1)[0][0]
@@ -2149,6 +2347,25 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.caption_space_before_pt = None
         prof.caption_space_after_pt = None
         prof.caption_table_positions = []
+
+    # —— 目录采样（v2.3.77）：只读不判；没有目录时全部字段保持 None ——
+    try:
+        _sample_toc(doc, prof)
+    except Exception:
+        prof.toc_detected = False
+        prof.toc_entry_count = 0
+        prof.toc_heading_text = ""
+        prof.toc_heading_space_before_pt = None
+        prof.toc_heading_space_after_pt = None
+        prof.toc_entry_space_before_pt = None
+        prof.toc_entry_space_after_pt = None
+
+    # —— 脚注 / 尾注计数（v2.3.77）：只数不改，供「本工具未检查脚注」提示用 ——
+    try:
+        _sample_notes(doc, prof)
+    except Exception:
+        prof.footnote_count = 0
+        prof.endnote_count = 0
 
     return prof
 
