@@ -53,7 +53,8 @@ from ..engine.questionnaire import (
     FIELD_RANGES, QUESTIONNAIRE_SCHEMA, TargetProfile, build_target,
     apply_page_overrides, PAGE_NUMBER_POSITIONS, target_from_spec,
 )
-from ..engine.specs import SPEC_ORDER, spec_display
+from ..engine.specs import (SPEC_ORDER, spec_display, REFERENCE_STYLE_KEYS,
+                            REFERENCE_STYLE_CHOICES)
 from ..license import license as lic
 from .. import versioninfo
 from . import i18n, iconpath, theme
@@ -3065,11 +3066,18 @@ class App:
                     touched.add(("hf", _lvl, _vk))
 
         def _apply_spec_defaults(style_key):
-            """把「空着」的字段按所选规范的典型值预填。
+            """把**参考文献相关**的空白字段按所选引用规范的典型值预填。
 
-            值的单一真相源是引擎的 ``target_from_spec``——UI 不抄一份规范默认值，
-            规范改了这里自动跟上。paper_size 永远不预填（纸型是通用维度，
-            规范不许替客户决定 Letter/A4）。
+            🔴 v2.3.73（老板 2026-10-20 定的口径）：这个下拉叫「参考文献格式」，
+            客户在这里表达的只是「我的参考文献按 APA 走」，**不是**「全篇按 APA 走」。
+            所以：
+              · 只预填 group == "reference" 的字段；
+              · 页面 / 标题明细 / 标题页**一律不预填** —— 客户走手动输入这条路，
+                正是因为有学校自己的要求或自己的个性化值；把 APA 的五级标题格式自动
+                灌进去等于替他拍板，还会让检查/修正按 APA 改他的手排标题。
+              · 想全篇按规范走的客户，直接在顶上的「规范」下拉里选 APA/IEEE 就行。
+
+            值的单一真相源仍是引擎的 ``target_from_spec``——UI 不抄一份规范默认值。
             """
             try:
                 t = target_from_spec(style_key)
@@ -3079,16 +3087,12 @@ class App:
             try:
                 for field in QUESTIONNAIRE_SCHEMA:
                     key = field["key"]
-                    if key in ("reference_style", "paper_size"):
+                    if field.get("group") != "reference" or key == "reference_style":
                         continue
                     entry = vars_.get(key)
                     if not entry:
                         continue
                     val = getattr(t, key, None)
-                    if val is None and key in TargetProfile.PAGE_KEYS:
-                        # 页面字段（页边距/字体/行距…）在 TargetProfile 里
-                        # 承载于 page 字典，不是直接属性
-                        val = (t.page or {}).get(key)
                     kind = entry[0]
                     if kind == "tri":
                         if key in touched or val is None \
@@ -3109,50 +3113,33 @@ class App:
                         sval = str(val)
                         opts = field.get("options") or []
                         # choice 字段即便显示着 schema 默认值，只要客户没手改
-                        # （touched 未记录）就跟着所选规范走——老板：默认值要
-                        # 调整为所选规范的。客户手改过/保存过的由 touched 挡住。
+                        # （touched 未记录）就跟着所选的引用规范走。
+                        # 客户手改过/保存过的由 touched 挡住。
                         if opts and sval not in opts:
                             continue
                         entry[1].set(sval)
-                # 每级标题明细：整行一个都没手改过才预填
-                hf_opts = vars_.get("_hf_opts") or {}
-                tri_disp = {v: d for v, d in hf_opts.get("tris", [])}
-                align_disp = {v: d for v, d in hf_opts.get("aligns", [])}
-                num_disp = {v: d for v, d in hf_opts.get("prefixes", [])}
-                for row in (vars_.get("heading_formats") or []):
-                    lvl = row["lvl"]
-                    fmt = (t.heading_formats or {}).get(lvl)
-                    if not fmt:
-                        continue
-                    if any(("hf", lvl, vk) in touched for vk in _HF_ROW_KEYS):
-                        continue
-                    if fmt.get("font_family"):
-                        row["font"].set(str(fmt["font_family"]))
-                    if fmt.get("size_pt") is not None:
-                        row["size"].set(str(fmt["size_pt"]))
-                    if fmt.get("indent_in") is not None:
-                        row["indent"].set(str(fmt["indent_in"]))
-                    if fmt.get("alignment"):
-                        row["align"].set(
-                            align_disp.get(fmt["alignment"], tr("q_none")))
-                    if fmt.get("number_prefix"):
-                        row["num"].set(
-                            num_disp.get(fmt["number_prefix"], tr("q_none")))
-                    for vk, fk in (("bold", "bold"), ("italic", "italic"),
-                                   ("page_break_before", "page_break_before"),
-                                   ("upper", "uppercase"), ("runin", "run_in")):
-                        if fmt.get(fk) is not None:
-                            row[vk].set(tri_disp.get(fmt[fk], tr("q_none")))
             finally:
                 state["prefilling"] = False
             _show_prefill_hint(style_key)
 
         _rs = vars_.get("reference_style")
 
+        def _ref_style_value():
+            """下拉显示名 → 引擎值（"custom"/"APA"/"MLA"/"IEEE"；未匹配 None）。
+
+            选项展示名可能是中文（「按我校要求（自定义）」），绝不能把显示文字
+            当引擎值用 —— 统一在这里反查。
+            """
+            pairs = [(o, i18n.questionnaire_option(self.lang, "reference_style", o))
+                     for o in REFERENCE_STYLE_CHOICES]
+            return _opt_val(pairs, _rs[1].get().strip())
+
         def _on_style_change(*_a):
+            # 只有真的选了某个内置引用规范才预填参考文献细则；
+            # 「按我校要求（自定义）」= 什么都不套，客户填什么就是什么（v2.3.73）。
             if not state["prefilling"]:
-                style = _rs[1].get().strip()
-                if style:
+                style = _ref_style_value() if _rs else None
+                if style in REFERENCE_STYLE_KEYS:
                     _apply_spec_defaults(style)
 
         if _rs:
@@ -3181,6 +3168,16 @@ class App:
                     continue
                 val = vars_[key][1].get().strip()
                 if not val or val == tr("q_none"):
+                    continue
+                if field.get("type") == "choice":
+                    # 显示名 → 引擎值（「按我校要求（自定义）」这类双语展示名
+                    # 绝不能直接当成 reference_style 的值写进画像）。v2.3.73
+                    pairs = [(o, i18n.questionnaire_option(self.lang, key, o))
+                             for o in (field.get("options") or [])]
+                    hit = _opt_val(pairs, val)
+                    if hit is None:
+                        continue        # 未登记的显示名 → 视为「不规定」，不臆造值
+                    data[key] = hit
                     continue
                 if field.get("type") in ("float", "int"):
                     try:
@@ -3302,8 +3299,14 @@ class App:
             # 否则客户一旦选了 A4 就再也回不到「不规定」，只能去改文件。
             opts = list(field.get("options", []))
             allow_none = field.get("default", None) in ("", None)
-            shown = ([tr("q_none")] + opts) if allow_none else opts
-            init = str(cur) if str(cur) in opts else (tr("q_none") if allow_none else "")
+            # 选项展示名统一过 i18n.questionnaire_option（值→显示名，可双语），
+            # 保存时用 _opt_val 反查回原值：绝不让中文/英文显示文字变成引擎值。
+            pairs = [(o, i18n.questionnaire_option(self.lang, key, o)) for o in opts]
+            shown = [d for _v, d in pairs]
+            if allow_none:
+                shown = [tr("q_none")] + shown
+            init = next((d for v, d in pairs if str(cur) == v),
+                        tr("q_none") if allow_none else "")
             v = tk.StringVar(master=cell, value=init)
             ttk.Combobox(cell, textvariable=v, values=shown,
                          state="readonly", width=16,

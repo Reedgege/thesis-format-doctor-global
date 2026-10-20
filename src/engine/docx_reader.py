@@ -175,6 +175,11 @@ class DocumentProfile:
     # heading_formats 是否来自「伪标题」兜底采样（无 Heading 样式、靠整段加粗+字号档识别）。
     # True 时检查报告需说明「层级是推断的」——这是口径说明，不是错误。
     heading_formats_are_pseudo: bool = False
+    # v2.3.73：识别到「论文大标题」（首页居中加粗、全篇最大字号）时记下它的下标与字号。
+    # 它不属于章节标题层级，检查报告要说清「没把它当标题比」，否则客户看到
+    # 「只查到 N 级」会以为漏检。None = 没识别到。
+    doc_title_index: Optional[int] = None
+    doc_title_size_pt: Optional[float] = None
 
 
 @dataclass
@@ -1422,6 +1427,62 @@ def detect_title_page(doc):
     return {"title": title_idx, "authors": authors}
 
 
+def doc_title_index(doc) -> Optional[int]:
+    """首页首段的「论文大标题」下标；判不出返回 None。
+
+    为什么需要（v2.3.73，客户视角实测）：``detect_title_page`` 要求文档里有
+    Abstract / Keywords 才认标题页。**没有摘要的论文非常常见** —— 这类文档里，
+    16pt 居中加粗的大标题会落进「伪标题」判定、占掉 L1 字号档，学生手排的章节标题
+    被推成 L2。检查结果于是张冠李戴：模板写着「L1 = Times New Roman 14pt 左对齐」，
+    报告却说「Level 1 heading format: Exp Left 14pt / Act Center 16pt」，
+    点修正就把**论文大标题**改成 14pt 左对齐（比漏检更伤）。
+
+    判定刻意保守（全部满足才认，宁可判不出也不乱摘）：
+      ① 第一个非空段，且不是样式 / outline 标题；
+      ② 居中（段落直接格式 → 样式链回退，与 checker 的采样同口径）；
+      ③ 整段加粗；
+      ④ 字号是**全篇最大**，且**严格大于**它之后的每一段（章节标题不会比论文标题更大）；
+      ⑤ 它之后至少还有 2 个非空段（单段 / 两段文档不猜）。
+
+    本函数只负责「认出它是论文标题、别当章节标题」，**不**决定任何格式施加 ——
+    要不要给标题页套格式仍由 title_page 维度（客户三态 > 规范）说了算。
+    """
+    paras = list(doc.paragraphs)
+    idx0 = None
+    for i, p in enumerate(paras):
+        if (p.text or "").strip():
+            idx0 = i
+            break
+    if idx0 is None or heading_level(paras[idx0]) is not None:
+        return None
+    first = paras[idx0]
+    runs = [r for r in first.runs if (r.text or "").strip()]
+    if not runs:
+        return None
+    for r in runs:
+        try:
+            if r.bold is not True:
+                return None
+        except Exception:
+            return None
+    _al_raw = first.alignment
+    if _al_raw is None:
+        _al_raw = _pf_attr(first, None, "alignment")
+    if _ALIGN_MAP.get(_al_raw) != "center":
+        return None
+    title_sz = _max_run_size_pt(first)
+    if title_sz is None:
+        return None
+    later = [p for p in paras[idx0 + 1:] if (p.text or "").strip()]
+    if len(later) < 2:
+        return None
+    for p in later:
+        sz = _max_run_size_pt(p)
+        if sz is not None and sz >= title_sz:
+            return None
+    return idx0
+
+
 def _sample_title_page(doc, prof: "DocumentProfile") -> None:
     """把标题页的实测格式写进画像（标题对齐/加粗、作者行对齐）。
 
@@ -1624,6 +1685,17 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # 有 Abstract/Keywords 的标题页形态。检测函数与 fixer 共用（单一真相源）。
     _sample_title_page(doc, prof)
 
+    # —— 论文大标题（无摘要的论文也要认得出来）——
+    # 它不属于章节标题层级：混进去会占掉 L1 字号档，让报告把「论文标题」说成
+    # 「一级标题格式不符」，修正时把大标题改小（详见 doc_title_index 说明）。
+    try:
+        _dti = doc_title_index(doc)
+    except Exception:
+        _dti = None
+    if _dti is not None:
+        prof.doc_title_index = _dti
+        prof.doc_title_size_pt = _max_run_size_pt(doc.paragraphs[_dti])
+
     # —— 块引用候选收集（MLA：超 4 行引文应缩进 0.5″、不加引号；此处只收集长段落，由 checker 按风格判断）——
     # idx 一并记下：fixer 要按**同一批候选**施加缩进，否则「检查按长引文判、修正只认
     # Quote 样式」，客户看到「3 处块引用不达标」，点完修正一处没动（检查/修正不同源）。
@@ -1772,6 +1844,12 @@ def _read_docx_impl(doc) -> DocumentProfile:
         # 多出一条 L2 = 12pt 居中加粗，其实是参考文献标题）。后置部分标题不属于
         # 章节标题层级，必须排除。
         _skip_ps = {paras[i]._p for i in skip}
+        # v2.3.73：论文大标题（首页居中加粗、全篇最大字号）不是章节标题，
+        # 若混进采样，画像里的 L1 就变成「16pt 居中加粗」，把真实章节标题挤成 L2，
+        # 检查和修正会一起对着错误的分层跑（详见 doc_title_index 的说明）。
+        _dt = doc_title_index(doc)
+        if _dt is not None:
+            _skip_ps.add(paras[_dt]._p)
         _pseudo = pseudo_heading_level_map(paras, exclude_ps=_skip_ps)
         _first_of_level: dict = {}
         for para in paras:

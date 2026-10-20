@@ -43,19 +43,27 @@ def test_heading_scope_reads_levels_from_findings():
     assert _heading_scope([_heading_finding(2), _heading_finding(4)]) == frozenset({2, 4})
 
 
-def test_heading_scope_unscoped_when_dimension_level_conclusion():
-    """「层级数不符」这类整维度结论（无 levels）→ 不限级，退回旧行为。"""
-    assert _heading_scope([_heading_finding(None)]) is None
-    assert _heading_scope([_heading_finding(2), _heading_finding(None)]) is None
+def test_heading_scope_empty_when_only_dimension_level_conclusion():
+    """「层级数不符 / 没有 Heading 样式」是**整维度**结论，不给任何一级授权改格式。
+
+    v2.3.73 改口径（旧断言是 `is None` = 不限级）：这类结论说的是「层级识别/层级数」
+    问题，不是「第 N 级的格式不对」。把它当「不限级」→ 全级重刷，实测把论文大标题
+    编成 "I."、把章节标题改成 "A. Introduction"，而预览一行都没提。
+    现在返回空集合 = 一级都不改；规范基线模式下真有问题时检查器会逐级报（含编号）。
+    """
+    assert _heading_scope([_heading_finding(None)]) == frozenset()
+    # 有具体层级 + 整体结论并存 → 只认具体层级
+    assert _heading_scope([_heading_finding(2), _heading_finding(None)]) == frozenset({2})
 
 
-def test_heading_scope_none_when_nothing_reported():
-    """检查没报标题问题 → None（fix_dims 本就不含 heading，压根不会修）。"""
-    assert _heading_scope([]) is None
+def test_heading_scope_none_only_for_legacy_no_findings():
+    """不传 findings（旧调用方）= 没有检查结果可比 → None（保留旧的全维度 diff 语义）。"""
     assert _heading_scope(None) is None
+    # 传了 findings 但里面没有标题结论 → 空集合：没有任何一级被授权修改
+    assert _heading_scope([]) == frozenset()
     other = Finding(dimension="margins", severity="warn", message="Top margin")
     other.fix = FixAction(dimension="margins", value=True)
-    assert _heading_scope([other]) is None
+    assert _heading_scope([other]) == frozenset()
 
 
 def test_reference_problems_helper():
@@ -115,14 +123,18 @@ def test_fix_touches_only_reported_heading_levels(tmp_path):
     assert aligns[2] is None, "未报错的三级不许动"
 
 
-def test_fix_touches_all_levels_when_check_is_unscoped(tmp_path):
-    """对照：检查给的是整维度结论（无 levels）→ 三级全部按目标修正。"""
+def test_fix_touches_nothing_when_check_is_only_a_dimension_conclusion(tmp_path):
+    """检查只给了整维度结论（无层级）→ 三级标题一个都不许动（v2.3.73 收紧）。
+
+    旧行为是「三级全部按目标修正」—— 那等于把「层级数不符」当成「每级格式都不对」，
+    属于替检查结果加戏；实测后果是把客户手排标题重写成 "A. Introduction"。
+    """
     src = _doc_three_headings(tmp_path)
     out = tmp_path / "out.docx"
     fix_docx(str(src), str(out), _target_all_levels_centered(),
              findings=[_heading_finding(None)])
     aligns = _heading_aligns(out)
-    assert all(a == WD_ALIGN_PARAGRAPH.CENTER for a in aligns), aligns
+    assert all(a is None for a in aligns), aligns
 
 
 def test_preview_lists_exactly_the_levels_that_will_change(tmp_path):
@@ -146,15 +158,15 @@ def test_preview_lists_exactly_the_levels_that_will_change(tmp_path):
     assert aligns[0] is None and aligns[2] is None
 
 
-def test_preview_unscoped_lists_all_levels(tmp_path):
-    """对照：整维度结论时预览把三级都列出来（与 fix_docx 全量修改对齐）。"""
+def test_preview_empty_when_check_is_only_a_dimension_conclusion(tmp_path):
+    """与 fix_docx 同口径：整维度结论 → 预览也一行标题改动都不许列。"""
     src = _doc_three_headings(tmp_path)
     prof = read_docx(str(src))
     lines = _compute_changes(prof, _target_all_levels_centered(), "en",
                              findings=[_heading_finding(None)])
     joined = " | ".join(lines)
     for lvl in (1, 2, 3):
-        assert "Level %d heading" % lvl in joined, joined
+        assert "Level %d heading" % lvl not in joined, joined
 
 
 def test_heading_scope_ignores_passed_umbrella_finding():
@@ -167,10 +179,10 @@ def test_heading_scope_ignores_passed_umbrella_finding():
                        message="Heading levels",
                        expected="", actual="Detected 3 levels", source="spec")
     umbrella.fix = FixAction(dimension="heading", value=3)      # levels=() 空
-    assert _heading_scope([umbrella]) is None, "只有 pass 结论 → 没有要改的层级"
+    assert _heading_scope([umbrella]) == frozenset(), "只有 pass 结论 → 没有要改的层级"
     assert _heading_scope([umbrella, _heading_finding(3)]) == frozenset({3})
-    # 真正报错的整维度结论（非 pass）仍然不限级
-    assert _heading_scope([umbrella, _heading_finding(None, severity="warn")]) is None
+    # 真正报错的整维度结论（非 pass）同样不给任何一级授权（v2.3.73）
+    assert _heading_scope([umbrella, _heading_finding(None, severity="warn")]) == frozenset()
 
 
 # ---------------------------------------------------------------- 端到端：真实检查结论驱动

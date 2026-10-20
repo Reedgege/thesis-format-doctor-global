@@ -473,8 +473,9 @@ STRINGS: dict = {
         "q_h_bold": "Bold",
         "q_h_italic": "Italic",
         "q_h_pagebreak": "Page break",
-        "q_prefilled": ("Blank fields were pre-filled with typical %s values — "
-                        "anything you filled in yourself is never overwritten."),
+        "q_prefilled": ("Blank reference fields were pre-filled from %s — page setup and "
+                        "headings are untouched and stay as you set them, and anything you "
+                        "filled in yourself is never overwritten."),
         "q_h_upper": "UPPER",
         "q_h_runin": "Run-in",
         "q_h_align": "Align",
@@ -848,7 +849,7 @@ STRINGS: dict = {
         "q_h_bold": "加粗",
         "q_h_italic": "斜体",
         "q_h_pagebreak": "分页",
-        "q_prefilled": "空白字段已按 %s 的典型值预填；您自己填过的不会被覆盖。",
+        "q_prefilled": "参考文献相关空白项已按 %s 预填；页面与标题不受影响，仍按您填的走（您自己填过的不会被覆盖）。",
         "q_h_upper": "全大写",
         "q_h_runin": "接排",
         "q_h_align": "对齐",
@@ -1031,7 +1032,9 @@ Q_HELP_EN = {
     "title_page_author_centered": "Should your name / department / affiliation lines be "
                                   "centered (APA/IEEE yes, MLA no). Leave as — to skip",
     "heading_levels": "0 = not enforced; APA usually has 5 levels, others follow the school",
-    "reference_style": "Keep it consistent with the citation style you picked above",
+    "reference_style": ("'My school's own' = apply only the entry rules you set here; "
+                        "picking APA/MLA/IEEE checks the reference list only and never "
+                        "touches page setup or headings"),
     "reference_hanging_indent_in": "0.5 in is common; 0 for IEEE",
     "reference_numbered": "Yes for numbered styles like IEEE [1]; No for author–date styles",
     "reference_font_family": "Leave blank to follow the body font; schools often require "
@@ -1068,6 +1071,24 @@ def questionnaire_label(lang: str, field: dict) -> str:
     if lang == "en":
         return Q_LABELS_EN.get(field["key"], field["key"])
     return field.get("label", field["key"])
+
+
+# 问卷 choice 类字段的**选项展示名**（引擎值 → 界面显示名，双语）。
+# 值必须保持引擎认得的形态（"custom" / "APA" / "A4" …）；显示名只在 UI 层替换，
+# 保存时由 app._opt_val 反查回原值 —— 绝不把显示文字反解析成值。
+# v2.3.73 新增 "reference_style.custom"：参考文献可以「按我校要求」，不再被定死成 APA。
+Q_OPTION_LABELS: dict = {
+    "reference_style.custom": {"zh": "按我校要求（自定义）",
+                               "en": "My school's own (custom)"},
+}
+
+
+def questionnaire_option(lang: str, field_key: str, value):
+    """choice 选项的显示名（未登记的选项原样显示，保证旧数据不受影响）。"""
+    m = Q_OPTION_LABELS.get("%s.%s" % (field_key, value))
+    if not m:
+        return value
+    return m.get(lang) or m.get("en") or value
 
 
 def questionnaire_help(lang: str, field: dict) -> str:

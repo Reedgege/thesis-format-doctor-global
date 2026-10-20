@@ -660,6 +660,14 @@ SPEC_ORDER = ["APA-Student", "APA-Professional", "MLA", "IEEE", "Other"]
 # 引用风格白名单（与 SPEC_ORDER 中可引用者保持一致）
 REFERENCE_STYLE_KEYS = ("APA", "MLA", "IEEE")
 
+# 「按我校要求（自定义）」：不套任何内置规范的引用体例。
+# 🔴 v2.3.73：客户走手动输入 / AI 导入，本来就是因为有学校自己的要求或自己的个性化值，
+# 旧版把参考文献定死成三选一（默认 APA）＝替客户拍板。现在它是**默认值**：
+# 只执行客户填的/AI 读出的条目细则，不拿 APA/MLA/IEEE 去核条目内容。
+# 注意：它不影响 REFERENCE_STYLE_KEYS 的语义（那一组才代表「真的选了某个规范」）。
+REFERENCE_STYLE_CUSTOM = "custom"
+REFERENCE_STYLE_CHOICES = (REFERENCE_STYLE_CUSTOM,) + REFERENCE_STYLE_KEYS
+
 # 规范展示名（面向用户，下拉 / 报告共用单一来源）。
 # 与 SPEC_ORDER 一一对应；未列出者回退到原始 key（如 "Other" / 别名 "APA"）。
 SPEC_DISPLAY = {
@@ -694,6 +702,28 @@ def resolve_spec(target) -> StyleSpec:
     """
     key = getattr(target, "spec_key", None) or (getattr(target, "reference_style", None) or "Other")
     return get_spec(key)
+
+
+def spec_is_baseline(target) -> bool:
+    """客户是否**真的在「规范」下拉里选了内置规范**（= 全篇按规范走）。
+
+    🔴 与 ``resolve_spec()`` 的分工（v2.3.73，老板 2026-10-20 定的口径）：
+    ``resolve_spec`` 在 ``spec_key`` 缺失时会按 ``reference_style`` 兜底取**整套规范**，
+    这是为「参考文献归规范」设计的 —— 客户只选了「参考文献按 IEEE」，检查参考文献
+    条目就该用 IEEE 的引用规则。但整套规范里还带着**五级标题格式、标题页、页面**，
+    这些**绝不能**跟着外溢到学校模板 / 手动输入 / AI 导入这三条通道：
+
+        客户走这三条路，恰恰是因为现行规范满足不了他的需求
+        （学校有自己的排版要求 / 手填自己的个性化值 / AI 已经读出了他文档的真实值）。
+        这时再把全篇按 APA、IEEE 重排，等于把他上传的东西全废掉。
+
+    所以「拿规范兜底页面 / 标题 / 标题页」的地方，一律先问本函数。
+    实测事故（v2.3.72 及以前）：手动输入只填页面 + 参考文献选 IEEE + 标题层级填 2，
+    点「修正」后论文大标题变成 ``I. THE IMPACT OF AI ON ACADEMIC WRITING``、
+    章节标题变成 ``A. Introduction / B. Method / C. Results``（预览里一个字都没提）。
+    """
+    key = getattr(target, "spec_key", None)
+    return bool(key) and str(key) != "Other"
 
 
 def list_specs() -> list[StyleSpec]:

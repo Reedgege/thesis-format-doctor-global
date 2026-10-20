@@ -19,7 +19,8 @@ import re
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Optional
 
-from .specs import get_spec, REFERENCE_STYLE_KEYS, SPEC_ORDER
+from .specs import (get_spec, REFERENCE_STYLE_KEYS, REFERENCE_STYLE_CHOICES,
+                    REFERENCE_STYLE_CUSTOM, SPEC_ORDER)
 from .docx_reader import read_docx, PAPER_SIZES, identify_paper_size
 
 # 页码位置可选值（**唯一真相源**）：与 specs.StyleSpec.page_number_position 同口径。
@@ -147,9 +148,17 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
      "default": 0, "unit": "级", "range": (0, 9), "help": "0=不强制；APA 常 5 级，其余多为学校定"},
 
     # —— 参考文献 ——
+    # 🔴 v2.3.73（老板 2026-10-20 定的口径）：**参考文献不许被定死成某个规范**。
+    # 客户手动输入 / AI 导入，正是因为有学校自己的要求或自己的个性化值；旧版默认 APA、
+    # 只有三选一，等于替他拍板。现在默认「按我校要求（自定义）」：
+    #   · 自定义 → 只执行他填/AI 读出的条目细则（字体/字号/行距/悬挂/是否编号/标题加粗居中），
+    #     不拿 APA/MLA/IEEE 的引用体例去核条目内容；
+    #   · 选了 APA/MLA/IEEE → **只对参考文献这一块**按该规范核对，
+    #     页面与标题仍按他给的（规范基线才全篇按规范）。
     {"key": "reference_style", "label": "参考文献格式", "group": "reference", "type": "choice",
-     "options": list(REFERENCE_STYLE_KEYS), "default": "APA",
-     "unit": "", "help": "引用风格；与上方规范选择保持一致即可"},
+     "options": list(REFERENCE_STYLE_CHOICES), "default": REFERENCE_STYLE_CUSTOM,
+     "unit": "",
+     "help": "「按我校要求」=只按你填的条目细则执行；选 APA/MLA/IEEE 只核参考文献，不动页面与标题"},
     {"key": "reference_hanging_indent_in", "label": "参考文献悬挂缩进", "group": "reference",
      "type": "float", "default": 0.5, "unit": "英寸", "range": (0.0, 2.0),
      "help": "悬挂缩进，常见 0.5 英寸；IEEE 为 0"},
@@ -549,6 +558,10 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     rh_extra = {k: clean[k] for k in TargetProfile.RUNNING_HEAD_KEYS if k in clean}
     cap_extra = {k: clean[k] for k in TargetProfile.CAPTION_KEYS if k in clean}
     ref_style = clean.get("reference_style")
+    # 🔴 v2.3.73：「按我校要求（自定义）」= 没有选任何内置引用规范。
+    # 归一成 None，后面所有「选了规范才做」的分支自然跳过（不核条目体例、不反填规范值）。
+    if ref_style == REFERENCE_STYLE_CUSTOM:
+        ref_style = None
     ref_hang = clean.get("reference_hanging_indent_in")
     ref_num = clean.get("reference_numbered")
 
@@ -621,9 +634,16 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
             "Check that the YAML/JSON is well-formed, or that it contains wrapper fields such as 'filled'."
         )
 
+    # 🔴 v2.3.73：``spec_key`` 恒为 None —— 手动问卷/AI 导入里的「参考文献格式」
+    # 只说明**参考文献这一块**按哪个规范核，不等于「全篇按该规范」。
+    # 旧写法 `spec_key=ref_style` 会把客户手填的画像整体升级成规范基线，
+    # 于是 resolve_spec() 返回整套规范规则（五级标题格式 / 标题页 / 页面），
+    # 修正时把他的手排标题重写成 "A. INTRODUCTION"（老板 2026-10-20 明确否掉）。
+    # 参考文献仍走 resolve_spec()（它按 reference_style 兜底取同一套规范），不受影响；
+    # 页面/标题/标题页的「规范兜底」由 specs.spec_is_baseline() 一律关掉。
     return TargetProfile(
         source=source,
-        spec_key=ref_style if ref_style in REFERENCE_STYLE_KEYS else None,
+        spec_key=None,
         page=page,
         heading_levels=heading,
         columns=cols,

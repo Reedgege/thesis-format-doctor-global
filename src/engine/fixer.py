@@ -37,11 +37,13 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from .checker import ALIGN_LABEL, run_check, Finding, FixAction  # 对齐标签单一来源（避免两处硬编码）
+from .checker import (ALIGN_LABEL, run_check, Finding, FixAction,
+                      _NUMBER_PREFIX_HINT)  # 对齐/编号提示文案单一来源（避免两处硬编码）
 from .docx_reader import (
     DocxReadError, heading_level, is_heading, is_pseudo_heading, read_docx,
     reference_paragraph_indices, find_reference_section, find_abstract_section,
     pseudo_heading_level_map, PAPER_SIZES, describe_paper_size, detect_title_page,
+    doc_title_index,
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
     detect_static_page_number, _para_has_page_field, _run_font_name,
     _para_text_excl_fields, is_caption_paragraph,
@@ -49,7 +51,7 @@ from .docx_reader import (
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec, generic_heading_formats,
                     resolve_heading_formats, HeadingLevelFormat, TitlePageFormat,
-                    size_for_font)
+                    size_for_font, spec_is_baseline)
 from .comments import add_comment, strip_our_comments
 
 _ALIGN_ENUM = {
@@ -1537,7 +1539,13 @@ def _assign_heading_levels(doc, target: TargetProfile, exclude_ps: set | None = 
     # 没单独填「层级数」就整条链空转（学校模板给每级格式却不填层级数是常态）。
     if not heading_levels and not (getattr(target, "heading_formats", None) or {}):
         return out
-    exclude_ps = exclude_ps or set()
+    exclude_ps = set(exclude_ps or ())
+    # v2.3.73：论文大标题（首页居中加粗、全篇最大字号）不是章节标题。
+    # 不摘出来 → 它占掉 L1 字号档、章节标题被推成 L2，检查与修正会一起按错误的
+    # 分层跑（实测把论文标题改成模板的 14pt 左对齐）。与 read_docx 采样同一函数。
+    _dti = doc_title_index(doc)
+    if _dti is not None:
+        exclude_ps.add(doc.paragraphs[_dti]._p)
     pseudo_paras = []
     for para in doc.paragraphs:
         if _para_has_field(para) or para._p in exclude_ps:
@@ -1592,9 +1600,17 @@ def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | No
     explicit_hf = getattr(target, "heading_formats", None) or {}
     if not getattr(target, "heading_levels", None) and not explicit_hf:
         return info
+    # 🔴 v2.3.73：规范的每级标题格式**只允许在「规范基线」模式下兜底**。
+    # 非规范基线（学校模板 / 手动输入 / AI 导入）时，客户顶多在下拉里选了「参考文献按
+    # IEEE」—— resolve_spec() 会因此返回整套 IEEE（含五级标题格式 + 编号 + 全大写）。
+    # 若在这里兜底，客户的手排标题会被就地重写成 "A. Introduction"、"I. 大标题"，
+    # 而预览（_heading_change_lines）拿的是 explicit，一行都不会提 —— 背着客户改文字。
+    # 老板口径：选规范 = 全套按规范；不选规范 = 规范只借给参考文献，不许越界。
+    spec_hf = (getattr(spec, "heading_formats", None)
+               if spec_is_baseline(target) else None)
     fmt_map = resolve_heading_formats(
         explicit_hf,
-        getattr(spec, "heading_formats", None) if spec is not None else None,
+        spec_hf,
         getattr(target, "heading_levels", None),
     )
     if not fmt_map:
@@ -1687,7 +1703,10 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
     返回 {title_formatted, comments}。
     """
     info = {"title_formatted": 0, "comments": 0}
-    tp_spec = spec.title_page
+    # 🔴 v2.3.73：标题页的「规范兜底」同样只在规范基线模式下成立。
+    # 非规范基线时客户可能只是把「参考文献」选成了 APA —— APA 的 title_page 声明
+    # （标题居中加粗 / 作者居中）不许因此飘进学校模板、手填、AI 导入的文档。
+    tp_spec = spec.title_page if spec_is_baseline(target) else None
     # 客户显式三态优先；缺省才回落到规范声明
     t_center = getattr(target, "title_page_title_centered", None)
     t_bold = getattr(target, "title_page_title_bold", None)
@@ -1963,8 +1982,14 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     #   ③ 模板只声明 1 级标题格式 → 检查器对 L2 无从比较（不报）、修正器按「只修报错的
     #      层级」跳过 L2 —— 客户点完「修正」，6 个章节标题一个字都没变，报告却写着已修正。
     # 所以只要目标声明了标题格式（模板/问卷/AI 任一来源），就要探测标题页并把它们摘出去。
-    _need_title_page_probe = (spec.title_page is not None
-                             or bool(getattr(target, "heading_formats", None)))
+    # v2.3.73：再加一条 —— 客户显式给了标题页三态（模板/问卷/AI）时同样要探测，否则那三条
+    # 通道里「标题页是否居中加粗」永远没有探查对象。
+    _need_title_page_probe = (
+        (spec.title_page is not None and spec_is_baseline(target))
+        or bool(getattr(target, "heading_formats", None))
+        or any(getattr(target, _k, None) is not None
+               for _k in ("title_page_title_centered", "title_page_title_bold",
+                          "title_page_author_centered")))
     tp = _detect_title_page(doc) if _need_title_page_probe else None
     tp_ps: set = set()
     if tp:
@@ -2300,7 +2325,10 @@ def _heading_scope(findings) -> frozenset | None:
     表示「Level 3 heading format」不合格），修正侧就必须读得到这个明细：
 
       · 有带 levels 的 heading 动作 → 只修这些级（计数器仍全量推进，保证 II./III. 连续）；
-      · 出现不带 levels 的 heading 动作（如「层级数不符」这类整维度结论）→ 不限级；
+      · **只有不带 levels 的整体结论**（如「没有 Heading 样式」「层级数超出上限」）→
+        返回**空集合**：这类结论说明的是「层级识别/层级数」问题，不给任何一级
+        授权改格式。旧行为把它当「不限级」→ 全部层级重刷，实测把论文大标题编成
+        "I."、把章节标题改成 "A. Introduction"，而预览一行都没提（v2.3.73 修）；
       · 完全没有 heading 动作 → 返回 None（fix_dims 本就不含 heading，不会修）。
 
     ⚠️ **pass 的结论一律不算证据**：检查器每条 heading Finding 都会绑 fix（含
@@ -2308,13 +2336,13 @@ def _heading_scope(findings) -> frozenset | None:
     只要文档里有标题，这条 pass 总览就会把范围撑成「不限级」→ 每级标题全量重刷，
     刚做好的「只改报错层级」当场作废。
 
-    返回 ``None`` = 不限级。``fix_docx`` 与 ``_compute_changes`` 共用本函数，
+    返回 ``None`` = 不限级（仅旧调用方不传 findings 时出现）。
+    ``fix_docx`` 与 ``_compute_changes`` 共用本函数，
     保证「预览说要改的」与「实际会改的」逐级一致。
     """
     if findings is None:
         return None
     scoped: set = set()
-    unscoped = False
     for f in findings:
         fx = getattr(f, "fix", None)
         if fx is None or fx.dimension != "heading":
@@ -2322,11 +2350,8 @@ def _heading_scope(findings) -> frozenset | None:
         if (getattr(f, "severity", "") or "") == "pass":
             continue
         lvs = getattr(fx, "levels", ()) or ()
-        if lvs:
-            scoped.update(int(x) for x in lvs if int(x) > 0)
-        else:
-            unscoped = True
-    return None if (unscoped or not scoped) else frozenset(scoped)
+        scoped.update(int(x) for x in lvs if int(x) > 0)
+    return frozenset(scoped)
 
 
 def _reference_problems_reported(findings) -> bool:
@@ -2773,6 +2798,17 @@ def _heading_change_lines(prof, target: TargetProfile, L: str,
                         if L == "zh" else
                         ("page break before" if want.page_break_before
                          else "no page break before"))
+        # 🔴 v2.3.73：**编号与全大写是改文字**，预览必须写出来。
+        # 旧版只比对齐/字体/字号，于是「加编号 + 全大写」这类最刺眼的改动预览里一片空白
+        # （实测：客户只选参考文献 IEEE，点修正后标题直接变成 "A. INTRODUCTION"，预览 0 行）。
+        # 检查器已按级报出编号缺失（Finding.message = "Level N heading format"），
+        # 这里必须同一口径给出一行，兑现「预览 = 实际」。
+        if want.number_prefix and got.number_prefix is None:
+            bits.append(("加编号 " if L == "zh" else "add numbering ")
+                        + (_NUMBER_PREFIX_HINT.get(want.number_prefix)
+                           or str(want.number_prefix)))
+        if want.uppercase and got.uppercase is False:
+            bits.append("全大写" if L == "zh" else "UPPERCASE")
         if not bits:
             continue
         label = _dim_label(L, "heading_lvl") % lvl

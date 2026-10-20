@@ -917,11 +917,14 @@ def test_questionnaire_heading_table_echoes_and_saves(ui, monkeypatch):
     assert hf["2"]["italic"] is True
 
 
-def test_questionnaire_spec_linkage_prefills_and_keeps_user_values(ui):
-    """选参考文献规范 → 空字段按该规范典型值预填；客户填过/保存过的一律不动。
+def test_questionnaire_reference_style_touches_references_only(ui):
+    """选参考文献规范 → **只**预填参考文献细项；页面 / 标题 / 栏数一律不动。
 
-    老板 2026-10-19：客户选中哪个规范，默认值要调整为哪个规范的。
-    预填值的单一真相源是引擎 ``target_from_spec``，UI 不抄一份默认值。
+    🔴 v2.3.73 改口径（老板 2026-10-20）：「参考文献格式」这个下拉表达的是
+    「我的参考文献按 IEEE 走」，**不是**「全篇按 IEEE 走」。客户走手动输入，
+    正是因为现行规范满足不了他；把 IEEE 的页面值、五级标题格式灌进去等于替他拍板，
+    后面检查/修正还会按 IEEE 改他的手排标题（实测标题变成 "A. INTRODUCTION"）。
+    旧测试断言「选 IEEE → 页边距/字号/层级/栏数全预填」，已被老板否掉，现改为反向断言。
     """
     import tkinter as tk
     from tkinter import ttk
@@ -929,50 +932,45 @@ def test_questionnaire_spec_linkage_prefills_and_keeps_user_values(ui):
     from src.engine.questionnaire import target_from_spec
     from src.ui import i18n
 
-    # 客户上次保存过页边距 1.25 —— 联动绝不能覆盖它
+    # 客户上次保存过页边距 1.25 —— 任何联动都绝不能覆盖它
     ui.questionnaire_data = {"margin_top_in": "1.25"}
     ui._open_questionnaire()
     ui.root.update_idletasks()
     win = ui._popups[-1]
 
     ieee = target_from_spec("IEEE")
+    custom = i18n.questionnaire_option(ui.lang, "reference_style", "custom")
     style_combo = [c for c in _descendants(win, ttk.Combobox)
-                   if tuple(str(v) for v in c.cget("values")) == ("APA", "MLA", "IEEE")][0]
+                   if tuple(str(v) for v in c.cget("values"))[1:] == ("APA", "MLA", "IEEE")
+                   or custom in tuple(str(v) for v in c.cget("values"))][0]
     style_combo.set("IEEE")
     ui.root.update_idletasks()
 
-    combos = [c.get() for c in _descendants(win, ttk.Combobox)]
     entries = [e.get() for e in _descendants(win, tk.Entry)]
+    combos = [c.get() for c in _descendants(win, ttk.Combobox)]
     # 客户保存过的值原样保留
     assert "1.25" in entries, "联动覆盖了客户已保存的页边距"
-    # 空字段按 IEEE 典型值预填（单一真相源 = target_from_spec("IEEE")）
-    assert str(ieee.page["font_size_pt"]) in entries          # "10.0"
-    assert str(ieee.heading_levels) in entries                # "5"
-    assert str(ieee.page["font_family"]) in entries           # Times New Roman（正文字体是文本框）
-    assert str(ieee.page["body_alignment"]) in combos         # justify（下拉）
-    # 栏数联动为 IEEE 双栏（与复核弹窗同一个词）
+    # 页面 / 标题 / 栏数：**不许**跟着 IEEE 走
+    assert str(ieee.page["font_size_pt"]) not in entries, "字号被 IEEE 预填了（越界）"
+    assert str(ieee.heading_levels) not in entries, "层级数被 IEEE 预填了（越界）"
+    assert str(ieee.page["body_alignment"]) not in combos, "正文对齐被 IEEE 预填了（越界）"
     one = i18n.t(ui.lang, "review_one_column")
     two = i18n.t(ui.lang, "review_two_column")
     col_combo = [c for c in _descendants(win, ttk.Combobox)
                  if tuple(str(v) for v in c.cget("values")) == (one, two)][0]
-    assert col_combo.get() == two, "IEEE 应联动为双栏"
-    # 参考文献细项：IEEE 顺序编码 = 是
+    assert col_combo.get() != two, "栏数被 IEEE 预填成双栏（越界）"
+    # 参考文献细项：IEEE 顺序编码 = 是（这一块才是这个下拉该管的）
     yes = i18n.t(ui.lang, "bool_yes")
     numbered = [c for c in _descendants(win, ttk.Combobox)
                 if tuple(str(v) for v in c.cget("values")) == (yes, i18n.t(ui.lang, "bool_no"))]
     assert any(c.get() == yes for c in numbered), "IEEE 顺序编码应预填为「是」"
-    # 表题位置预填 top、图题 bottom（IEEE/APA 口径；choice 前面带「—」档）
-    none_txt = i18n.t(ui.lang, "q_none")
-    pos = [c.get() for c in _descendants(win, ttk.Combobox)
-           if tuple(str(v) for v in c.cget("values")) == (none_txt, "top", "bottom")]
-    assert sorted(pos) == ["bottom", "top"], pos
 
 
-def test_questionnaire_spec_linkage_prefills_heading_table(ui):
-    """选 IEEE → 「每级标题明细」表要按规范填满。
+def test_questionnaire_reference_style_does_not_touch_heading_table(ui):
+    """选 IEEE → 「每级标题明细」表**保持空**（不臆造），页面与标题都按客户填的走。
 
-    老板 2026-10-20：「ieee apa mla这些都是有具体要求的」。
-    根因是 ``target_from_spec`` 漏传 ``heading_formats``，导致表全空。
+    🔴 v2.3.73 改口径（老板 2026-10-20）。旧测试断言「表要按规范填满」，
+    正是「参考文献选了规范 → 标题被按规范改」的源头，已否掉。
     列序见 ``_q_heading_table``：1字体 2字号 3加粗 4斜体 5分页 6对齐
     7缩进 8编号 9全大写 10接排；行号 = 层级（0 是表头）。
     """
@@ -986,8 +984,9 @@ def test_questionnaire_spec_linkage_prefills_heading_table(ui):
     ui.root.update_idletasks()
     win = ui._popups[-1]
 
+    custom = i18n.questionnaire_option(ui.lang, "reference_style", "custom")
     style_combo = [c for c in _descendants(win, ttk.Combobox)
-                   if tuple(str(v) for v in c.cget("values")) == ("APA", "MLA", "IEEE")][0]
+                   if custom in tuple(str(v) for v in c.cget("values"))][0]
     style_combo.set("IEEE")
     ui.root.update_idletasks()
 
@@ -1002,16 +1001,11 @@ def test_questionnaire_spec_linkage_prefills_heading_table(ui):
         ws = table.grid_slaves(row=row, column=col)
         return ws[0].get() if ws else None
 
-    # IEEE L1：居中 + 加粗 + 罗马编号 + 全大写
-    assert cell(1, 6) == tr("q_align_center"), "IEEE 一级应预填居中"
-    assert cell(1, 3) == tr("bool_yes"), "IEEE 一级应预填加粗"
-    assert cell(1, 8) == tr("q_prefix_roman"), "IEEE 一级应预填罗马数字编号"
-    assert cell(1, 9) == tr("bool_yes"), "IEEE 一级应预填全大写"
-    # IEEE L2：大写字母编号 + 左对齐
-    assert cell(2, 8) == tr("q_prefix_upper_letter"), "IEEE 二级应预填大写字母编号"
-    assert cell(2, 6) == tr("q_align_left"), "IEEE 二级应预填左对齐"
-    # IEEE L3：斜体
-    assert cell(3, 4) == tr("bool_yes"), "IEEE 三级应预填斜体"
+    for col in (3, 4, 5, 6, 8, 9, 10):
+        got = cell(1, col)
+        if got is not None:
+            assert got == tr("q_none"), \
+                "选了参考文献 IEEE，标题明细第 %d 列却被预填成 %r（越界）" % (col, got)
 
 
 def test_questionnaire_mla_leaves_heading_table_empty(ui):
@@ -1026,8 +1020,9 @@ def test_questionnaire_mla_leaves_heading_table_empty(ui):
     ui.root.update_idletasks()
     win = ui._popups[-1]
 
+    custom = i18n.questionnaire_option(ui.lang, "reference_style", "custom")
     style_combo = [c for c in _descendants(win, ttk.Combobox)
-                   if tuple(str(v) for v in c.cget("values")) == ("APA", "MLA", "IEEE")][0]
+                   if custom in tuple(str(v) for v in c.cget("values"))][0]
     style_combo.set("MLA")
     ui.root.update_idletasks()
 

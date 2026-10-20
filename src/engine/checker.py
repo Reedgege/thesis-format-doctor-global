@@ -19,7 +19,8 @@ from .docx_reader import (DocumentProfile, read_docx, DocxReadError,
                           find_abstract_section)
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT, origin_of_source
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec,
-                    resolve_heading_formats, describe_heading, size_for_font)
+                    resolve_heading_formats, describe_heading, size_for_font,
+                    spec_is_baseline)
 
 
 @dataclass
@@ -543,6 +544,24 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             expected=f"{exp}pt", actual=actual, source=origin,
         ))
 
+    # —— 论文大标题（v2.3.73）——
+    # 有摘要的论文由 title_page 维度管；**没有摘要**的论文以前会把大标题当成章节
+    # 一级标题，报告于是写「Level 1 heading format: Act Center 16pt」，
+    # 修正就把论文大标题改成模板的 14pt 左对齐。现在单独说清楚：认出来了、
+    # 它不参与层级比对 —— 客户才不会把「只查到 N 级」误读成漏检。
+    if getattr(prof, "doc_title_index", None) is not None \
+            and not getattr(prof, "title_page_detected", False):
+        _dt_sz = getattr(prof, "doc_title_size_pt", None)
+        findings.append(Finding(
+            dimension="doc_title", severity="info",
+            message="Document title",
+            expected="",
+            actual=("Found on page 1 (%spt, centered, bold) — it is the paper title, "
+                    "so it was not counted as a heading level"
+                    % (("%g" % _dt_sz) if _dt_sz else "?")),
+            source="document",
+        ))
+
     # —— 标题层级 ——
     if target.heading_levels and target.heading_levels > 0:
         origin = target.resolution.get("heading_levels", "spec")
@@ -690,6 +709,33 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 source=hf_origin,
             ))
 
+        # —— 超出目标声明范围的更深层级（v2.3.73）——
+        # 目标只声明了 N 级（APA/IEEE 五级、学校模板常只示范一两级），文档却有第 N+1 级。
+        # 旧版：检查一个字不提，修正器却把第 6 级按第 5 级格式静默刷了一遍（检查看不见的
+        # 项被改了）。现在检查要**明说**：第 6 级会按第 5 级规则处理 —— 客户事先知道，
+        # 修正也才有据可依（FixAction.levels 带上这一级，别的一级不碰）。
+        _declared = max(want_map) if want_map else 0
+        _extra = sorted(set(have_map) - set(want_map))
+        if _extra and _declared >= 1:
+            _deep_want = want_map[_declared]
+            for _lv in _extra:
+                _got_x = have_map[_lv]
+                _cur_bits = []
+                for _lbl, _v, _unit in (("size", getattr(_got_x, "size_pt", None), "pt"),
+                                        ("align", getattr(_got_x, "alignment", None), "")):
+                    if _v:
+                        _cur_bits.append("%s %s%s" % (_lbl, _v, _unit))
+                findings.append(Finding(
+                    dimension="heading",
+                    severity=_downgrade("warn", hf_origin, is_page_or_heading=True,
+                                        dim="heading", spec_key=target.spec_key),
+                    message="Level %d heading format" % _lv,
+                    expected=("Falls back to level %d rules (%s)"
+                              % (_declared, describe_heading(_deep_want))),
+                    actual=(", ".join(_cur_bits) or "Could not read"),
+                    source=hf_origin,
+                ))
+
     # —— 标题页格式（标题 / 作者单位的居中与加粗）——
     # 优先级：客户显式给出（学校模板实测 / 问卷 / AI）> 内置规范的 title_page。
     # 过去这条链只有 fixer 一半：spec 有 title_page 就**悄悄改**标题页，检查器从不报告、
@@ -702,7 +748,11 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         if _v is not None:
             _tp_vals[_k] = _v
             _tp_origin = _tp_origin or target.resolution.get(_k, "school")
-    _spec_tp = getattr(resolve_spec(target), "title_page", None)
+    # 🔴 v2.3.73：规范的 title_page 只在**规范基线**模式下兜底。非规范基线（学校模板 /
+    # 手动 / AI）时 spec_key 为空，resolve_spec 只是按 reference_style 兜底取到整套规范 ——
+    # 客户只选了「参考文献按 APA」，不该因此被要求「标题页居中加粗」。
+    _spec_tp = (getattr(resolve_spec(target), "title_page", None)
+                if spec_is_baseline(target) else None)
     if not _tp_vals and _spec_tp is not None:
         # 规范兜底：spec 里有声明就照它判，来源记 spec（页面维度 → 提示语气）
         if _spec_tp.title_centered is not None:
