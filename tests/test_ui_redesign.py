@@ -1186,3 +1186,51 @@ def test_build_target_only_uses_inputs_of_current_source(ui):
     assert t2.spec_key == "APA-Student"
     assert t2.source == "spec", "规范模式被问卷叠加上去了：source=%r" % (t2.source,)
     assert t2.page.get("margin_top_in") == 1.0, "规范模式被问卷改了页边距"
+
+
+def test_questionnaire_exposes_heading_and_body_spacing(ui):
+    """v2.3.75：段前 / 段后 / 行距在问卷里填得到，且字段真的接到了保存路径上。
+
+    老板 2026-10-20：「咱们整个调整格式之中，段前段后有没有考虑？比如说标题的段前段后」。
+    此前引擎没有这些字段，问卷自然也没有 —— 学校要求「章标题段前 12 磅」时客户无处可填。
+    本用例钉两头：① 页面区有「段前间距」；② 每级标题明细表第 11/12/13 列（段前/段后/行距）
+    存在、能回显已保存值，并且 rows 里带着对应的取值变量（_save 靠这些变量收集）。
+    """
+    import tkinter as tk
+
+    ui.questionnaire_data = {
+        "space_before_pt": 6.0,
+        "heading_formats": {"1": {"space_before_pt": 12.0, "space_after_pt": 6.0,
+                                  "line_spacing": 1.5}},
+    }
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    # ① 页面区：段前间距输入框回显已保存值
+    entries = [e for e in _descendants(win, tk.Entry) if e.get() == "6.0"]
+    assert entries, "页面区没有回显「段前间距 6.0」的输入框"
+
+    # ② 标题明细表：第 11/12/13 列 = 段前 / 段后 / 行距
+    from src.ui import i18n
+    lvl1 = [w for w in _descendants(win, tk.Label)
+            if w.cget("text") == i18n.t(ui.lang, "q_h_lvl", 1)][0]
+    table = lvl1.master
+
+    def cell(row, col):
+        ws = table.grid_slaves(row=row, column=col)
+        return ws[0].get() if ws else None
+
+    assert cell(1, 11) == "12.0", "标题表第 11 列（段前）没回显"
+    assert cell(1, 12) == "6.0", "标题表第 12 列（段后）没回显"
+    assert cell(1, 13) == "1.5", "标题表第 13 列（行距）没回显"
+
+    # ③ 保存路径：_save 必须逐个收集这三个 varkey，否则界面填了也存不下来
+    #    （rows/vars_ 都是 _open_questionnaire 的局部变量，测试拿不到实例，
+    #     故直接从源码钉住「varkey → 引擎字段」的接线，改错立刻红。）
+    src = open(os.path.join(ROOT, "src", "ui", "app.py"), encoding="utf-8").read()
+    for varkey, field in (("space_before", "space_before_pt"),
+                          ("space_after", "space_after_pt"),
+                          ("line_spacing", "line_spacing")):
+        assert '("%s", "%s"' % (field, varkey) in src, \
+            "_save 没有把第 N 级标题的 %s 收进 heading_formats" % field
