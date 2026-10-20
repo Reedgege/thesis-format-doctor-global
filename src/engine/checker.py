@@ -109,6 +109,11 @@ def _tp_expected_text(vals: dict) -> str:
         bits.append("author/affiliation centered"
                     if vals["title_page_author_centered"]
                     else "author/affiliation not centered")
+    # v2.3.76：标题段的段前 / 段后（磅）
+    if vals.get("title_page_space_before_pt") is not None:
+        bits.append("title space before %g pt" % float(vals["title_page_space_before_pt"]))
+    if vals.get("title_page_space_after_pt") is not None:
+        bits.append("title space after %g pt" % float(vals["title_page_space_after_pt"]))
     return ", ".join(bits)
 
 # 已带顺序编号的形态：[1] / (1) / 1. / 1)  —— 与 fixer 的 _LEADING_NUMBER_RE 保持一致
@@ -775,7 +780,9 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     _tp_origin = None
     _tp_vals = {}
     for _k in ("title_page_title_centered", "title_page_title_bold",
-               "title_page_author_centered"):
+               "title_page_author_centered",
+               # v2.3.76：标题段的段前 / 段后
+               "title_page_space_before_pt", "title_page_space_after_pt"):
         _v = getattr(target, _k, None)
         if _v is not None:
             _tp_vals[_k] = _v
@@ -840,6 +847,25 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     _act.append("authors " + ALIGN_LABEL.get(_cur_ac, _cur_ac))
                 else:
                     _act.append("authors " + ALIGN_LABEL.get(_cur_ac, _cur_ac))
+            # v2.3.76：标题段的段前 / 段后（磅）。与上面三项同属「Title page format」
+            # 一条结论，客户读到的仍是「标题页格式」一行，不额外制造噪音。
+            # ⚠️ 必须在算 _sev **之前**判定 —— 旧顺序会把段前段后不一致判成 pass，
+            # 报告说「通过」、fixer 拿不到 fix 维度、客户点了修正却什么都没改。
+            for _k, _label, _attr in (
+                    ("title_page_space_before_pt", "title space before", "tp_title_space_before_pt"),
+                    ("title_page_space_after_pt", "title space after", "tp_title_space_after_pt")):
+                _w = _tp_vals.get(_k)
+                if _w is None:
+                    continue
+                _got = getattr(prof, _attr, None)
+                if _got is None:
+                    _act.append("could not read the " + _label)
+                    continue
+                if abs(float(_got) - float(_w)) > 0.1:
+                    _bad.append("%s %g pt (expected %g pt)"
+                                % (_label, float(_got), float(_w)))
+                else:
+                    _act.append("%s %g pt" % (_label, float(_got)))
             _sev = "fail" if _bad else "pass"
             _sev = _downgrade(_sev, _tp_origin, is_page_or_heading=True,
                               dim="title_page", spec_key=target.spec_key)
@@ -1309,6 +1335,35 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     source=_abs_np_origin,
                 ))
 
+    # —— 摘要正文段的段前 / 段后（v2.3.76）——
+    # 学校模板常写死「摘要上方留 12 磅、下方留 6 磅」；此前只有缩进与另起一页，
+    # 这一维度既读不到也改不了。目标显式给出才判，None = 不规定。
+    for _k, _dim, _label, _attr in (
+            ("abstract_space_before_pt", "abstract_space_before",
+             "Abstract space before", "abstract_space_before_pt"),
+            ("abstract_space_after_pt", "abstract_space_after",
+             "Abstract space after", "abstract_space_after_pt")):
+        _w = getattr(target, _k, None)
+        if _w is None:
+            continue
+        _o = target.resolution.get(_k, "school")
+        _got = getattr(prof, _attr, None)
+        if _got is None:
+            findings.append(Finding(
+                dimension=_dim, severity="info", message=_label,
+                expected="%g pt" % float(_w),
+                actual="No Abstract section detected",
+                source=_o,
+            ))
+            continue
+        _sev, _act = _cmp_num(_got, float(_w), SPACE_TOL_FAIL, SPACE_TOL_WARN, "pt")
+        sev = _downgrade(_sev, _o, is_page_or_heading=True,
+                         dim=_dim, spec_key=target.spec_key)
+        findings.append(Finding(
+            dimension=_dim, severity=sev, message=_label,
+            expected="%g pt" % float(_w), actual=_act, source=_o,
+        ))
+
     # —— Running head 显式维度（v2.3.67）——
     # 客户/学校/AI 显式声明「要 running head」或「页码含作者姓氏」时硬判；
     # 否则回落到已有 spec 驱动的 info 提示（APA 专业版 / MLA）。文本内容（短标题/姓氏）
@@ -1444,7 +1499,35 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 actual=f"{_cur_cap_sp:g}x",
                 source=_cap_spacing_origin,
             ))
-    # ③ 表题位置（只提示）
+    # ③ 段前 / 段后（可修，v2.3.76）
+    # 表题在表格上方、图题在图片下方 ——「题与其相邻内容之间留多少」是排版硬要求。
+    for _k, _dim, _label, _attr in (
+            ("caption_space_before_pt", "caption_space_before",
+             "Figure/table caption space before", "caption_space_before_pt"),
+            ("caption_space_after_pt", "caption_space_after",
+             "Figure/table caption space after", "caption_space_after_pt")):
+        _w = getattr(target, _k, None)
+        if _w is None:
+            continue
+        _o = target.resolution.get(_k, "school")
+        _got = getattr(prof, _attr, None)
+        if not _has_captions or _got is None:
+            findings.append(Finding(
+                dimension=_dim, severity="info", message=_label,
+                expected="%g pt" % float(_w),
+                actual="No captions detected" if not _has_captions
+                else "Could not read caption spacing",
+                source=_o,
+            ))
+            continue
+        _sev, _act = _cmp_num(_got, float(_w), SPACE_TOL_FAIL, SPACE_TOL_WARN, "pt")
+        sev = _downgrade(_sev, _o, is_page_or_heading=True,
+                         dim=_dim, spec_key=target.spec_key)
+        findings.append(Finding(
+            dimension=_dim, severity=sev, message=_label,
+            expected="%g pt" % float(_w), actual=_act, source=_o,
+        ))
+    # ④ 表题位置（只提示）
     if _cap_tbl_pos is not None:
         _cap_tbl_origin = target.resolution.get("caption_position_table", "spec")
         _tbl_positions = getattr(prof, "caption_table_positions", None) or []
@@ -1476,7 +1559,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     actual="Matches",
                     source=_cap_tbl_origin,
                 ))
-    # ④ 图题位置（只提示）：图片 caption 位置无法可靠判定，仅当有 caption 时给说明性提示
+    # ⑤ 图题位置（只提示）：图片 caption 位置无法可靠判定，仅当有 caption 时给说明性提示
     if _cap_fig_pos is not None:
         _cap_fig_origin = target.resolution.get("caption_position_figure", "spec")
         _fig_want = "above the figure" if _cap_fig_pos == "top" else "below the figure"
@@ -1709,6 +1792,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             and origin_of_source(target.resolution.get("caption_line_spacing")) \
             in ("user", "school", "ai_import"):
         _fix_value["caption_spacing"] = float(target.caption_line_spacing)
+    # v2.3.76：摘要 / 图表标题的段前段后 —— 同样只在**显式来源**时才动手
+    # （规范没给这两项，全部由模板 / 问卷 / AI 驱动；来源 spec 时只提示）。
+    for _key, _dim in (("abstract_space_before_pt", "abstract_space_before"),
+                       ("abstract_space_after_pt", "abstract_space_after"),
+                       ("caption_space_before_pt", "caption_space_before"),
+                       ("caption_space_after_pt", "caption_space_after")):
+        _v = getattr(target, _key, None)
+        if _v is not None and origin_of_source(target.resolution.get(_key)) \
+                in ("user", "school", "ai_import"):
+            _fix_value[_dim] = float(_v)
 
     for f in findings:
         if f.severity == "pass":

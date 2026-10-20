@@ -149,11 +149,17 @@ class DocumentProfile:
     has_author_note: bool = False                     # 文档是否含 Author Note / 作者注 段落（专业版要求）
     # —— 摘要页特化（v2.3.67）：摘要正文段的口径与正文不同（APA 摘要不首行缩进、另起一页）——
     abstract_first_line_indent_in: Optional[float] = None  # 摘要正文段实测首行缩进（英寸）；无摘要段=None
+    # v2.3.76：摘要正文段的段前 / 段后（磅）；无摘要段 = None
+    abstract_space_before_pt: Optional[float] = None
+    abstract_space_after_pt: Optional[float] = None
     abstract_new_page: Optional[bool] = None          # 摘要是否另起一页（段前分页/上一段末尾分页符）；无摘要段=None
     # —— 图表 caption 采样（v2.3.67）——
     caption_count: int = 0                            # 识别到的 Caption 样式段落数
     caption_font_size_pt: Optional[float] = None      # 图表标题实测字号（众数）；无 caption=None
     caption_line_spacing: Optional[float] = None      # 图表标题实测行距（众数）；无 caption=None
+    # v2.3.76：图表标题段的段前 / 段后（磅，众数）；无 caption = None
+    caption_space_before_pt: Optional[float] = None
+    caption_space_after_pt: Optional[float] = None
     # 表题位置：caption 段落与最近表格的相对位置（"top"/"bottom"/None=无表格 caption）
     caption_table_positions: list = field(default_factory=list)
     # —— MLA 专用探测字段（Purdue OWL general_format + 样例论文）——
@@ -172,6 +178,9 @@ class DocumentProfile:
     tp_title_alignment: Optional[str] = None          # 标题页标题的对齐（center/left/...）
     tp_title_bold: Optional[bool] = None              # 标题页标题是否加粗
     tp_author_alignment: Optional[str] = None         # 作者/单位行的对齐
+    # v2.3.76：标题页标题段的段前 / 段后（磅）。无标题页或读不到 → None。
+    tp_title_space_before_pt: Optional[float] = None
+    tp_title_space_after_pt: Optional[float] = None
     # 每级标题格式样本（学校模板驱动：层级 → 代表性样本）。仅记录可从 docx 读出的属性；
     # number_prefix 为编号形态的最佳猜测（读不到为 None）。
     heading_formats: dict = field(default_factory=dict)         # level(int) -> HeadingFormatSample
@@ -1249,6 +1258,8 @@ def _sample_captions(doc, prof: "DocumentProfile") -> None:
     prof.caption_count = len(cap_paras)
     sizes: Counter = Counter()
     spacings: list = []
+    cap_sb: Counter = Counter()
+    cap_sa: Counter = Counter()
     for p in cap_paras:
         sz = _max_run_size_pt(p)
         if sz is not None:
@@ -1256,11 +1267,19 @@ def _sample_captions(doc, prof: "DocumentProfile") -> None:
         sp = _line_spacing_of_para(p)
         if sp is not None:
             spacings.append(sp)
+        # v2.3.76：题与图表之间、题与正文之间的间距（认「行」单位）
+        _b, _a = _spacing_pair_of_para(p)
+        cap_sb[0.0 if _b is None else _b] += 1
+        cap_sa[0.0 if _a is None else _a] += 1
     if sizes:
         prof.caption_font_size_pt = sizes.most_common(1)[0][0]
     if spacings:
         prof.caption_line_spacing = Counter(
             round(s, 2) for s in spacings).most_common(1)[0][0]
+    if cap_sb:
+        prof.caption_space_before_pt = cap_sb.most_common(1)[0][0]
+    if cap_sa:
+        prof.caption_space_after_pt = cap_sa.most_common(1)[0][0]
     # 表题位置：遍历 body 子元素，caption 段落（w:p）与最近 w:tbl 的前后关系。
     # 只记「caption 段落紧邻表格」的情况（中间无其它段落），否则位置判不准就不记。
     try:
@@ -1647,6 +1666,11 @@ def _sample_title_page(doc, prof: "DocumentProfile") -> None:
             a_al = _pf_attr(ap, None, "alignment")
         prof.tp_author_alignment = _ALIGN_MAP.get(a_al, "left") if a_al is not None else "left"
         break                            # 取第一行作者/单位作代表（通常整组同格式）
+
+    # 标题页标题段的段前 / 段后（v2.3.76）：认「行」单位，三级回退，读不到按 0 磅。
+    sb, sa = _spacing_pair_of_para(title_p)
+    prof.tp_title_space_before_pt = sb
+    prof.tp_title_space_after_pt = sa
 
 
 def _section_paper_size(sec) -> Optional[str]:
@@ -2094,6 +2118,17 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 _abs_indents[0.0 if _fli is None else _fli] += 1
             if _abs_indents:
                 prof.abstract_first_line_indent_in = _abs_indents.most_common(1)[0][0]
+            # v2.3.76：摘要正文段的段前 / 段后（磅），取众数；读不到按 0 磅计入
+            _abs_sb: Counter = Counter()
+            _abs_sa: Counter = Counter()
+            for _j in _abs_body:
+                _b, _a = _spacing_pair_of_para(paras[_j])
+                _abs_sb[0.0 if _b is None else _b] += 1
+                _abs_sa[0.0 if _a is None else _a] += 1
+            if _abs_sb:
+                prof.abstract_space_before_pt = _abs_sb.most_common(1)[0][0]
+            if _abs_sa:
+                prof.abstract_space_after_pt = _abs_sa.most_common(1)[0][0]
             # 是否另起一页：段前分页 或 上一段末尾分页符（复用参考文献同一口径）
             _prev_abs = paras[_abs_head - 1] if _abs_head > 0 else None
             prof.abstract_new_page = _reference_starts_new_page(
@@ -2101,6 +2136,8 @@ def _read_docx_impl(doc) -> DocumentProfile:
     except Exception:
         prof.abstract_first_line_indent_in = None
         prof.abstract_new_page = None
+        prof.abstract_space_before_pt = None
+        prof.abstract_space_after_pt = None
 
     # —— 图表 caption 采样（v2.3.67）——
     try:
@@ -2109,6 +2146,8 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.caption_count = 0
         prof.caption_font_size_pt = None
         prof.caption_line_spacing = None
+        prof.caption_space_before_pt = None
+        prof.caption_space_after_pt = None
         prof.caption_table_positions = []
 
     return prof

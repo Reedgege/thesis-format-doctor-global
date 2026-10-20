@@ -139,6 +139,14 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "title_page_author_centered", "label": "标题页作者/单位居中", "group": "page",
      "type": "tri", "default": "", "unit": "",
      "help": "姓名、院系、单位那几行是否居中（APA/IEEE 居中，MLA 不居中）"},
+    # v2.3.76：标题页标题段的段前/段后。APA 要求「标题在页顶下 3–4 行」、中文封面
+    # 常要求「标题上方留 N 磅 / 标题与作者之间空 M 磅」——此前只有居中/加粗，间距无处填。
+    {"key": "title_page_space_before_pt", "label": "标题页标题段前", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "论文大标题上方的间距（磅）；留空=不规定。作者块与标题之间的距离用「标题段后」表达"},
+    {"key": "title_page_space_after_pt", "label": "标题页标题段后", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "论文大标题下方的间距（磅，通常就是标题与作者块之间）；留空=不规定"},
 
     # 栏数：单栏=1 / 双栏=2。结构性页面维度，不进 PAGE_KEYS；复核弹窗用单选下拉。
     # 标签双语：zh 走此处的 label，en 走 i18n.Q_LABELS_EN（英文界面绝不泄漏中文）。
@@ -202,6 +210,13 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "abstract_new_page", "label": "摘要另起一页", "group": "page", "type": "tri",
      "default": "", "unit": "",
      "help": "是=摘要标题前插分页（APA 专业版要求）；否=明确不另起；—=不规定"},
+    # v2.3.76：摘要正文段的段前/段后（摘要上方与下方各留多少，学校模板常写死）。
+    {"key": "abstract_space_before_pt", "label": "摘要正文段前", "group": "page", "type": "float",
+     "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "摘要正文段上方的间距（磅）；留空=不规定"},
+    {"key": "abstract_space_after_pt", "label": "摘要正文段后", "group": "page", "type": "float",
+     "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "摘要正文段下方的间距（磅）；留空=不规定"},
 
     # —— Running head（v2.3.67）——
     {"key": "running_head_required", "label": "要求页眉 Running Head", "group": "page", "type": "tri",
@@ -218,6 +233,14 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "caption_line_spacing", "label": "图表标题行距", "group": "reference", "type": "float",
      "default": "", "unit": "倍", "range": (0.8, 4.0),
      "help": "图表标题行距；留空=跟随正文"},
+    # v2.3.76：图表标题段的段前/段后。表题在表格上方、图题在图片下方，
+    # 「题与图表之间留多少、题与正文之间留多少」是排版硬要求，此前完全管不了。
+    {"key": "caption_space_before_pt", "label": "图表标题段前", "group": "reference",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "图表标题段上方的间距（磅）；留空=不规定"},
+    {"key": "caption_space_after_pt", "label": "图表标题段后", "group": "reference",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "图表标题段下方的间距（磅）；留空=不规定"},
     {"key": "caption_position_table", "label": "表题位置", "group": "reference", "type": "choice",
      "options": ["top", "bottom"], "default": "", "unit": "",
      "help": "表题在表格上方(top)还是下方(bottom)；APA/IEEE 表题在上。留空=不检查"},
@@ -281,12 +304,20 @@ class TargetProfile:
     title_page_title_centered: Optional[bool] = None
     title_page_title_bold: Optional[bool] = None
     title_page_author_centered: Optional[bool] = None
+    # v2.3.76：标题页**标题段**的段前 / 段后（磅）。None = 不规定。
+    # 「标题离页顶多远」用段前表达，「标题与作者块之间」用段后表达（作者块本身
+    # 不单独建字段：它跟随标题、且引擎只识别「标题 + 作者块」两段，多建会臆造）。
+    title_page_space_before_pt: Optional[float] = None
+    title_page_space_after_pt: Optional[float] = None
     # —— 摘要页特化（v2.3.67）——
     # 摘要正文的口径与正文相反：APA 摘要不首行缩进（顶格）、专业版摘要另起一页。
     # None = 不规定（不检查、不改动）。这两个字段独立于正文 first_line_indent_in，
     # 因为「正文 0.5″ 首行缩进」绝不能刷到摘要段上。
     abstract_first_line_indent_in: Optional[float] = None
     abstract_new_page: Optional[bool] = None
+    # v2.3.76：摘要正文段的段前/段后（磅）。None = 不规定（不检查、不改动）。
+    abstract_space_before_pt: Optional[float] = None
+    abstract_space_after_pt: Optional[float] = None
     # —— Running head（v2.3.67）——
     # 页眉 running head 的两个显式开关。以前只能由内置规范（APA 专业版 / MLA）隐式带出，
     # 客户/学校想显式声明「要 running head」或「页码要含作者姓氏」无处可填。
@@ -300,6 +331,9 @@ class TargetProfile:
     # 图表标题的字号/行距可修；表题/图题位置只能提示。None = 不规定（不检查、不改动）。
     caption_font_size_pt: Optional[float] = None
     caption_line_spacing: Optional[float] = None
+    # v2.3.76：图表标题段的段前/段后（磅）。None = 不规定。
+    caption_space_before_pt: Optional[float] = None
+    caption_space_after_pt: Optional[float] = None
     caption_position_table: Optional[str] = None   # "top" / "bottom"
     caption_position_figure: Optional[str] = None  # "top" / "bottom"
     # 每级标题格式样本（学校模板驱动 / 问卷 / AI 显式给出）：level(int) -> dict
@@ -323,7 +357,9 @@ class TargetProfile:
 
     # 标题页格式（不进 PAGE_KEYS：只作用于标题页那几行，与正文口径分开）
     TITLE_PAGE_KEYS = ("title_page_title_centered", "title_page_title_bold",
-                       "title_page_author_centered")
+                       "title_page_author_centered",
+                       # v2.3.76：标题页标题段的段前 / 段后
+                       "title_page_space_before_pt", "title_page_space_after_pt")
 
     # 参考文献细项（不进 PAGE_KEYS：它们只作用于参考文献段，与正文口径分开）
     REFERENCE_KEYS = ("reference_font_family", "reference_size_pt",
@@ -335,13 +371,17 @@ class TargetProfile:
                       "reference_heading_bold", "reference_heading_centered")
 
     # 摘要页特化（不进 PAGE_KEYS：它们只作用于摘要正文段，与正文口径分开）
-    ABSTRACT_KEYS = ("abstract_first_line_indent_in", "abstract_new_page")
+    ABSTRACT_KEYS = ("abstract_first_line_indent_in", "abstract_new_page",
+                     # v2.3.76：摘要正文段的段前 / 段后
+                     "abstract_space_before_pt", "abstract_space_after_pt")
 
     # Running head（不进 PAGE_KEYS：页眉维度，文本内容只提示、页码位置由 page_number 管）
     RUNNING_HEAD_KEYS = ("running_head_required", "page_number_include_author_name")
 
     # 图表 caption（不进 PAGE_KEYS：图表标题维度，字号/行距可修、位置只提示）
     CAPTION_KEYS = ("caption_font_size_pt", "caption_line_spacing",
+                    # v2.3.76：图表标题段的段前 / 段后
+                    "caption_space_before_pt", "caption_space_after_pt",
                     "caption_position_table", "caption_position_figure")
 
     def to_dict(self) -> dict:
@@ -809,6 +849,12 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         _aal = getattr(doc_profile, "tp_author_alignment", None)
         if _aal is not None:
             tpl_tp["title_page_author_centered"] = (_aal == "center")
+        # 标题段的段前/段后（v2.3.76）：模板里常写「段前 1 行」，已由 reader 折算成磅值。
+        for _key, _attr in (("title_page_space_before_pt", "tp_title_space_before_pt"),
+                            ("title_page_space_after_pt", "tp_title_space_after_pt")):
+            _val = getattr(doc_profile, _attr, None)
+            if _val is not None:
+                tpl_tp[_key] = round(float(_val), 1)
         for _k in tpl_tp:
             resolution[_k] = "school"
 
@@ -820,8 +866,25 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
     _abs_np = getattr(doc_profile, "abstract_new_page", None)
     if _abs_np is not None:
         tpl_abs["abstract_new_page"] = bool(_abs_np)
+    # 摘要正文段前/段后（v2.3.76）
+    for _key in ("abstract_space_before_pt", "abstract_space_after_pt"):
+        _val = getattr(doc_profile, _key, None)
+        if _val is not None:
+            tpl_abs[_key] = round(float(_val), 1)
     for _k in tpl_abs:
         resolution[_k] = "school"
+
+    # 图表标题（Caption）：模板实测（模板里通常只给字号/行距/段前段后，位置另判）
+    tpl_cap: dict = {}
+    for _key, _rnd in (("caption_font_size_pt", 1),
+                       ("caption_line_spacing", 2),
+                       ("caption_space_before_pt", 1),
+                       ("caption_space_after_pt", 1)):
+        _val = getattr(doc_profile, _key, None)
+        if _val is None:
+            continue
+        tpl_cap[_key] = round(float(_val), _rnd) if _rnd else float(_val)
+        resolution[_key] = "school"
 
     ref_style = reference_style if reference_style in REFERENCE_STYLE_KEYS else None
     ref_hang = None
@@ -922,6 +985,7 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         page_number_position=tpl_page_num,
         **tpl_tp,
         **tpl_abs,
+        **tpl_cap,
         heading_formats=heading_formats,
         reference_style=ref_style,
         reference_hanging_indent_in=ref_hang,

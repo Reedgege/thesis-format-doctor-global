@@ -300,6 +300,68 @@ def _apply_caption_spacing(doc, spacing: float) -> bool:
     return changed
 
 
+def _write_one_spacing(para, attr: str, val_pt: float) -> bool:
+    """把单个磅值写到段落 ``paragraph_format.<attr>``（attr = space_before / space_after）。
+
+    ⚠️ 必须先清掉同侧的 ``w:beforeLines`` / ``w:afterLines``：Word 里「行」单位优先级更高，
+    只写磅值等于没改。返回「是否真的改了」（幂等：本来就合规时返回 False）。
+    """
+    changed = False
+    if _drop_lines_spacing(para, "w:beforeLines" if attr == "space_before"
+                           else "w:afterLines"):
+        changed = True
+    try:
+        want = Pt(float(val_pt))
+    except (TypeError, ValueError):
+        return changed
+    try:
+        if getattr(para.paragraph_format, attr) != want:
+            setattr(para.paragraph_format, attr, want)
+            changed = True
+    except Exception:
+        pass
+    return changed
+
+
+def _write_para_spacing(paras: list, before_pt, after_pt) -> bool:
+    """对一组段落施加段前/段后（三态：None = 不规定，一个字节都不写）。"""
+    changed = False
+    for para in paras:
+        if before_pt is not None and _write_one_spacing(para, "space_before", before_pt):
+            changed = True
+        if after_pt is not None and _write_one_spacing(para, "space_after", after_pt):
+            changed = True
+    return changed
+
+
+def _abstract_body_paragraphs(doc) -> list:
+    """摘要正文段（标题之后、下一标题之前），与 checker 的识别同一条真相源。"""
+    _head, body_idx = _abstract_section(doc)
+    if not body_idx:
+        return []
+    return [doc.paragraphs[j] for j in body_idx if 0 <= j < len(doc.paragraphs)]
+
+
+def _apply_abstract_spacing_pt(doc, before_pt, after_pt) -> bool:
+    """摘要正文段的段前/段后（v2.3.76）。只动摘要正文，不碰摘要标题与其它正文。"""
+    if before_pt is None and after_pt is None:
+        return False
+    paras = _abstract_body_paragraphs(doc)
+    if not paras:
+        return False
+    return _write_para_spacing(paras, before_pt, after_pt)
+
+
+def _apply_caption_spacing_pt(doc, before_pt, after_pt) -> bool:
+    """图表标题（Caption）的段前/段后（v2.3.76）。识别 Caption 段落。"""
+    if before_pt is None and after_pt is None:
+        return False
+    caps = _caption_paragraphs(doc)
+    if not caps:
+        return False
+    return _write_para_spacing(caps, before_pt, after_pt)
+
+
 def _is_block_quote(para) -> bool:
     """块引用判定：样式名含 'quote'（Word 内置 Quote / Intense Quote）。"""
     try:
@@ -919,18 +981,14 @@ def _apply_para_spacing(page: dict, paras: list, key: str, attr: str) -> bool:
     """把 page[key] 的磅值写到 paras 每个段落的 ``paragraph_format.<attr>``。
 
     ⚠️ 必须清掉 w:beforeLines / w:afterLines：Word 里「行」单位优先，只写磅值等于没改。
+    实现委托 ``_write_one_spacing`` —— 与摘要/图表 caption 的段前段后共用同一条原语。
     """
     val = page.get(key)
     if val is None:
         return False
-    pt = Pt(float(val))
     changed = False
     for para in paras:
-        if _drop_lines_spacing(para, "w:beforeLines" if attr == "space_before"
-                               else "w:afterLines"):
-            changed = True
-        if getattr(para.paragraph_format, attr) != pt:
-            setattr(para.paragraph_format, attr, pt)
+        if _write_one_spacing(para, attr, val):
             changed = True
     return changed
 
@@ -1812,6 +1870,10 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
     t_center = getattr(target, "title_page_title_centered", None)
     t_bold = getattr(target, "title_page_title_bold", None)
     a_center = getattr(target, "title_page_author_centered", None)
+    # v2.3.76：标题段的段前 / 段后（磅）。复用 HeadingLevelFormat 的三态 spacing 字段，
+    # 直接交给 _format_heading_one 施加 —— 与章节标题同一条原语，幂等且会清掉「行」单位。
+    t_sb = getattr(target, "title_page_space_before_pt", None)
+    t_sa = getattr(target, "title_page_space_after_pt", None)
     if tp_spec is not None:
         if t_center is None:
             t_center = tp_spec.title_centered
@@ -1819,7 +1881,8 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
             t_bold = tp_spec.title_bold
         if a_center is None:
             a_center = tp_spec.author_centered
-    if t_center is None and t_bold is None and a_center is None:
+    if t_center is None and t_bold is None and a_center is None \
+            and t_sb is None and t_sa is None:
         return info
     tp = _detect_title_page(doc)
     if not tp:
@@ -1835,6 +1898,8 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
     title_fmt = HeadingLevelFormat(
         alignment=title_align,
         bold=title_bold,
+        space_before_pt=t_sb,
+        space_after_pt=t_sa,
         desc="%s title-page title%s" % (
             "centered" if t_center else "left-aligned",
             "" if t_bold is None else (" + bold" if t_bold else " + not bold")),
@@ -1862,6 +1927,10 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
             bits.append("title bold")
         if a_center:
             bits.append("author/affiliation centered")
+        if t_sb is not None:
+            bits.append("title space before %g pt" % float(t_sb))
+        if t_sa is not None:
+            bits.append("title space after %g pt" % float(t_sa))
         add_comment(
             doc, p,
             "Title page formatted per %s: %s." % (_spec_label(spec), "; ".join(bits) or "no change"),
@@ -1958,6 +2027,17 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
         b = _before(prof, "space_after_pt")
         btxt = f"{b} pt" if b != "unknown" else "0 pt"
         lines.append(f"Space after paragraph: {btxt}  →  {applied['space_after_pt']} pt")
+    # —— 摘要正文 / 图表标题的段前段后（v2.3.76）：只报真改了的项 ——
+    for _key, _label, _pf_attr in (
+            ("abstract_space_before_pt", "Abstract space before", "abstract_space_before_pt"),
+            ("abstract_space_after_pt", "Abstract space after", "abstract_space_after_pt"),
+            ("caption_space_before_pt", "Caption space before", "caption_space_before_pt"),
+            ("caption_space_after_pt", "Caption space after", "caption_space_after_pt")):
+        if applied.get(_key) is None:
+            continue
+        _b = _before(prof, _pf_attr)
+        _btxt = f"{_b} pt" if _b != "unknown" else "not specified"
+        lines.append(f"{_label}: {_btxt}  →  {applied[_key]} pt")
 
     # —— 参考文献 ——
     if has_ref:
@@ -2098,7 +2178,10 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         or bool(getattr(target, "heading_formats", None))
         or any(getattr(target, _k, None) is not None
                for _k in ("title_page_title_centered", "title_page_title_bold",
-                          "title_page_author_centered")))
+                          "title_page_author_centered",
+                          # v2.3.76：标题段的段前/段后也算「声明了标题页」——
+                          # 否则只填了段前段后时，标题页大标题会被卷进伪标题流程。
+                          "title_page_space_before_pt", "title_page_space_after_pt")))
     tp = _detect_title_page(doc) if _need_title_page_probe else None
     tp_ps: set = set()
     if tp:
@@ -2232,6 +2315,17 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     if "abstract_new_page" in fix_dims and target.abstract_new_page is not None:
         if _apply_abstract_new_page(doc, target.abstract_new_page):
             applied["abstract_new_page"] = target.abstract_new_page
+    # 摘要正文段前/段后（v2.3.76）：只有检查结论要求时才动手，逐维度独立门控。
+    _abs_sb = getattr(target, "abstract_space_before_pt", None) \
+        if "abstract_space_before" in fix_dims else None
+    _abs_sa = getattr(target, "abstract_space_after_pt", None) \
+        if "abstract_space_after" in fix_dims else None
+    if (_abs_sb is not None or _abs_sa is not None) \
+            and _apply_abstract_spacing_pt(doc, _abs_sb, _abs_sa):
+        if _abs_sb is not None:
+            applied["abstract_space_before_pt"] = _abs_sb
+        if _abs_sa is not None:
+            applied["abstract_space_after_pt"] = _abs_sa
 
     # 图表 caption 字号/行距（v2.3.67）：只有客户/学校/AI 显式要求时 checker 才绑 FixAction。
     if "caption_size" in fix_dims and target.caption_font_size_pt is not None:
@@ -2240,6 +2334,17 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     if "caption_spacing" in fix_dims and target.caption_line_spacing is not None:
         if _apply_caption_spacing(doc, target.caption_line_spacing):
             applied["caption_line_spacing"] = target.caption_line_spacing
+    # 图表 caption 段前/段后（v2.3.76）
+    _cap_sb = getattr(target, "caption_space_before_pt", None) \
+        if "caption_space_before" in fix_dims else None
+    _cap_sa = getattr(target, "caption_space_after_pt", None) \
+        if "caption_space_after" in fix_dims else None
+    if (_cap_sb is not None or _cap_sa is not None) \
+            and _apply_caption_spacing_pt(doc, _cap_sb, _cap_sa):
+        if _cap_sb is not None:
+            applied["caption_space_before_pt"] = _cap_sb
+        if _cap_sa is not None:
+            applied["caption_space_after_pt"] = _cap_sa
 
     # 字体白名单的「字体 → 字号」配对：逐 run 按各自字体改字号，不动 w:rFonts。
     if "font_size_by_font" in fix_dims:
@@ -2358,8 +2463,12 @@ _DIM_LABELS = {
         "font_size_by_font": "Body size for this font",
         "abstract_indent": "Abstract first-line indent",
         "abstract_new_page": "Abstract on new page",
+        "abstract_space_before": "Abstract space before",
+        "abstract_space_after": "Abstract space after",
         "caption_size": "Caption font size",
         "caption_spacing": "Caption line spacing",
+        "caption_space_before": "Caption space before",
+        "caption_space_after": "Caption space after",
         "title_page": "Title page", "block_quote": "Block quotation",
         "ref_hanging": "Reference hanging indent", "ref_numbering": "Reference numbering",
         "heading_lvl": "Level %s heading",
@@ -2385,8 +2494,12 @@ _DIM_LABELS = {
         "font_size_by_font": "正文字号（按字体）",
         "abstract_indent": "摘要首行缩进",
         "abstract_new_page": "摘要另起一页",
+        "abstract_space_before": "摘要段前间距",
+        "abstract_space_after": "摘要段后间距",
         "caption_size": "图表标题字号",
         "caption_spacing": "图表标题行距",
+        "caption_space_before": "图表标题段前间距",
+        "caption_space_after": "图表标题段后间距",
         "title_page": "标题页", "block_quote": "块引用",
         "ref_hanging": "参考文献悬挂缩进", "ref_numbering": "参考文献编号",
         "heading_lvl": "第 %s 级标题",
@@ -2679,6 +2792,22 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
                                          "same page → new page" if target.abstract_new_page
                                          else "new page → same page"))
 
+    # —— 摘要正文段前/段后（v2.3.76）——
+    # 摘要段前/段后此前只有行距，客户无从在「改之前」看到这两项；这里与 fixer 同口径逐维度出预览。
+    for _dim, _key, _pf_attr in (("abstract_space_before", "abstract_space_before_pt",
+                                  "abstract_space_before_pt"),
+                                 ("abstract_space_after", "abstract_space_after_pt",
+                                  "abstract_space_after_pt")):
+        _want_abs = getattr(target, _key, None)
+        if not _gate(_dim) or _want_abs is None:
+            continue
+        _cur_abs = getattr(prof, _pf_attr, None)
+        if _cur_abs is None:
+            continue
+        if abs(float(_cur_abs) - float(_want_abs)) > 0.1:
+            lines.append("%s: %g pt → %g pt" % (
+                _dim_label(L, _dim), float(_cur_abs), float(_want_abs)))
+
     # —— 图表 caption 字号/行距（v2.3.67）——
     if _gate("caption_size") and target.caption_font_size_pt is not None:
         _cur_cap_size = getattr(prof, "caption_font_size_pt", None)
@@ -2692,6 +2821,18 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
             lines.append("%s: %g → %g x" % (
                 _dim_label(L, "caption_spacing"),
                 float(_cur_cap_sp), float(target.caption_line_spacing)))
+    # —— 图表 caption 段前/段后（v2.3.76）——
+    for _dim, _key in (("caption_space_before", "caption_space_before_pt"),
+                       ("caption_space_after", "caption_space_after_pt")):
+        _want_cap = getattr(target, _key, None)
+        if not _gate(_dim) or _want_cap is None:
+            continue
+        _cur_cap = getattr(prof, _key, None)
+        if _cur_cap is None:
+            continue
+        if abs(float(_cur_cap) - float(_want_cap)) > 0.1:
+            lines.append("%s: %g pt → %g pt" % (
+                _dim_label(L, _dim), float(_cur_cap), float(_want_cap)))
     # 只改字号、不换字体：用 Calibri 就按 Calibri 的规范字号（11pt），用 Times New Roman
     # 就按 12pt，正文混用两种字体时**各改各的**（所以逐字体列，不只列主字体）。
     if _gate("font_size_by_font"):
@@ -2730,6 +2871,19 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
                 _tp_bits.append(("作者行 " if L == "zh" else "author lines ")
                                 + "%s → %s" % (_align_text(L, prof.tp_author_alignment),
                                                 _align_text(L, _w2)))
+        # 标题页标题段的段前/段后（v2.3.76）：改了就必须在预览里提得前
+        for _key, _pf_attr, _lab_zh, _lab_en in (
+                ("title_page_space_before_pt", "tp_title_space_before_pt",
+                 "标题段前", "title space before"),
+                ("title_page_space_after_pt", "tp_title_space_after_pt",
+                 "标题段后", "title space after")):
+            _want_sp = getattr(target, _key, None)
+            _cur_sp = getattr(prof, _pf_attr, None)
+            if _want_sp is None or _cur_sp is None:
+                continue
+            if abs(float(_cur_sp) - float(_want_sp)) > 0.1:
+                _tp_bits.append("%s %g pt → %g pt" % (
+                    _lab_zh if L == "zh" else _lab_en, float(_cur_sp), float(_want_sp)))
         if _tp_bits:
             sep = "：" if L == "zh" else ": "
             lines.append("%s%s%s" % (_dim_label(L, "title_page"), sep,

@@ -37,6 +37,12 @@ _how_to_fill: |-
   title page (the thesis title and the author/affiliation lines). They are true or false.
   Omit any of them when the requirement says nothing about that property — do not guess,
   because a guessed value will make the tool actively change the student's title page.
+  title_page_space_before_pt / title_page_space_after_pt are the space above / below the
+  thesis title on the title page, in points ("1 line" ≈ 1.2 × the title's font size).
+  Omit them when the requirement says nothing.
+  abstract_space_before_pt / abstract_space_after_pt and caption_space_before_pt /
+  caption_space_after_pt are the space above / below each Abstract paragraph and each
+  figure/table caption, in points. Omit them when the requirement says nothing.
   paper_size is the physical paper size and MUST be one of Letter / A4 / Legal / A5:
   Letter = 8.5 x 11 in (United States, Canada), A4 = 210 x 297 mm
   (Europe, China, Australia, most of Asia). This is NOT part of any citation style —
@@ -141,6 +147,19 @@ fields:
     example: true
     allowed: [true, false]
     note: Omit when unspecified. APA/IEEE center the author and affiliation lines, MLA does not.
+  - key: title_page_space_before_pt
+    label: Title page - space before the title
+    unit: pt
+    example: 0.0
+    note: >-
+      Space above the thesis title on the title page, in points. "1 line" at 12 pt ≈ 14 pt
+      (1.2 × font size). APA adds no extra space. Omit when unspecified.
+  - key: title_page_space_after_pt
+    label: Title page - space after the title
+    unit: pt
+    example: 12.0
+    note: >-
+      Space below the thesis title on the title page, in points. Omit when unspecified.
   - key: paper_size
     label: Paper size
     unit: ""
@@ -243,6 +262,20 @@ fields:
     note: >-
       true = the Abstract begins on a new page (APA Professional); false = it continues on the
       same page. Omit when unspecified.
+  - key: abstract_space_before_pt
+    label: Abstract - space before each paragraph
+    unit: pt
+    example: 0.0
+    note: >-
+      Space above each Abstract paragraph, in points. "1 line" at 12 pt ≈ 14 pt. APA adds no
+      extra space (0). Omit when unspecified.
+  - key: abstract_space_after_pt
+    label: Abstract - space after each paragraph
+    unit: pt
+    example: 0.0
+    note: >-
+      Space below each Abstract paragraph, in points. APA adds no extra space (0). Omit when
+      unspecified.
   - key: running_head_required
     label: Running head required
     unit: ""
@@ -269,6 +302,19 @@ fields:
     unit: x
     example: 1.0
     note: Figure/table caption line spacing. Omit to follow the body text.
+  - key: caption_space_before_pt
+    label: Caption - space before
+    unit: pt
+    example: 6.0
+    note: >-
+      Space above the figure/table caption, in points (schools often specify 6–12 pt to
+      separate the caption from the body). Omit when unspecified.
+  - key: caption_space_after_pt
+    label: Caption - space after
+    unit: pt
+    example: 6.0
+    note: >-
+      Space below the figure/table caption, in points. Omit when unspecified.
   - key: caption_position_table
     label: Table caption position
     unit: ""
@@ -305,6 +351,8 @@ example_filled:
   # title_page_title_centered: true      # optional — omit when unspecified
   # title_page_title_bold: true          # optional — omit when unspecified
   # title_page_author_centered: true     # optional — omit when unspecified
+  # title_page_space_before_pt: 0        # optional — space above the title, in points
+  # title_page_space_after_pt: 12        # optional — space below the title, in points
   heading_levels: 3
   heading_formats:
     1:
@@ -350,9 +398,13 @@ example_filled:
   # Omit any of these when the requirement says nothing about them.
   # abstract_first_line_indent_in: 0.0   # APA abstracts are flush left
   # abstract_new_page: true              # APA Professional: Abstract on its own page
+  # abstract_space_before_pt: 0          # space above each Abstract paragraph, in points
+  # abstract_space_after_pt: 0           # space below each Abstract paragraph, in points
   # running_head_required: true          # APA Professional / MLA require a running head
   # page_number_include_author_name: true  # MLA: "Smith 1"
   # caption_font_size_pt: 10.0
   # caption_line_spacing: 1.0
+  # caption_space_before_pt: 6           # space above the caption, in points
+  # caption_space_after_pt: 6            # space below the caption, in points
   # caption_position_table: top          # APA/IEEE: caption above the table
   # caption_position_figure: bottom      # APA/IEEE: caption below the figure

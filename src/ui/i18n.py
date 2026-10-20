@@ -996,6 +996,8 @@ Q_LABELS_EN = {
     "title_page_title_centered": "Title page: title centered",
     "title_page_title_bold": "Title page: title bold",
     "title_page_author_centered": "Title page: author lines centered",
+    "title_page_space_before_pt": "Title page: space before title",
+    "title_page_space_after_pt": "Title page: space after title",
     "heading_levels": "Heading levels",
     "reference_style": "Reference style",
     "reference_hanging_indent_in": "Reference hanging indent",
@@ -1010,10 +1012,14 @@ Q_LABELS_EN = {
     "reference_heading_centered": "Reference heading centered",
     "abstract_first_line_indent_in": "Abstract first-line indent",
     "abstract_new_page": "Abstract on a new page",
+    "abstract_space_before_pt": "Abstract: space before paragraph",
+    "abstract_space_after_pt": "Abstract: space after paragraph",
     "running_head_required": "Running head required",
     "page_number_include_author_name": "Page number includes author name",
     "caption_font_size_pt": "Caption font size",
     "caption_line_spacing": "Caption line spacing",
+    "caption_space_before_pt": "Caption: space before",
+    "caption_space_after_pt": "Caption: space after",
     "caption_position_table": "Table caption position",
     "caption_position_figure": "Figure caption position",
 }
@@ -1043,6 +1049,10 @@ Q_HELP_EN = {
                              "Leave as — to skip",
     "title_page_author_centered": "Should your name / department / affiliation lines be "
                                   "centered (APA/IEEE yes, MLA no). Leave as — to skip",
+    "title_page_space_before_pt": "Space above the title on the title page, in points; "
+                                  "leave blank to skip",
+    "title_page_space_after_pt": "Space below the title on the title page, in points; "
+                                 "leave blank to skip",
     "heading_levels": "0 = not enforced; APA usually has 5 levels, others follow the school",
     "reference_style": ("'My school's own' = apply only the entry rules you set here; "
                         "picking APA/MLA/IEEE checks the reference list only and never "
@@ -1060,10 +1070,15 @@ Q_HELP_EN = {
     "reference_heading_centered": "Yes = centered; No = explicitly left-aligned (IEEE); — = unspecified",
     "abstract_first_line_indent_in": "Abstract body first-line indent; APA abstracts are flush left (0). Leave blank to skip",
     "abstract_new_page": "Yes = page break before the Abstract heading (APA Professional); No = not required; — = unspecified",
+    "abstract_space_before_pt": "Space above each Abstract paragraph, in points; APA adds none (0). Leave blank to skip",
+    "abstract_space_after_pt": "Space below each Abstract paragraph, in points; APA adds none (0). Leave blank to skip",
     "running_head_required": "Yes = a running head in the header (short title or last name). Leave as — to skip",
     "page_number_include_author_name": "Yes = the page number is preceded by the author's last name (MLA's 'Smith 1'). — = unspecified",
     "caption_font_size_pt": "Figure/table caption font size; leave blank to follow the body text",
     "caption_line_spacing": "Figure/table caption line spacing; leave blank to follow the body text",
+    "caption_space_before_pt": "Space above the caption, in points (often 6–12 pt to separate "
+                               "it from the body); leave blank to skip",
+    "caption_space_after_pt": "Space below the caption, in points; leave blank to skip",
     "caption_position_table": "Table caption above (top) or below (bottom) the table; APA/IEEE use top. Leave as — to skip",
     "caption_position_figure": "Figure caption above (top) or below (bottom) the figure; APA/IEEE use bottom. Leave as — to skip",
 }
