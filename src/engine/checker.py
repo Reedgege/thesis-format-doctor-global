@@ -710,13 +710,14 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             ))
 
         # —— 超出目标声明范围的更深层级（v2.3.73）——
-        # 目标只声明了 N 级（APA/IEEE 五级、学校模板常只示范一两级），文档却有第 N+1 级。
-        # 旧版：检查一个字不提，修正器却把第 6 级按第 5 级格式静默刷了一遍（检查看不见的
-        # 项被改了）。现在检查要**明说**：第 6 级会按第 5 级规则处理 —— 客户事先知道，
-        # 修正也才有据可依（FixAction.levels 带上这一级，别的一级不碰）。
+        # 目标声明了完整多级（APA/IEEE 五级）而文档更深（第 6 级）：检查要**明说**
+        # 「第 6 级会按第 5 级规则处理」—— 旧版检查一个字不提、修正器却静默刷了一遍。
+        # ⚠️ 只在 len(want_map) >= 2 时报：目标只声明 1 级（学校模板常见）时，
+        # 更深层级**没有任何依据**，fixer 根本不会动它（v2.3.72 明确禁止拿一级格式套二级），
+        # 这时写「会按第 1 级处理」就是假话。那种情形由上面的「层级数」结论负责说明。
         _declared = max(want_map) if want_map else 0
         _extra = sorted(set(have_map) - set(want_map))
-        if _extra and _declared >= 1:
+        if _extra and _declared >= 1 and len(want_map) >= 2:
             _deep_want = want_map[_declared]
             for _lv in _extra:
                 _got_x = have_map[_lv]

@@ -268,3 +268,51 @@ def test_custom_reference_style_parses_to_none():
     assert t2.reference_style == "APA"
     assert t2.reference_hanging_indent_in == get_spec("APA").reference.hanging_indent_in
     assert t2.spec_key is None
+
+
+# ---------------------------------------------------------------------------
+# 六、深层级：只有「声明了完整多级」才允许说「按最深一级处理」
+# ---------------------------------------------------------------------------
+
+def _doc_two_levels(tmp_path):
+    """一二级标题都用样式（真实学校模板常见形态）。"""
+    p = tmp_path / "two.docx"
+    doc = Document()
+    doc.add_paragraph("Chapter One", style="Heading 1")
+    doc.add_paragraph("Section One", style="Heading 2")
+    doc.add_paragraph("Body text.")
+    doc.save(p)
+    return str(p)
+
+
+def test_deeper_level_fallback_is_only_announced_for_multi_level_targets(tmp_path):
+    """学校模板只声明 1 级标题格式 + 文档有 2 级 → 检查**不许**说「二级按一级处理」。
+
+    因为 fixer 根本不会拿一级格式套二级（v2.3.72 明令禁止，实测整篇层级崩掉），
+    检查若这么写就是假话。这种情形由「层级数超限」那条结论负责说明。
+    """
+    tpl = Document()
+    tpl.styles["Heading 1"].font.size = Pt(14)
+    tpl.styles["Heading 1"].font.bold = True
+    tpl_path = str(tmp_path / "tpl1.docx")
+    tpl.save(tpl_path)
+
+    paper = _doc_two_levels(tmp_path)
+    t = build_target(spec_key=None, template=tpl_path)   # 模板只提供 1 级
+    _, findings = run_check(paper, t)
+    fallback = [f for f in findings if "Falls back" in (f.expected or "")]
+    assert not fallback, [(f.message, f.expected) for f in fallback]
+
+
+def test_deeper_level_fallback_is_announced_for_spec_baseline(tmp_path):
+    """规范基线 APA 声明 5 级、文档有第 6 级 → 检查要明说「按第 5 级处理」。"""
+    p = tmp_path / "six.docx"
+    doc = Document()
+    doc.add_paragraph("Deep Heading", style="Heading 6")
+    doc.add_paragraph("Body one.")
+    doc.add_paragraph("Body two.")
+    doc.save(p)
+    t = build_target(spec_key="APA-Student")
+    _, findings = run_check(str(p), t)
+    fallback = [f for f in findings if "Falls back to level 5" in (f.expected or "")]
+    assert fallback, [f.message for f in findings]
