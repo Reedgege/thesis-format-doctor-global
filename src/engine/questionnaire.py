@@ -16,7 +16,7 @@ PaperFormat Pro 的三种目标来源，全部收敛到同一个 TargetProfile�
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Optional
 
 from .specs import get_spec, REFERENCE_STYLE_KEYS, SPEC_ORDER
@@ -375,11 +375,28 @@ def target_from_spec(key: str) -> TargetProfile:
         resolution["caption_position_table"] = "spec"
     if spec.caption_position_figure is not None:
         resolution["caption_position_figure"] = "spec"
+    # v2.3.69：把规范的**每级标题格式**一并带进目标画像。
+    # 此前只带了 heading_levels（层级数），heading_formats 漏传，造成两处脱节：
+    #   ① 手填问卷选 APA/IEEE 后「每级标题明细」表全空 —— 客户以为规范没要求；
+    #   ② 检查器的每级标题格式比对整段被跳过（checker 只在 heading_formats
+    #      非空时才比），而修正器自己另读 spec.heading_formats 照改 —— 正是
+    #      「检查说没事、修正却改一批」的脱节。
+    # 转换无损：HeadingLevelFormat ↔ dict 由 asdict / heading_level_format_from_dict
+    # 对称覆盖全部字段。MLA / Other 本就无多级标题体系（heading_levels=0），保持空。
+    hf: dict = {}
+    for _lv, _f in (spec.heading_formats or {}).items():
+        try:
+            hf[int(_lv)] = asdict(_f) if is_dataclass(_f) else dict(_f)
+        except Exception:
+            continue
+    if hf:
+        resolution["heading_formats"] = "spec"
     return TargetProfile(
         source="spec",
         spec_key=key,
         page=page,
         heading_levels=spec.heading_levels or None,
+        heading_formats=hf,
         columns=spec.columns,
         paper_size=spec.paper_size,
         page_number_position=spec.page_number_position,

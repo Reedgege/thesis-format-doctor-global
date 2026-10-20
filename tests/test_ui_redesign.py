@@ -968,6 +968,82 @@ def test_questionnaire_spec_linkage_prefills_and_keeps_user_values(ui):
     assert sorted(pos) == ["bottom", "top"], pos
 
 
+def test_questionnaire_spec_linkage_prefills_heading_table(ui):
+    """选 IEEE → 「每级标题明细」表要按规范填满。
+
+    老板 2026-10-20：「ieee apa mla这些都是有具体要求的」。
+    根因是 ``target_from_spec`` 漏传 ``heading_formats``，导致表全空。
+    列序见 ``_q_heading_table``：1字体 2字号 3加粗 4斜体 5分页 6对齐
+    7缩进 8编号 9全大写 10接排；行号 = 层级（0 是表头）。
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    from src.ui import i18n
+
+    ui.questionnaire_data = {}
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    style_combo = [c for c in _descendants(win, ttk.Combobox)
+                   if tuple(str(v) for v in c.cget("values")) == ("APA", "MLA", "IEEE")][0]
+    style_combo.set("IEEE")
+    ui.root.update_idletasks()
+
+    def tr(key, *a):
+        return i18n.t(ui.lang, key, *a)
+
+    lvl1 = [w for w in _descendants(win, tk.Label)
+            if w.cget("text") == tr("q_h_lvl", 1)][0]
+    table = lvl1.master
+
+    def cell(row, col):
+        ws = table.grid_slaves(row=row, column=col)
+        return ws[0].get() if ws else None
+
+    # IEEE L1：居中 + 加粗 + 罗马编号 + 全大写
+    assert cell(1, 6) == tr("q_align_center"), "IEEE 一级应预填居中"
+    assert cell(1, 3) == tr("bool_yes"), "IEEE 一级应预填加粗"
+    assert cell(1, 8) == tr("q_prefix_roman"), "IEEE 一级应预填罗马数字编号"
+    assert cell(1, 9) == tr("bool_yes"), "IEEE 一级应预填全大写"
+    # IEEE L2：大写字母编号 + 左对齐
+    assert cell(2, 8) == tr("q_prefix_upper_letter"), "IEEE 二级应预填大写字母编号"
+    assert cell(2, 6) == tr("q_align_left"), "IEEE 二级应预填左对齐"
+    # IEEE L3：斜体
+    assert cell(3, 4) == tr("bool_yes"), "IEEE 三级应预填斜体"
+
+
+def test_questionnaire_mla_leaves_heading_table_empty(ui):
+    """MLA 官方无多级标题体系 → 明细表保持空（不臆造）。"""
+    import tkinter as tk
+    from tkinter import ttk
+
+    from src.ui import i18n
+
+    ui.questionnaire_data = {}
+    ui._open_questionnaire()
+    ui.root.update_idletasks()
+    win = ui._popups[-1]
+
+    style_combo = [c for c in _descendants(win, ttk.Combobox)
+                   if tuple(str(v) for v in c.cget("values")) == ("APA", "MLA", "IEEE")][0]
+    style_combo.set("MLA")
+    ui.root.update_idletasks()
+
+    def tr(key, *a):
+        return i18n.t(ui.lang, key, *a)
+
+    lvl1 = [w for w in _descendants(win, tk.Label)
+            if w.cget("text") == tr("q_h_lvl", 1)][0]
+    table = lvl1.master
+    for col in (3, 4, 5, 6, 8, 9, 10):
+        ws = table.grid_slaves(row=1, column=col)
+        if ws:
+            assert ws[0].get() == tr("q_none"), \
+                "MLA 不该臆造每级标题格式（第 %d 列被填了）" % col
+
+
 def test_questionnaire_sections_are_collapsible(ui):
     """三大区块要能折叠：点标题收起（内容不可见），再点展开恢复。
 
