@@ -39,6 +39,27 @@ class FixAction:
     dimension: str
     value: Any = None
     note: str = ""
+    # v2.3.70：**结构化明细**——把「检查具体报了哪一级」带给修正器，
+    # 让它只改被报错的对象，而不是整个维度重刷一遍（老板：修正一定按检查结果来，
+    # 检查结果要详细、修正要能读到）。标题维度按「级」细化；其它维度留空=整维度。
+    levels: tuple = ()
+
+
+def _finding_heading_level(msg: str) -> Optional[int]:
+    """从「Level N heading format」这类 finding 文案里取出**具体层级**。
+
+    只认固定前缀（我们自己产出），取不到就返回 None —— 调用方据此判定
+    「这条结论没有细到级」，退回整维度处理，绝不猜。
+    """
+    m = re.match(r"^Level\s+(\d+)\s", msg or "")
+    if not m:
+        return None
+    try:
+        lv = int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    return lv if lv > 0 else None
+
 
 # 容差（依据：1/16 英寸内视为排版误差；字号/行距给更宽 warn 带）
 # 约定：所有维度的 warn 带必须**宽于**其 fail 带（WARN < FAIL），
@@ -63,6 +84,16 @@ SEVERITY_ORDER = {"pass": 0, "info": 1, "warn": 2, "fail": 3}
 # Alignment labels (also reused by report.py to avoid duplicate hard-coding)
 ALIGN_LABEL = {"left": "Left", "justify": "Justified",
                "center": "Center", "right": "Right"}
+
+# 章节编号形态的人类可读提示（进报告 expected 列；面向客户，一律英文）。
+_NUMBER_PREFIX_HINT = {
+    "roman": "I., II., III.",
+    "upper_letter": "A., B., C.",
+    "number": "1., 2., 3.",
+    "number_paren": "1), 2), 3)",
+    "lower_letter": "a), b), c)",
+    "lower_roman": "i), ii), iii)",
+}
 
 
 def _tp_expected_text(vals: dict) -> str:
@@ -576,11 +607,33 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             _num_diff("indent", indent_want, got.indent_in, "″")
             for label, want_b, got_b in (("bold", want.bold, got.bold),
                                          ("italic", want.italic, got.italic)):
-                if want_b is None or got_b is None:
+                if want_b is None:
+                    continue
+                if got_b is None:
+                    # 目标规定了、文档读不到（run 与样式链都没写）→ 如实记「读不到」，
+                    # 别静默跳过。旧写法直接 continue，于是「三级标题该斜体」这类要求在
+                    # 报告里彻底消失，修正器却照样加斜体 —— 检查看不见的项被改了（v2.3.70）。
+                    unreadable.append(label)
                     continue
                 if bool(got_b) != bool(want_b):
                     exp_bits.append(label if want_b else "not " + label)
                     act_bits.append(label if got_b else "not " + label)
+            # 编号形态（IEEE 的 I. / A. / 1) 全在 number_prefix 里）：v2.3.70 前
+            # 检查器**从不检查**它，修正器却一直在补编号 —— 报告说「标题格式合规」，
+            # 标题却多出了 "A."。现在缺编号要说出来，修正才有据可依。
+            # 只报「缺」不报「形态不同」：作者手打的 "1. Introduction" 若被判成
+            # 「应为 I.」，修正器会在前面再插一个前缀（I. 1. Introduction），宁可不碰。
+            if want.number_prefix:
+                if got.number_prefix is None:
+                    exp_bits.append("numbering (%s)"
+                                    % _NUMBER_PREFIX_HINT.get(want.number_prefix,
+                                                              want.number_prefix))
+                    act_bits.append("no numbering")
+            # 全大写：只报「该大写却没大写」；反向（作者全大写、目标不要求）
+            # 不报也不改 —— 小写化会破坏专有名词。读不到（文本无字母等）也不硬判。
+            if want.uppercase and got.uppercase is False:
+                exp_bits.append("uppercase")
+                act_bits.append("not uppercased")
             # 段前分页（v2.3.67）：三态。want 为 None=不规定；got 为 None=读不到（可能由
             # 样式承载）→ 不硬判，只记 unreadable；两者都非 None 且不一致才判 fail。
             if want.page_break_before is not None:
@@ -1566,11 +1619,15 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 标题层级编号/格式：由 target.heading_levels 驱动（而非 finding 严重度），
     # 只要目标要求标题层级 > 0 即绑定 heading 修正，与 fixer 既有行为一致。
     # v2.3.65：每级标题格式的 finding 也挂在 heading 维度上，这里一并绑定（不再 break 一条）。
+    # v2.3.70：把**具体层级**写进 FixAction.levels —— 「Level 3 heading format」这类
+    # 检查结果本来就精确到级，修正器据此只改被报错的那级（否则全五级重刷＝不按结果修）。
     if (target.heading_levels and target.heading_levels > 0) or heading_targets:
         _lvl_value = target.heading_levels or (max(heading_targets) if heading_targets else 0)
         for f in findings:
             if f.dimension == "heading":
-                f.fix = FixAction(dimension="heading", value=_lvl_value)
+                _lv = _finding_heading_level(f.message)
+                f.fix = FixAction(dimension="heading", value=_lvl_value,
+                                  levels=(_lv,) if _lv else ())
 
     return prof, findings
 

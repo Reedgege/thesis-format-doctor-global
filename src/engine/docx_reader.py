@@ -414,6 +414,14 @@ def _sample_heading_format(para, doc_pf, doc_default_font=None) -> "HeadingForma
     if al is None:
         al_raw2 = _pf_attr(para, doc_pf, "alignment")
         al = _ALIGN_MAP.get(al_raw2) if al_raw2 is not None else None
+    # v2.3.70：段落 / 样式链 / 文档默认**都没写 w:jc** 时，Word 的渲染结果就是左对齐 ——
+    # 这是 OOXML 语义（缺省 jc = left），不是「读不到」。旧写法留 None，造成三处不一致：
+    #   ① 检查器对正常标题报 "Could not read: alignment"（等于检查有洞）；
+    #   ② 预览因 got.alignment is None 一个字都不列；
+    #   ③ 修正器却照样把对齐改掉 → 客户在报告里看到「读不到」，文档却被悄悄改了。
+    # 与页码对齐的口径一致：样式继承解析完后**永不返回 None**，否则出假通过/假空白。
+    if al is None:
+        al = "left"
 
     # 加粗 / 斜体：run 全部显式 True / 全部显式 False 才下结论；有未显式(None)或
     # 混合时回退段落样式。旧写法用 `all(x is True)`，把「未显式设置」直接判成 False，
@@ -484,11 +492,16 @@ def _sample_heading_format(para, doc_pf, doc_default_font=None) -> "HeadingForma
         indent_in = fli
     indent = indent_in is not None
 
-    # 全大写：标题文本去掉空格后全为字母且等于大写
+    # 全大写：只看**字母**的大小写。
+    # 旧写法 `txt.replace(" ", "").isalpha()` 会把带编号/标点的标题（IEEE 的
+    # "I. INTRODUCTION"、"A. BACKGROUND"）判成「读不到」——而那恰恰是最需要判大写的场景，
+    # 于是修完之后复检依旧「读不到」，永远无法收敛（v2.3.70 修正）。
     txt = para.text.strip()
     uppercase: Optional[bool] = None
-    if txt and txt.replace(" ", "").isalpha():
-        uppercase = txt == txt.upper()
+    _letters = [ch for ch in txt if ch.isalpha()]
+    if _letters:
+        # 汉字等无大小写的字符 islower() 恒为 False，不干扰判定
+        uppercase = all(not ch.islower() for ch in _letters)
 
     # 段前分页（v2.3.67）：读段落直接格式 pPr/pageBreakBefore；读不到（None 或样式承载）
     # 保持 None，由 checker 决定不硬判。三态：True/False/None。

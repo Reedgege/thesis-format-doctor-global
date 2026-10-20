@@ -292,9 +292,15 @@ def test_fix_apa_heading_levels_land_l1_to_l5(tmp_path):
     assert b and not i and not p.text.strip().endswith(".")
     # L2
     p = by["Second Level"]
-    assert p.alignment == WD_ALIGN_PARAGRAPH.LEFT
+    # v2.3.70：二级标题的「左对齐」在本文档里是**继承**来的（段落没写 w:jc、样式链也没写，
+    # 按 OOXML 语义渲染即左对齐）。检查器据此判 pass，修正器就不再显式写一遍 LEFT ——
+    # 老板定的执行逻辑是「修正只按检查结果改，不是自己瞎改」，所以「未显式设置但渲染正确」
+    # 属于合规不动（None 与显式 LEFT 都通过）。
+    assert p.alignment in (None, WD_ALIGN_PARAGRAPH.LEFT)
     b, i = runs_bold_italic(p)
-    assert b and not i and not p.text.strip().endswith(".")
+    # 同理：加粗由 Heading 2 样式承载，检查器判 pass → 不再往 run 上重复写一遍 bold。
+    assert (b or Document(str(out)).styles["Heading 2"].font.bold is True) and not i \
+        and not p.text.strip().endswith(".")
     # L3
     p = by["Third Level"]
     assert p.alignment == WD_ALIGN_PARAGRAPH.LEFT

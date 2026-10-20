@@ -1035,7 +1035,7 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
                             fix_hang: bool = True, fix_number: bool = True,
                             fix_font: bool = False, fix_size: bool = False,
                             fix_spacing: bool = False, fix_new_page: bool = False,
-                            fix_heading: bool = False) -> dict:
+                            fix_heading: bool = False, fix_rewrite: bool = False) -> dict:
     """参考文献：格式层 + （IEEE 时）best-effort 引文格式重写。
 
     - 悬挂缩进 + （编号制时）补顺序前缀；
@@ -1052,12 +1052,15 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
         return info
     entries = [doc.paragraphs[i] for i in ref_indices]
 
-    # 引文内容重写必须**显式开启**（target.reference_rewrite），不能只看
-    # reference_style == "IEEE" 就改：产品铁律是「只改格式、不改内容」，而把
-    # APA 条目改写成 IEEE 引文是内容层改动。默认关闭 = 参考文献逐字不动（只加 [n]
-    # 前缀 + 悬挂缩进），这正是 tests/test_review_fixes.py P0-1 断言的不变量；
-    # 只有走 target_from_spec("IEEE") 的真实产品路径才会打开（见 questionnaire.py）。
-    if target.reference_style == "IEEE" and getattr(target, "reference_rewrite", False):
+    # 引文内容重写必须**显式开启**（target.reference_rewrite），且**由检查结论门控**
+    # （v2.3.70 新增 fix_rewrite）——不能只看 reference_style == "IEEE" 就改：
+    # 产品铁律是「只改格式、不改内容」，而把 APA 条目改写成 IEEE 引文是内容层改动。
+    # 检查器没报 reference 问题（条目本已合规）时，这里一个字都不许动。
+    # 默认关闭 = 参考文献逐字不动（只加 [n] 前缀 + 悬挂缩进），这正是
+    # tests/test_review_fixes.py P0-1 断言的不变量；只有走 target_from_spec("IEEE")
+    # 的真实产品路径、且检查真的报了问题，才会打开。
+    if target.reference_style == "IEEE" and getattr(target, "reference_rewrite", False) \
+            and fix_rewrite:
         info["rewritten"] = _reformat_ieee_reference_entries(doc, ref_indices)
 
     hang = target.reference_hanging_indent_in
@@ -1563,8 +1566,14 @@ _NON_NUMBERED_HEADINGS = {
 }
 
 
-def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | None = None) -> dict:
+def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | None = None,
+                          only_levels=None) -> dict:
     """按规范每级规则直接格式化标题段（不写 styleId）。
+
+    - ``only_levels``：v2.3.70 —— 只修这些层级（来自检查结论的 FixAction.levels）。
+      传 None = 不限级（旧行为：整维度全级重刷）。编号计数器**始终全量推进**，
+      否则跨级重置会断（多章节文档的二级编号会一路累加），只是不在范围内的层级
+      不写格式、不加批注。
 
     - 仅处理已分配层级的标题段（样式/outline 或识别出的伪标题），且非域段落；
     - 层级由 _assign_heading_levels() 给出（1-based）；规范未定义的更深层级回退到最深一级；
@@ -1611,12 +1620,19 @@ def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | No
         # 后置部分（References/Appendix…）IEEE 不编号，仅套格式
         text_lc = (para.text or "").strip().lower()
         numbered = f.number_prefix and text_lc not in _NON_NUMBERED_HEADINGS
+        _in_scope = only_levels is None or lvl in only_levels
         prefix = None
         if numbered:
+            # 计数器**始终推进**（含不在本次修正范围内的层级）：编号的跨级重置依赖
+            # 每一级都被计数，跳级不计数会让多章节文档的二级编号一路累加（A→B→C…）。
             counters[lvl] = counters.get(lvl, 0) + 1
             for deeper in [k for k in counters if k > lvl]:
                 counters[deeper] = 0     # 回到更浅层 → 更深层编号归零
-            prefix = _section_number_prefix(f.number_prefix, counters[lvl])
+            if _in_scope:
+                prefix = _section_number_prefix(f.number_prefix, counters[lvl])
+        if not _in_scope:
+            # 该级检查没报问题 → 一字节都不动（不写格式、不改大小写、不加批注）
+            continue
         changed = _format_heading_one(para, f, body_font, body_size)
         if _apply_heading_text_transform(para, f, prefix):
             changed = True
@@ -1914,6 +1930,14 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         _, findings = run_check(input_path, target)
     fix_dims = {f.fix.dimension for f in findings if getattr(f, "fix", None) is not None}
 
+    # v2.3.70：标题维度再**细化到级**（detail 见 _heading_scope 的说明），
+    # 并与预览 _compute_changes 共用同一函数 —— 单一真相源，杜绝「预览说改五级、实际改一级」。
+    heading_only_levels = _heading_scope(findings)
+
+    # 参考文献「内容改写」（APA→IEEE）属于改内容，必须由检查结论驱动：
+    # 检查器没报 reference 问题就一个字都不许改（旧版只看 reference_style 就改写）。
+    _ref_reported = _reference_problems_reported(findings)
+
     # 标题页段落（标题/作者/单位）：其排版由 spec.title_page 独占管辖，必须在标题
     # 判定**之前**先摘出来 —— 否则标题被标题页流程加粗后会反过来满足伪标题条件，
     # 第二遍被当成章节标题编号（实测把论文大标题编成 "I."，章节编号整体推一位）。
@@ -2084,6 +2108,7 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             fix_spacing="reference_spacing" in fix_dims,
             fix_new_page="reference_new_page" in fix_dims,
             fix_heading="reference_heading" in fix_dims,
+            fix_rewrite=_ref_reported,
         )
         summary["reference_style"] = target.reference_style
         summary["reference_hanging_indent_in"] = target.reference_hanging_indent_in
@@ -2098,7 +2123,8 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # 仅当 checker 绑定了 heading 修正动作时才施加（与「检查→修正」单一真相源一致）。
     head_info = {"formatted": 0, "pseudo_formatted": 0, "hierarchy_inferred": 0, "comments": 0}
     if "heading" in fix_dims:
-        head_info = _apply_heading_format(doc, target, spec, level_map=level_map)
+        head_info = _apply_heading_format(doc, target, spec, level_map=level_map,
+                                          only_levels=heading_only_levels)
     summary["headings_formatted"] = head_info["formatted"]
     summary["headings_pseudo_formatted"] = head_info["pseudo_formatted"]
     summary["headings_hierarchy_inferred"] = head_info["hierarchy_inferred"]
@@ -2177,6 +2203,7 @@ _DIM_LABELS = {
         "ref_spacing": "Reference entry line spacing",
         "ref_new_page": "References on new page",
         "ref_heading": "Reference heading format",
+        "ref_entry": "Reference entry format",
     },
     "zh": {
         "margin_top": "上页边距", "margin_bottom": "下页边距",
@@ -2200,6 +2227,7 @@ _DIM_LABELS = {
         "ref_spacing": "参考文献条目行距",
         "ref_new_page": "参考文献另起一页",
         "ref_heading": "参考文献标题格式",
+        "ref_entry": "参考文献条目格式",
     },
 }
 _ALIGN_ZH = {"left": "左对齐", "justify": "两端对齐", "center": "居中", "right": "右对齐"}
@@ -2238,6 +2266,55 @@ _NOTES_TMPL = {
 
 def _lang_of(lang):
     return lang if lang in ("en", "zh") else "en"
+
+
+def _heading_scope(findings) -> frozenset | None:
+    """从检查结论里读出「到底报了哪几级标题」，修正时只动这几级。
+
+    v2.3.70。老板定的执行逻辑：先检查、再按检查结果改，不是自己瞎改。
+    检查器现在把 heading 结论细化到级（``FixAction.levels``，例如 ``(3,)``
+    表示「Level 3 heading format」不合格），修正侧就必须读得到这个明细：
+
+      · 有带 levels 的 heading 动作 → 只修这些级（计数器仍全量推进，保证 II./III. 连续）；
+      · 出现不带 levels 的 heading 动作（如「层级数不符」这类整维度结论）→ 不限级；
+      · 完全没有 heading 动作 → 返回 None（fix_dims 本就不含 heading，不会修）。
+
+    ⚠️ **pass 的结论一律不算证据**：检查器每条 heading Finding 都会绑 fix（含
+    「Heading levels: Detected 3 levels」这种已经通过的整维度总览）。若不跳过它，
+    只要文档里有标题，这条 pass 总览就会把范围撑成「不限级」→ 每级标题全量重刷，
+    刚做好的「只改报错层级」当场作废。
+
+    返回 ``None`` = 不限级。``fix_docx`` 与 ``_compute_changes`` 共用本函数，
+    保证「预览说要改的」与「实际会改的」逐级一致。
+    """
+    if findings is None:
+        return None
+    scoped: set = set()
+    unscoped = False
+    for f in findings:
+        fx = getattr(f, "fix", None)
+        if fx is None or fx.dimension != "heading":
+            continue
+        if (getattr(f, "severity", "") or "") == "pass":
+            continue
+        lvs = getattr(fx, "levels", ()) or ()
+        if lvs:
+            scoped.update(int(x) for x in lvs if int(x) > 0)
+        else:
+            unscoped = True
+    return None if (unscoped or not scoped) else frozenset(scoped)
+
+
+def _reference_problems_reported(findings) -> bool:
+    """检查器是否**真的报了**参考文献问题 —— 决定能不能改写条目内容（APA→IEEE）。
+
+    内容层改写必须由检查结论驱动：条目本身合规时一个字都不许动。
+    ``findings is None`` 属旧调用方（fix_docx 内部自会跑一次检查，不会走到这里），
+    保守返回 False（宁可不改，绝不乱改）。
+    """
+    if findings is None:
+        return False
+    return any(f.dimension == "reference" and f.severity != "pass" for f in findings)
 
 
 def _dim_label(lang, key):
@@ -2558,17 +2635,43 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
     # 为什么必须列进预览：``compute_changes`` 是「要不要出副本、要不要扣次」的唯一依据。
     # 只改每级标题参数时若这里不列，App 会判「文档已符合」→ 压根不跑修正，
     # 客户填了一堆参数却什么也没发生（等于假功能）。
+    # v2.3.70：与 fix_docx 共用 _heading_scope —— 检查只报了三级，就只列三级的改动行。
     if _gate("heading"):
-        lines.extend(_heading_change_lines(prof, target, L))
+        lines.extend(_heading_change_lines(prof, target, L,
+                                           only_levels=_heading_scope(findings)))
+
+    # —— 参考文献条目内容改写（APA→IEEE）：这是**改内容**，必须在预览里写出来 ——
+    # 客户改前有权知道「哪几条被重写了」，否则等于背着人改字（违反只改格式铁律的知情前提）。
+    if _reference_problems_reported(findings) \
+            and getattr(target, "reference_style", None) == "IEEE" \
+            and getattr(target, "reference_rewrite", False):
+        _rw = [e for e in (getattr(prof, "reference_entries", None) or [])
+               if str(e).strip() and not _looks_like_ieee(str(e)) and _apa_to_ieee(str(e))]
+        if _rw:
+            _n = len(_rw)
+            if L == "zh":
+                lines.append("%s：按 IEEE 规范改写 %d 条条目"
+                             "（作者缩写 / 题名加引号 / vol. no. pp. / 年份）"
+                             % (_dim_label(L, "ref_entry"), _n))
+            else:
+                lines.append("%s: rewrite %d %s into IEEE style "
+                             "(initials, quoted title, vol./no./pp., year)"
+                             % (_dim_label(L, "ref_entry"), _n,
+                                "entry" if _n == 1 else "entries"))
 
     return lines
 
 
-def _heading_change_lines(prof, target: TargetProfile, L: str) -> list:
+def _heading_change_lines(prof, target: TargetProfile, L: str,
+                          only_levels=None) -> list:
     """把「每级标题规则 vs 文档实测」的差异列成预览行（不再重复比一遍逻辑：
 
     与 checker 的新维度同源 —— 都走 ``resolve_heading_formats`` 取目标规则、
     都读 ``prof.heading_formats`` 的采样值。
+
+    v2.3.70：``only_levels`` 为检查结论里报错的层级集合（None = 不限级）。
+    与 ``fix_docx(only_levels=...)`` 同口径 —— 只给会被真正修改的层级出预览行，
+    兑现「预览里写的就是 fixer 真会改的」这一承诺。
     """
     want_map = resolve_heading_formats(
         getattr(target, "heading_formats", None) or {},
@@ -2580,6 +2683,8 @@ def _heading_change_lines(prof, target: TargetProfile, L: str) -> list:
     have_map = getattr(prof, "heading_formats", None) or {}
     out: list = []
     for lvl in sorted(want_map):
+        if only_levels is not None and lvl not in only_levels:
+            continue
         want = want_map[lvl]
         got = have_map.get(lvl)
         if got is None:
@@ -2597,9 +2702,13 @@ def _heading_change_lines(prof, target: TargetProfile, L: str) -> list:
                 str(got.font_family).strip().lower() != str(want.font_family).strip().lower():
             bits.append("%s → %s" % (got.font_family, want.font_family))
         _num("size", got.size_pt, want.size_pt, "pt")
-        if want.alignment and got.alignment and got.alignment != want.alignment:
-            bits.append("%s → %s" % (_align_text(L, got.alignment),
-                                     _align_text(L, want.alignment)))
+        if want.alignment:
+            # 与 docx_reader 同口径：没写 w:jc 就是左对齐（None 不许当成「没差异」，
+            # 否则 fixer 会改、预览却不列 → 客户被背着改）。
+            _got_al = got.alignment or "left"
+            if _got_al != want.alignment:
+                bits.append("%s → %s" % (_align_text(L, _got_al),
+                                         _align_text(L, want.alignment)))
         ind_want = want.indent_in if want.indent_in is not None else (
             0.5 if want.indent else None)
         _num("indent", got.indent_in, ind_want, '"')
