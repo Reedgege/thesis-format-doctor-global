@@ -57,7 +57,7 @@ from ..engine.specs import (SPEC_ORDER, spec_display, REFERENCE_STYLE_KEYS,
                             REFERENCE_STYLE_CHOICES)
 from ..license import license as lic
 from .. import versioninfo
-from . import i18n, iconpath, theme
+from . import i18n, iconpath, recents, theme
 from .fonts import Fonts
 from .modal_shell import ModalShell
 from .widgets import (BrandMark, IconBadge, ProgressBar, RoundButton, RoundCard,
@@ -450,6 +450,11 @@ class App:
         self.school_ref_style = tk.StringVar(value="")
         # 高级区是否可用（选内置规范时整片置灰）
         self._adv_enabled = True
+
+        # v2.3.78：最近使用（手填问卷模板 / AI 导入文件）的控件与缓存
+        self._manual_recent_items: list = []   # 与下拉项一一对应的问卷 dict 列表
+        self._ai_recent_items: list = []       # 与下拉项一一对应的文件路径列表
+        self._restore_last_session()           # 启动自动恢复上一次（落盘在 recents.json）
 
         _sw = root.winfo_screenwidth()
         _sh = root.winfo_screenheight()
@@ -1927,6 +1932,16 @@ class App:
                                 font=F["F_HELP"], anchor="w", justify="left")
         self._q_name.pack(fill="x", pady=(2, 0))
         _auto_wrap(self._q_name, c1, 0)
+        # v2.3.78：最近填过的问卷 = 可点即填入的「模板」下拉
+        r_rec = tk.Frame(sec, bg=theme.SURFACE)
+        r_rec.pack(fill="x", pady=(4, 0))
+        tk.Label(r_rec, text=tr("recents_manual_label"), bg=theme.SURFACE,
+                 fg=theme.TEXT_3, font=F["F_HELP"], anchor="w").pack(
+                     side="left", padx=(0, 6))
+        self._manual_recent = ttk.Combobox(r_rec, state="readonly", height=6,
+                                           font=F["F_HELP"], width=20)
+        self._manual_recent.pack(side="left", fill="x", expand=True)
+        self._manual_recent.bind("<<ComboboxSelected>>", self._on_manual_recent_pick)
 
         # —— ③ AI 导入配置 ——
         sec2 = tk.Frame(parent, bg=theme.SURFACE)
@@ -1957,6 +1972,19 @@ class App:
                                  font=F["F_HELP"], anchor="w", justify="left")
         self._ai_name.pack(fill="x", pady=(2, 0))
         _auto_wrap(self._ai_name, c2, 0)
+        # v2.3.78：最近导入的 AI 配置文件 = 可点即重新导入的下拉
+        r_rec2 = tk.Frame(sec2, bg=theme.SURFACE)
+        r_rec2.pack(fill="x", pady=(4, 0))
+        tk.Label(r_rec2, text=tr("recents_ai_label"), bg=theme.SURFACE,
+                 fg=theme.TEXT_3, font=F["F_HELP"], anchor="w").pack(
+                     side="left", padx=(0, 6))
+        self._ai_recent = ttk.Combobox(r_rec2, state="readonly", height=6,
+                                       font=F["F_HELP"], width=20)
+        self._ai_recent.pack(side="left", fill="x", expand=True)
+        self._ai_recent.bind("<<ComboboxSelected>>", self._on_ai_recent_pick)
+
+        # 下拉建好后立即用磁盘上的 recents 填充（语言切换/记忆变更后都会再刷）
+        self._refresh_recent_combos()
 
     def _toggle_advanced(self):
         """展开 / 收起 Advanced options（返回展开后的状态，便于测试断言）。"""
@@ -2471,6 +2499,143 @@ class App:
         self._paint_advanced_state()
         self._sync_ui()
 
+    # -------------------------------------------------- 最近使用（v2.3.78）
+    def _restore_last_session(self):
+        """启动自动恢复上一次：把上次的手填问卷模板 / AI 导入文件读回界面。
+
+        只恢复 manual / ai 两种来源（其余来源无本地记忆数据，沿用默认）；
+        AI 文件路径若已不存在则跳过恢复（不恢复一个打不开的链接）。
+        任何异常都静默忽略 —— 恢复失败绝不阻塞启动。
+        """
+        try:
+            rec = recents.load_recents()
+            last = rec.get("last_source")
+            if last == "src_ai":
+                p = recents.first_existing_ai(rec)
+                if p:
+                    self.ai_json.set(p)
+                    self.source_mode.set("src_ai")
+            elif last == "src_manual":
+                data = recents.first_manual(rec)
+                if data is not None:
+                    self.questionnaire_data = dict(data)
+                    self.source_mode.set("src_manual")
+        except Exception:
+            pass
+
+    def _remember_manual(self):
+        """把当前手填问卷写入「最近模板」并落盘（不阻塞、不抛）。"""
+        try:
+            rec = recents.load_recents()
+            rec = recents.add_manual(rec, self.questionnaire_data)
+            rec = recents.set_last_source(rec, "src_manual")
+            recents.save_recents(rec)
+            self._refresh_recent_combos()
+        except Exception:
+            pass
+
+    def _remember_ai(self, path: str):
+        """把刚导入的 AI 配置文件路径写入「最近导入」并落盘。"""
+        try:
+            rec = recents.load_recents()
+            rec = recents.add_ai(rec, path)
+            rec = recents.set_last_source(rec, "src_ai")
+            recents.save_recents(rec)
+            self._refresh_recent_combos()
+        except Exception:
+            pass
+
+    def _refresh_recent_combos(self):
+        """用磁盘上的 recents 重填两个「最近使用」下拉（语言切换/记忆变更后都走这）。
+
+        下拉项是显示文案，真正的 dict / 路径存在 ``_manual_recent_items`` /
+        ``_ai_recent_items`` 里，按选中下标回查，避免把摘要反解析回数据。
+        控件尚未建好（极少路径）时静默跳过，不抛。
+        """
+        cb_m = getattr(self, "_manual_recent", None)
+        cb_a = getattr(self, "_ai_recent", None)
+        if cb_m is None and cb_a is None:
+            return
+        try:
+            rec = recents.load_recents()
+        except Exception:
+            rec = {"manual": [], "ai": []}
+        if cb_m is not None:
+            items = rec.get("manual") or []
+            self._manual_recent_items = [it.get("data") for it in items]
+            if items:
+                vals = [recents.manual_summary(it.get("data"), self.lang) for it in items]
+            else:
+                vals = [self.tr("recents_none")]
+            try:
+                cb_m.config(values=vals)
+                cb_m.set("")
+            except Exception:
+                pass
+        if cb_a is not None:
+            ai_items = [it for it in (rec.get("ai") or [])
+                        if os.path.isfile(it.get("path", ""))]
+            self._ai_recent_items = [it.get("path") for it in ai_items]
+            if ai_items:
+                vals = [os.path.basename(it.get("path")) for it in ai_items]
+            else:
+                vals = [self.tr("recents_none")]
+            try:
+                cb_a.config(values=vals)
+                cb_a.set("")
+            except Exception:
+                pass
+
+    def _on_manual_recent_pick(self, _e=None):
+        """点「最近模板」下拉：把选中的问卷 dict 回填到 questionnaire_data 并切到手填来源。"""
+        cb = getattr(self, "_manual_recent", None)
+        if cb is None:
+            return
+        idx = cb.current()
+        if idx is None or idx < 0 or idx >= len(self._manual_recent_items):
+            return
+        data = self._manual_recent_items[idx]
+        if data is None:
+            return
+        self.questionnaire_data = dict(data)
+        if self.source_mode.get() != "src_manual":
+            self._apply_source_mode("src_manual")
+        else:
+            self._on_input_changed()
+        try:
+            cb.set("")
+        except Exception:
+            pass
+
+    def _on_ai_recent_pick(self, _e=None):
+        """点「最近导入」下拉：把选中的配置文件重新导入（路径失效则移出历史）。"""
+        cb = getattr(self, "_ai_recent", None)
+        if cb is None:
+            return
+        idx = cb.current()
+        if idx is None or idx < 0 or idx >= len(self._ai_recent_items):
+            return
+        path = self._ai_recent_items[idx]
+        if not path or not os.path.isfile(path):
+            # 文件已消失：从历史里清掉，刷新下拉
+            try:
+                rec = recents.load_recents()
+                rec = recents.remove_ai(rec, path)
+                recents.save_recents(rec)
+            except Exception:
+                pass
+            self._refresh_recent_combos()
+            return
+        self.ai_json.set(path)
+        if self.source_mode.get() != "src_ai":
+            self._apply_source_mode("src_ai")
+        else:
+            self._on_input_changed()
+        try:
+            cb.set("")
+        except Exception:
+            pass
+
     def _invalidate_results(self):
         """作废上一次体检结论与修正产物记录。
 
@@ -2921,6 +3086,7 @@ class App:
                        ("All files", "*.*")])
         if p:
             self.ai_json.set(p)
+            self._remember_ai(p)
             self._on_input_changed()
 
     # ------------------------------------------------------------ 问卷
@@ -3259,6 +3425,7 @@ class App:
                     parent=win):
                 return
             self.questionnaire_data = data
+            self._remember_manual()
             messagebox.showinfo(tr("q_saved_title"), tr("q_saved"), parent=win)
             self._close_one(win)
             self._on_input_changed()

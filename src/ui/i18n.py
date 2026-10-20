@@ -584,6 +584,12 @@ STRINGS: dict = {
         "fb_sending": "Sending…",
         "fb_sent": "Thanks! Your feedback is on its way.",
         "fb_sent_title": "Feedback sent",
+
+        # —— 最近使用（v2.3.78）：手填问卷模板 / AI 导入文件，落盘 ~/.paperformatpro/recents.json ——
+        "recents_manual_label": "Recent templates",
+        "recents_ai_label": "Recent imports",
+        "recents_none": "No recent items",
+        "recents_removed": "File no longer exists — removed from history",
         "fb_failed_title": "Couldn't send",
         "fb_mailto_fallback": ("Couldn't reach the server. We've opened your email app with a "
                                "pre-filled message — just press send."),
@@ -948,6 +954,12 @@ STRINGS: dict = {
         "fb_sending": "提交中…",
         "fb_sent": "已收到，谢谢你的反馈！",
         "fb_sent_title": "反馈已发送",
+
+        # —— 最近使用（v2.3.78）——
+        "recents_manual_label": "最近模板",
+        "recents_ai_label": "最近导入",
+        "recents_none": "暂无记录",
+        "recents_removed": "文件已不存在，已从历史移除",
         "fb_failed_title": "发送失败",
         "fb_mailto_fallback": "没能连上服务器，已为你打开邮件客户端并填好内容 —— 直接点发送即可。",
     },
