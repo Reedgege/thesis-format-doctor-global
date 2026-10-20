@@ -162,8 +162,14 @@ fields:
   - key: reference_style
     label: Reference format
     unit: ""
-    example: APA
-    allowed: [APA, MLA, IEEE]
+    example: custom
+    allowed: [custom, APA, MLA, IEEE]
+    note: >-
+      "custom" = apply only the reference entry rules you filled in below (font, size,
+      line spacing, hanging indent, numbering, heading bold/centred) and do NOT check the
+      entries against any built-in citation style. Use APA / MLA / IEEE only when the
+      requirement genuinely names that style; even then it affects the reference list only,
+      never the page setup or the headings.
   - key: reference_hanging_indent_in
     label: Reference hanging indent
     unit: in
@@ -299,7 +305,10 @@ example_filled:
       italic: false
       alignment: left
       indent_in: 0.5
-  reference_style: APA
+  # Only set APA / MLA / IEEE when the requirement really names that citation style.
+  # Otherwise leave it as "custom" and let the entry rules below do the work —
+  # a citation style affects the reference list only, never page setup or headings.
+  reference_style: custom
   reference_hanging_indent_in: 0.5
   reference_numbered: false
   # The reference list itself is often formatted differently from the body text.
