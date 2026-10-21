@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from .docx_reader import (DocumentProfile, read_docx, DocxReadError,
                           describe_paper_size, identify_paper_size,
-                          find_abstract_section)
+                          find_abstract_section, describe_table_lines)
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT, origin_of_source
 from .policy import TEXT_IS_LOCKED
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec,
@@ -1607,6 +1607,47 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             source=_cap_fig_origin,
         ))
 
+    # —— 表格线（学术三线表，v2.3.85）——
+    # 老板 2026-10-21 清单第③条：「表格去四周边框做学术三线表」。审计实测：这条
+    # **完全没做** —— 4 张表在四种输出里边框一个字节都没变，引擎源码里连 tblBorders
+    # 都没有。而真实样本的 4 张表**根本没有边框**（0 处 tblBorders / 0 处 tcBorders），
+    # 所以「去掉四边」不够，还得把顶线 / 表头下线 / 底线**画上去**。
+    # 与栏数同为**版式结构维度**：选中 APA/MLA/IEEE 就是为其表格样式做了显式声明
+    # （三家都只允许横线、禁止竖线 —— APA 7th §7.10 / IEEEtran open table），
+    # 故本维度**不**做 spec→info 软参考降级；学校模板/问卷显式给出时本就硬判。
+    # 只判「线」，绝不碰表格里的文字（文字 100% 锁死，见 policy.TEXT_IS_LOCKED）。
+    if getattr(target, "table_lines", None) == "three_line":
+        _lines_origin = target.resolution.get("table_lines", "spec")
+        _states = list(getattr(prof, "table_line_states", None) or [])
+        _lines_msg = "Table rules (three-line academic table)"
+        _lines_exp = ("three-line tables: top rule + rule under the header + bottom rule, "
+                      "no vertical rules, no inner horizontal rules")
+        if not _states:
+            findings.append(Finding(
+                dimension="table_lines", severity="info", message=_lines_msg,
+                expected=_lines_exp,
+                actual="No tables were found in the document",
+                source=_lines_origin,
+            ))
+        else:
+            _bad = [(i, s) for i, s in enumerate(_states) if not s.get("three_line")]
+            if not _bad:
+                findings.append(Finding(
+                    dimension="table_lines", severity="pass", message=_lines_msg,
+                    expected=_lines_exp,
+                    actual="%d table(s), all three-line" % len(_states),
+                    source=_lines_origin,
+                ))
+            else:
+                _detail = "; ".join(
+                    "Table %d: %s" % (s.get("index", i + 1), describe_table_lines(s))
+                    for i, s in _bad)
+                findings.append(Finding(
+                    dimension="table_lines", severity="warn", message=_lines_msg,
+                    expected=_lines_exp,
+                    actual=_detail,
+                    source=_lines_origin,
+                ))
     # —— 表格内段落：段前 / 段后（v2.3.77）——
     # 表格里「不要多余空行」是学校硬要求里很常见的一条；表格段落与正文是两套口径
     # （表格通常 0 磅、正文常有 6–12 磅），所以单独立维度、单独采样。
@@ -1967,6 +2008,10 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         elif f.dimension == "reference" and target.reference_numbered:
             # IEEE 顺序编码制：references 维度发现偏差（缺 [n]）→ 绑定编号修正
             f.fix = FixAction(dimension="reference_numbered", value=True)
+        elif f.dimension == "table_lines" and target.table_lines == "three_line":
+            # v2.3.85：三线表可修。与栏数同理，规范来源就是显式版式意图
+            # （APA/IEEE/MLA 三家的表格都不许有竖线），故 spec 来源也绑定修正。
+            f.fix = FixAction(dimension="table_lines", value="three_line")
         # running_head / reference_new_page / font_allowlist（字体本身，不换字体）/
         # reference_heading / reference_sort / title_format / first_page_heading /
         # abstract / author_note / 内容提示类：均为「仅提示、改内容」项，fix=None → fixer 绝不碰。

@@ -393,6 +393,115 @@ def _apply_table_spacing_pt(doc, before_pt, after_pt) -> bool:
     return _write_para_spacing(paras, before_pt, after_pt)
 
 
+# ---------------------------------------------------------------------------
+# 表格线：学术三线表（v2.3.85）
+# ---------------------------------------------------------------------------
+# 老板 2026-10-21 清单第③条。实测真实样本：4 张表**一个边框都没有**（0 处 tblBorders、
+# 0 处 tcBorders），所以「去四周边框」这一步不够 —— 顶线 / 表头下线 / 底线**得画上去**。
+#
+# 写入策略（为什么这么写）：
+#   ① 线条写在**表格级** tblPr/tblBorders：一条属性管全表，幂等、可预期。
+#      top=1.5pt、bottom=1.5pt、left/right/insideV=nil、insideH=nil。
+#   ② 表头下线写在**第一行各格的 tcPr/tcBorders/bottom**（0.75pt）：线挂"行下方"而不是
+#      "表内横线"，这样客户在 Word 里插/删行时表头线仍跟着第一行走。
+#   ③ 🔴 必须**先把每个单元格的 tcBorders 删掉**：单元格级边框优先级高于表格级，
+#      留着就等于白改（客户打开还是一条不少）。这也是"看着改了、实际没变"的经典坑。
+#   ④ 写的是直接格式，优先级高于表格样式（如 Table Grid），所以不必去改样式本身 ——
+#      改样式会波及同一样式的其它表格，属越权。
+# 文字一个字节都不动（policy.TEXT_IS_LOCKED），只动边框。
+_THICK_SZ = 12      # w:sz 单位是 1/8 磅 → 12 = 1.5 磅（三线表的顶线/底线）
+_THIN_SZ = 6        # 6 = 0.75 磅（表头下方的分隔线）
+
+# CT_TblPrBase 子元素顺序：tblBorders 必须排在 shd/tblLayout/... 之前
+_TBLPR_AFTER_BORDERS = ("w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook",
+                        "w:tblCaption", "w:tblDescription")
+# CT_TcPr 子元素顺序：tcBorders 必须排在 shd/noWrap/tcMar/... 之前
+_TCPR_AFTER_BORDERS = ("w:shd", "w:noWrap", "w:tcMar", "w:textDirection",
+                       "w:tcFitText", "w:vAlign", "w:hideMark")
+
+
+def _ordered_child(parent, tag: str, after_tags) -> "OxmlElement":
+    """按 OOXML 规定顺序取（必要时新建）子元素，避免 Word 报「文件已损坏」。"""
+    el = parent.find(qn(tag))
+    if el is not None:
+        return el
+    el = OxmlElement(tag)
+    idx = len(parent)
+    for i, child in enumerate(parent):
+        if child.tag in {qn(t) for t in after_tags}:
+            idx = i
+            break
+    parent.insert(idx, el)
+    return el
+
+
+def _write_border(box, side: str, val: str, sz: int) -> None:
+    """在 tblBorders / tcBorders 容器里写某一边（先删后建，保证属性干净）。"""
+    old = box.find(qn("w:" + side))
+    if old is not None:
+        box.remove(old)
+    el = OxmlElement("w:" + side)
+    el.set(qn("w:val"), val)
+    if val not in ("nil", "none"):
+        el.set(qn("w:sz"), str(sz))
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "auto")
+    box.append(el)
+
+
+def _apply_three_line_tables(doc) -> int:
+    """把所有表格改成学术三线表；返回处理过的表格数（0 = 没有表格，等于没改）。"""
+    try:
+        tables = list(doc.tables)
+    except Exception:
+        return 0
+    updated = 0
+    for tbl in tables:
+        try:
+            tblPr = tbl._tbl.tblPr
+        except Exception:
+            continue
+        if tblPr is None:
+            continue
+        # ① 表格级：顶线 / 底线 1.5 磅，四边竖线与内部横线一律 nil
+        box = _ordered_child(tblPr, "w:tblBorders", _TBLPR_AFTER_BORDERS)
+        _write_border(box, "top", "single", _THICK_SZ)
+        _write_border(box, "bottom", "single", _THICK_SZ)
+        for _side in ("left", "right", "insideH", "insideV"):
+            _write_border(box, _side, "nil", 0)
+        # ② 逐格：先清掉单元格级残留（优先级高于表格级，不清就是白改）
+        try:
+            rows = list(tbl.rows)
+        except Exception:
+            rows = []
+        for row in rows:
+            try:
+                cells = list(row.cells)
+            except Exception:
+                continue
+            for cell in cells:
+                try:
+                    tcPr = cell._tc.tcPr
+                except Exception:
+                    continue
+                if tcPr is None:
+                    continue
+                old = tcPr.find(qn("w:tcBorders"))
+                if old is not None:
+                    tcPr.remove(old)
+        # ③ 表头下线：第一行各格的下边框 0.75 磅（≥2 行才画，单行表谈不上表头）
+        if len(rows) >= 2:
+            for cell in rows[0].cells:
+                try:
+                    tcPr = cell._tc.get_or_add_tcPr()
+                except Exception:
+                    continue
+                cbox = _ordered_child(tcPr, "w:tcBorders", _TCPR_AFTER_BORDERS)
+                _write_border(cbox, "bottom", "single", _THIN_SZ)
+        updated += 1
+    return updated
+
+
 def _toc_heading_paragraph(doc):
     """目录标题段（"Contents" / "目录" 那一段）；识别不到返回 None。
 
@@ -2449,6 +2558,12 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if _tbl_sa is not None:
             applied["table_space_after_pt"] = _tbl_sa
 
+    # 表格线：学术三线表（v2.3.85）—— 只动边框（顶线/表头线/底线），文字一个字节不动
+    if "table_lines" in fix_dims \
+            and getattr(target, "table_lines", None) == "three_line":
+        if _apply_three_line_tables(doc):
+            applied["table_lines"] = "three_line"
+
     # 目录标题段段前/段后（v2.3.77）：只动「目录」这一行，条目一律不碰
     # （条目是域段落，改直接格式会被「更新目录」冲掉）。
     _toc_sb = getattr(target, "toc_heading_space_before_pt", None) \
@@ -2587,6 +2702,7 @@ _DIM_LABELS = {
         "caption_space_after": "Caption space after",
         "table_space_before": "Table cell space before",
         "table_space_after": "Table cell space after",
+        "table_lines": "Table rules (three-line)",
         "toc_heading_space_before": "Contents heading space before",
         "toc_heading_space_after": "Contents heading space after",
         "title_page": "Title page", "block_quote": "Block quotation",
@@ -2622,6 +2738,7 @@ _DIM_LABELS = {
         "caption_space_after": "图表标题段后间距",
         "table_space_before": "表格内段落段前间距",
         "table_space_after": "表格内段落段后间距",
+        "table_lines": "表格线（三线表）",
         "toc_heading_space_before": "目录标题段前间距",
         "toc_heading_space_after": "目录标题段后间距",
         "title_page": "标题页", "block_quote": "块引用",
@@ -2662,6 +2779,15 @@ _UNKNOWN = {"en": "unknown", "zh": "未知"}
 _NO_CHANGE = {
     "en": "This document already matches the target format — no changes needed.",
     "zh": "当前文档已符合目标格式，无需修正。",
+}
+# 三线表预览文案（v2.3.85）：现状 → 目标。{bad}/{total} 是"几张表不合规/共几张"。
+_TL_PREVIEW_CUR = {
+    "en": "{bad} of {total} table(s) not three-line",
+    "zh": "{bad}/{total} 张表不是三线表",
+}
+_TL_PREVIEW_EXP = {
+    "en": "three lines only (top / under header / bottom)",
+    "zh": "只留顶线/表头线/底线",
 }
 _NOTES_TMPL = {
     "en": "Note: text inside tables ({n} paragraph(s)) is not modified; only body "
@@ -2970,6 +3096,17 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
         if abs(float(_cur_tbl) - float(_want_tbl)) > 0.1:
             lines.append("%s: %g pt → %g pt" % (
                 _dim_label(L, _dim), float(_cur_tbl), float(_want_tbl)))
+
+    # —— 表格线：三线表（v2.3.85）——
+    # 只在真的有不符三线表的表格时才列一行（预览必须和 fixer 真会做的事一致）。
+    if _gate("table_lines") and getattr(target, "table_lines", None) == "three_line":
+        _tl_states = list(getattr(prof, "table_line_states", None) or [])
+        _tl_bad = [s for s in _tl_states if not s.get("three_line")]
+        if _tl_bad:
+            _tl_cur = _TL_PREVIEW_CUR[L].format(bad=len(_tl_bad), total=len(_tl_states))
+            _tl_exp = _TL_PREVIEW_EXP[L]
+            lines.append("%s: %s → %s" % (
+                _dim_label(L, "table_lines"), _tl_cur, _tl_exp))
 
     # —— 目录标题段段前/段后（v2.3.77）：条目间距只提示、不进预览 ——
     for _dim, _key in (("toc_heading_space_before", "toc_heading_space_before_pt"),

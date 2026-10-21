@@ -135,6 +135,10 @@ class DocumentProfile:
     # 学校硬要求里很常见的一条，此前完全读不到（表格只被采样了字体/字号/行距）。
     table_space_before_pt: Optional[float] = None
     table_space_after_pt: Optional[float] = None
+    # —— 表格边框（三线表，v2.3.85）——
+    # 每张表一条 dict，见 sample_table_lines()：has_top / has_bottom / has_header_line /
+    # has_vertical / has_inside_h / three_line。空列表 = 文档里没有表格（不是"合规"）。
+    table_line_states: list = field(default_factory=list)
     # —— 目录（TOC）探测（v2.3.77）——
     # 目录条目是**域段落**，fixer 一律不碰（改直接格式会被「更新目录」冲掉）；
     # 这里只负责认出「有没有目录 / 有几条 / 目录标题与条目的实际间距」，
@@ -953,6 +957,174 @@ def _iter_table_paragraphs(doc):
 def iter_table_paragraphs(doc):
     """公开入口：遍历表格单元格内的段落（checker / fixer 共用同一实现）。"""
     return _iter_table_paragraphs(doc)
+
+
+# ---------------------------------------------------------------------------
+# 表格边框采样（三线表，v2.3.85）—— 单一真相源，checker 与 fixer 共用
+# ---------------------------------------------------------------------------
+# 为什么要读「有效边框」而不是只看 tblPr/tblBorders：
+#   Word 里表格线的来源有三层，优先级 单元格 tcBorders > 表格 tblBorders > 表格样式
+#   （tblStyle 指向的 style 里那份 tblBorders，例如 "Table Grid"）。只看中间一层会有
+#   两种误判：①客户用了 Table Grid 样式、表格级没写边框 → 看着有框却说"没框"；
+#   ②单元格上带着残留的 tcBorders → 表格级已经改干净了，客户打开还是一条不少。
+# 所以这里逐格解析「格 → 表 → 样式」三级，得到客户肉眼所见的那套线。
+_TBL_PR_AFTER_BORDERS = ("w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook",
+                         "w:tblCaption", "w:tblDescription")
+
+
+def _read_border(box, side):
+    """从 <w:tblBorders>/<w:tcBorders> 容器读某一边：返回 (val, sz)；无该边返回 None。"""
+    if box is None:
+        return None
+    el = box.find(qn("w:" + side))
+    if el is None:
+        return None
+    try:
+        sz = int(el.get(qn("w:sz")) or 0)
+    except Exception:
+        sz = 0
+    return (el.get(qn("w:val")) or "single", sz)
+
+
+def _border_visible(border) -> bool:
+    """边框是否真的画得出来（nil / none = 不画）。"""
+    return bool(border) and str(border[0]).lower() not in ("nil", "none")
+
+
+def _table_style_borders(doc, tbl):
+    """表格所引用样式（tblStyle）里定义的 tblBorders 容器；没有返回 None。"""
+    try:
+        tblPr = tbl._tbl.tblPr
+    except Exception:
+        return None
+    sid = None
+    if tblPr is not None:
+        st = tblPr.find(qn("w:tblStyle"))
+        if st is not None:
+            sid = st.get(qn("w:val"))
+    if not sid:
+        return None
+    try:
+        for style in doc.styles.element.findall(qn("w:style")):
+            if style.get(qn("w:styleId")) == sid:
+                spPr = style.find(qn("w:tblPr"))
+                if spPr is not None:
+                    return spPr.find(qn("w:tblBorders"))
+    except Exception:
+        pass
+    return None
+
+
+def _effective_border(tblPr, style_box, tcPr, side):
+    """有效边框：单元格 → 表格 → 表格样式，第一个有定义的就赢。"""
+    b = _read_border(tcPr.find(qn("w:tcBorders")) if tcPr is not None else None, side)
+    if b is not None:
+        return b
+    b = _read_border(tblPr.find(qn("w:tblBorders")) if tblPr is not None else None, side)
+    if b is not None:
+        return b
+    return _read_border(style_box, side)
+
+
+def _row_tc_prs(row):
+    """一行里每格的 tcPr（合并单元格会重复返回同一个 tc，这里去重）。"""
+    out, seen = [], set()
+    try:
+        cells = list(row.cells)
+    except Exception:
+        return out
+    for cell in cells:
+        try:
+            tc = cell._tc
+        except Exception:
+            continue
+        if tc in seen:
+            continue
+        seen.add(tc)
+        out.append(tc.tcPr if tc is not None else None)
+    return out
+
+
+def sample_table_lines(doc) -> list:
+    """采样每张表的边框现状，供 checker 判「是不是学术三线表」。
+
+    三线表 = ① 有顶线 ② 有底线 ③ 表头下方有一条横线（≥2 行时）
+             ④ **没有**任何竖线（left / right / insideV）
+             ⑤ **没有**内部横线（insideH）。
+    每张表返回一个 dict；读不出来就少给一条，绝不臆造。
+    """
+    out: list = []
+    try:
+        tables = list(doc.tables)
+    except Exception:
+        return out
+    for idx, tbl in enumerate(tables):
+        try:
+            rows = list(tbl.rows)
+        except Exception:
+            continue
+        if not rows:
+            continue
+        try:
+            tblPr = tbl._tbl.tblPr
+        except Exception:
+            tblPr = None
+        style_box = _table_style_borders(doc, tbl)
+        first = _row_tc_prs(rows[0])
+        last = _row_tc_prs(rows[-1])
+        has_top = any(_border_visible(_effective_border(tblPr, style_box, p, "top"))
+                      for p in first)
+        has_bottom = any(_border_visible(_effective_border(tblPr, style_box, p, "bottom"))
+                         for p in last)
+        has_vertical = False
+        has_inside_h = False
+        for row in rows:
+            for p in _row_tc_prs(row):
+                if (_border_visible(_effective_border(tblPr, style_box, p, "left"))
+                        or _border_visible(_effective_border(tblPr, style_box, p, "right"))
+                        or _border_visible(_effective_border(tblPr, style_box, p, "insideV"))):
+                    has_vertical = True
+                if _border_visible(_effective_border(tblPr, style_box, p, "insideH")):
+                    has_inside_h = True
+        has_header_line = False
+        if len(rows) >= 2:
+            has_header_line = bool(first) and all(
+                _border_visible(_effective_border(tblPr, style_box, p, "bottom"))
+                for p in first)
+        out.append({
+            "index": idx + 1,                      # 给客户看的表号（从 1 起）
+            "rows": len(rows),
+            "cols": len(first),
+            "has_top": has_top,
+            "has_bottom": has_bottom,
+            "has_header_line": has_header_line,
+            "has_vertical": has_vertical,
+            "has_inside_h": has_inside_h,
+            "three_line": bool(has_top and has_bottom and not has_vertical
+                               and not has_inside_h and has_header_line),
+        })
+    return out
+
+
+def describe_table_lines(state: dict) -> str:
+    """把一张表的边框现状说成人话（进报告 / 复核弹窗给客户看）。"""
+    if not state:
+        return "unknown"
+    problems = []
+    if state.get("has_vertical"):
+        problems.append("vertical rules")
+    if state.get("has_inside_h"):
+        problems.append("inner horizontal rules")
+    if not state.get("has_top"):
+        problems.append("no top rule")
+    if not state.get("has_bottom"):
+        problems.append("no bottom rule")
+    if not state.get("has_header_line"):
+        problems.append("no rule under the header")
+    if not problems:
+        return "three-line (top / header / bottom, no vertical rules)"
+    return ", ".join(problems)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2164,6 +2336,12 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.table_space_before_pt = tbl_sb.most_common(1)[0][0]
     if tbl_sa:
         prof.table_space_after_pt = tbl_sa.most_common(1)[0][0]
+    # v2.3.85：表格边框现状（三线表检查用）。读「格→表→样式」三级有效边框，
+    # 见 sample_table_lines()。空列表 = 没有表格，checker 会说明「没找到表格」。
+    try:
+        prof.table_line_states = sample_table_lines(doc)
+    except Exception:
+        prof.table_line_states = []
 
     if font_counter:
         prof.font_family = font_counter.most_common(1)[0][0]

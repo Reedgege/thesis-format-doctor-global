@@ -1040,9 +1040,11 @@ Q_LABELS_EN = {
     "caption_space_after_pt": "Caption: space after",
     "caption_position_table": "Table caption position",
     "caption_position_figure": "Figure caption position",
+    "table_lines": "Table rules (three-line)",
 }
-
 Q_HELP_EN = {
+    "table_lines": "three_line = academic three-line table (top rule / rule under the header "
+                   "/ bottom rule, no vertical or inner rules). Leave blank = not checked.",
     "margin_top_in": "Top margin in inches (1 in ≈ 2.54 cm)",
     "margin_bottom_in": "Bottom margin in inches",
     "margin_left_in": "Left margin in inches (often wider for binding)",
@@ -1138,6 +1140,8 @@ def questionnaire_label(lang: str, field: dict) -> str:
 Q_OPTION_LABELS: dict = {
     "reference_style.custom": {"zh": "按我校要求（自定义）",
                                "en": "My school's own (custom)"},
+    # v2.3.85：表格线的选项值（引擎值是 three_line，界面上说人话）
+    "table_lines.three_line": {"zh": "学术三线表", "en": "Three-line (academic)"},
 }
 
 

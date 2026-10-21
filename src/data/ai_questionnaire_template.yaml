@@ -349,6 +349,16 @@ fields:
     unit: pt
     example: 0.0
     note: Space below each paragraph inside table cells. 0 is very common. Omit when unspecified.
+  - key: table_lines
+    label: Table rules (three-line academic table)
+    unit: ""
+    example: three_line
+    allowed: [three_line]
+    note: >-
+      three_line = academic three-line table: keep only the top rule, the rule under the header
+      row and the bottom rule; remove every vertical rule and every inner horizontal rule. The
+      tool draws the three rules if the table currently has none. Omit when the school or the
+      style says nothing about table rules.
   - key: toc_heading_space_before_pt
     label: Contents heading - space before
     unit: pt
@@ -450,3 +460,4 @@ example_filled:
   # caption_space_after_pt: 6            # space below the caption, in points
   # caption_position_table: top          # APA/IEEE: caption above the table
   # caption_position_figure: bottom      # APA/IEEE: caption below the figure
+  # table_lines: three_line             # academic three-line tables (top/header/bottom rules only)

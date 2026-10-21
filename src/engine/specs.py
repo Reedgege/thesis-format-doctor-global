@@ -193,6 +193,14 @@ class StyleSpec:
     caption_line_spacing: Optional[float] = None             # 图表标题行距（倍数）
     caption_position_table: Optional[str] = None             # "top" / "bottom"（表题在表格上方/下方）
     caption_position_figure: Optional[str] = None            # "top" / "bottom"（图题在图上方/下方）
+    # —— 表格线（v2.3.85）——
+    # "three_line" = 学术三线表：只保留**顶线 / 表头下线 / 底线**，四边竖线与内部横线全部去掉。
+    # "boxed"      = 允许（或要求）全框线。
+    # None         = 该风格不规定（由学校模板 / 问卷 / 客户决定），不检查也不改动。
+    # 依据：APA 7th §7.10（表格只允许必要的横线，禁止竖线）、IEEEtran 的 open table、
+    # MLA 的表格惯例，三家都是「无竖线、只用横线分区」= 三线表。
+    # 与栏数同为**版式结构维度**：选中某规范即为其显式版式意图，checker 不把它降级成 info。
+    table_lines: Optional[str] = None
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -223,6 +231,7 @@ class StyleSpec:
         "caption_line_spacing": self.caption_line_spacing,
         "caption_position_table": self.caption_position_table,
         "caption_position_figure": self.caption_position_figure,
+        "table_lines": self.table_lines,
         "notes": self.notes,
         }
 
@@ -542,6 +551,8 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         abstract_new_page=abstract_new_page,
         caption_position_table=caption_position_table,
         caption_position_figure=caption_position_figure,
+        # APA 7th §7.10：表格只用横线，**不许有竖线**（就要求是顶线/表头下线/底线）。
+        table_lines="three_line",
         notes=notes,
     )
 
@@ -606,6 +617,7 @@ SPECS: dict[str, StyleSpec] = {
         running_head_kind="mla",                  # = 姓氏 + 页码（非 APA 短标题）
         reference_heading_bold=False,             # Works Cited 标题不加粗
         reference_heading_bold_mode="forbid",    # MLA 明确禁止加粗（OWL: without bolding）
+        table_lines="three_line",                 # MLA 表格惯例：无竖线，只用横线分区
         notes="Usually no separate title page; the Works Cited list begins on a new page, titled "
               "'Works Cited' (centered, not bold), in alphabetical order by author's last name, with a "
               "0.5-inch hanging indent. Running head = your last name + page number, top-right, every page. "
@@ -632,6 +644,7 @@ SPECS: dict[str, StyleSpec] = {
         # 图表 caption（v2.3.67）：IEEE 表题在表格上方、图题在图下方（IEEEtran 约定）。
         caption_position_table="top",
         caption_position_figure="bottom",
+        table_lines="three_line",   # IEEEtran 表格为 open table：无竖线，顶线/表头线/底线
         notes="Numeric (sequential) citation system [1]; section headings use Roman/Arabic "
               "numbering (I. / A. / 1.): level 1 centered + bold + UPPERCASE, level 2 flush-left "
               "+ bold, deeper levels italic. This option targets the standard IEEE two-column "

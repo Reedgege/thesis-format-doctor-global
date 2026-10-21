@@ -4426,6 +4426,7 @@ class App:
                         target.caption_position_table or _none),
             "%s: %s" % (_lbl("caption_position_figure"),
                         target.caption_position_figure or _none),
+            "%s: %s" % (_lbl("table_lines"), target.table_lines or _none),
         ]
         for ln in _fm_lines:
             tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],

@@ -274,6 +274,11 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "caption_position_figure", "label": "图题位置", "group": "reference", "type": "choice",
      "options": ["top", "bottom"], "default": "", "unit": "",
      "help": "图题在图上方(top)还是下方(bottom)；APA/IEEE 图题在下。留空=不检查"},
+    # v2.3.85：表格线（三线表）。学校模板里「表格用三线表，不要竖线」是高频硬要求，
+    # 此前客户无处可填、引擎也完全不看表格边框。留空=不检查不改动（模板驱动）。
+    {"key": "table_lines", "label": "表格线", "group": "reference", "type": "choice",
+     "options": ["three_line"], "default": "", "unit": "",
+     "help": "three_line=学术三线表（顶线/表头下线/底线，去掉四边竖线与内部横线）；留空=不检查"},
 ]
 
 # 数值字段的合理范围（由 schema 派生，避免 UI 侧再抄一份）
@@ -368,6 +373,11 @@ class TargetProfile:
     # 混成一个字段就会「改表格顺手把正文也改了」。None = 不规定。
     table_space_before_pt: Optional[float] = None
     table_space_after_pt: Optional[float] = None
+    # —— 表格线（v2.3.85）——
+    # "three_line" = 学术三线表（只留顶线 / 表头下线 / 底线，无竖线无内部横线）；
+    # None = 不规定（不检查、不改动）。与 columns / paper_size 同属**结构维度**：
+    # 不进 PAGE_KEYS（复核弹窗用单选下拉），checker 也不做 spec→info 降级。
+    table_lines: Optional[str] = None
     # —— 目录（TOC，v2.3.77）——
     # 目录标题段可查可修；条目只核对、不自动改（条目是域段落，改直接格式会被
     # 「更新目录」冲掉，正确做法是改 TOC 1..9 样式）。None = 不规定。
@@ -447,6 +457,7 @@ class TargetProfile:
             **{k: getattr(self, k) for k in self.ABSTRACT_KEYS},
             **{k: getattr(self, k) for k in self.RUNNING_HEAD_KEYS},
             **{k: getattr(self, k) for k in self.CAPTION_KEYS},
+            "table_lines": self.table_lines,
             "heading_formats": {str(k): v for k, v in self.heading_formats.items()},
             "reference_rewrite": self.reference_rewrite,
             "resolution": self.resolution,
@@ -488,6 +499,9 @@ def target_from_spec(key: str) -> TargetProfile:
         resolution["caption_position_table"] = "spec"
     if spec.caption_position_figure is not None:
         resolution["caption_position_figure"] = "spec"
+    # v2.3.85：表格线（三线表）。与栏数同为版式结构维度，spec 来源即显式意图。
+    if getattr(spec, "table_lines", None):
+        resolution["table_lines"] = "spec"
     # v2.3.69：把规范的**每级标题格式**一并带进目标画像。
     # 此前只带了 heading_levels（层级数），heading_formats 漏传，造成两处脱节：
     #   ① 手填问卷选 APA/IEEE 后「每级标题明细」表全空 —— 客户以为规范没要求；
@@ -519,6 +533,7 @@ def target_from_spec(key: str) -> TargetProfile:
         caption_line_spacing=spec.caption_line_spacing,
         caption_position_table=spec.caption_position_table,
         caption_position_figure=spec.caption_position_figure,
+        table_lines=getattr(spec, "table_lines", None),
         reference_style=ref.style_key,
         reference_hanging_indent_in=ref.hanging_indent_in,
         reference_numbered=ref.numbered,
@@ -673,6 +688,10 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     # v2.3.77：表格内段落 / 目录（都只在各自范围内生效，与正文口径分开）
     tbl_extra = {k: clean[k] for k in TargetProfile.TABLE_KEYS if k in clean}
     toc_extra = {k: clean[k] for k in TargetProfile.TOC_KEYS if k in clean}
+    # v2.3.85：表格线（三线表）—— choice，不进 TABLE_KEYS（那里是数值型间距），单独承载。
+    tbl_lines = clean.get("table_lines")
+    if tbl_lines not in ("three_line", "boxed"):
+        tbl_lines = None
     ref_style = clean.get("reference_style")
     # 🔴 v2.3.73：「按我校要求（自定义）」= 没有选任何内置引用规范。
     # 归一成 None，后面所有「选了规范才做」的分支自然跳过（不核条目体例、不反填规范值）。
@@ -714,6 +733,8 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         resolution[_k] = source
     for _k in tbl_extra:
         resolution[_k] = source
+    if tbl_lines is not None:
+        resolution["table_lines"] = source
     for _k in toc_extra:
         resolution[_k] = source
     if ref_style is not None:
@@ -745,7 +766,7 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
 
     # 空校验：避免静默得到空画像（只填了参考文献细项也算有效内容）
     if not page and ref_style is None and heading is None and cols is None \
-            and paper is None and page_num is None \
+            and paper is None and page_num is None and tbl_lines is None \
             and not ref_extra and not tp_extra and not abs_extra and not rh_extra \
             and not cap_extra and not tbl_extra and not toc_extra:
         raise ValueError(
@@ -769,6 +790,7 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         columns=cols,
         paper_size=paper,
         page_number_position=page_num,
+        table_lines=tbl_lines,
         **tp_extra,
         **abs_extra,
         **rh_extra,
@@ -1413,6 +1435,22 @@ def apply_page_overrides(target: "TargetProfile", edits: dict) -> None:
                 continue
             _val = raw.lower()
             if _val not in ("top", "bottom"):
+                continue
+            if _val == getattr(target, key, None):
+                continue
+            setattr(target, key, _val)
+            target.resolution[key] = "user"
+            continue
+        # v2.3.85：表格线（三线表）。「—」= 清空（不检查、不改动表格边框）。
+        if key == "table_lines":
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if getattr(target, key, None) is not None:
+                    setattr(target, key, None)
+                    target.resolution.pop(key, None)
+                continue
+            _val = raw.lower().replace("-", "_")
+            if _val not in ("three_line", "boxed"):
                 continue
             if _val == getattr(target, key, None):
                 continue

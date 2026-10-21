@@ -70,6 +70,7 @@ _DIM_LABEL = {
     "caption_line_spacing": "Caption line spacing",
     "caption_position_table": "Table caption position",
     "caption_position_figure": "Figure caption position",
+    "table_lines": "Table rules (three-line)",
     "heading_formats": "Heading formats",
     "running_head_required": "Running head required",
     "page_number_include_author_name": "Page number includes author name",
@@ -90,9 +91,10 @@ KNOWN_LIMITATIONS = [
     "In-text citation ↔ reference-list correspondence is NOT verified. "
     "The tool checks reference formatting only, not whether every citation has a matching entry.",
     "Complex formulas / equations are NOT processed.",
-    "Complex tables (multi-level headers, merged/split cells) are NOT processed. "
-    "Three-line tables only receive the conservative treatment: vertical lines removed, "
-    "with the top, header-bottom and bottom rules kept.",
+    "Complex tables are handled conservatively. Merged / split cells are fine (the rules "
+    "are drawn per row), but nested tables (a table inside a cell) and tables inside "
+    "headers/footers/text boxes are NOT processed, and multi-level headers only get one "
+    "rule under the first row.",
     "Cross-references (figures/tables/sections) are NOT processed.",
     "Reference alphabetical ordering is advisory only (shown as a hint); the tool does "
     "not reorder your entries, since that changes content.",
