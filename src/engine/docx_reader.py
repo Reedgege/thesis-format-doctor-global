@@ -280,6 +280,32 @@ class HeadingFormatSample:
         }
 
 
+def _is_quoted_paragraph(text: str) -> bool:
+    """段落是不是**以引文开头**的长段落（块引用候选的判定口径，v2.3.86）。
+
+    🔴 旧口径是 `any(q in text for q in ('"', "“", "”", "'"))` ——把**英文撇号**
+    当成了引号。真实论文里 "the firm's ability"、"company's"、"don't" 满地都是，
+    于是任何 50 词以上、带一个撇号的正文段都被判成「块引用」：
+      - 检查器给客户报一条假问题「1 处长引文未按块引用缩进」；
+      - 修正器把这些段落从正文缩进里**豁免**掉 → 每章第一段丢了 0.5″ 首行缩进。
+    老板那份 20 页样本上一共误伤 4 段（每份各 1 段），这是清单第①条的漏项真因。
+
+    新口径两条同时满足才算：
+      ① **段首就是开引号**（" “ ‘ « 「）—— "the firm's" 这种永远不可能满足；
+      ② 段内确实存在收引号（" ” ’ » 」），排除「以引号开头但其实是排版残留」的情况。
+    句中的撇号、句中夹一段引文都不再触发；而「整段被引起来」「引文开头 + 出处说明」
+    这两种真实的块引用形态都还能认出来（MLA 的 (Danhof 5) 那种）。
+    """
+    t = (text or "").strip()
+    if len(t) < 2:
+        return False
+    openers = {'"', "“", "‘", "«", "「", "'"}
+    closers = {'"', "”", "’", "»", "」", "'"}
+    if t[0] not in openers:
+        return False
+    return any(ch in closers for ch in t[1:])
+
+
 def _inch(emu) -> Optional[float]:
     if emu is None:
         return None
@@ -2223,7 +2249,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if words < 50:
             continue
         left_indent = _inch(_pf_attr(p, doc_pf, "left_indent"))
-        has_quote = any(q in p.text for q in ('"', "“", "”", "'"))
+        has_quote = _is_quoted_paragraph(p.text)
         prof.block_quote_candidates.append({
             "idx": _body_idx.get(p._p),
             "words": words,

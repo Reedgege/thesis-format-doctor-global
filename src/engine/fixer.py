@@ -1246,6 +1246,67 @@ def _insert_prefix_run(para, prefix: str) -> bool:
     return True
 
 
+# 非方括号的数字列表符号：1. / 1) / (1)
+_NUM_MARKER_PLAIN_RE = re.compile(r"^\s*(?:\(\s*(\d+)\s*\)|(\d+)\s*[.)])\s*")
+
+
+def _drop_leading_chars(para, n_chars: int) -> bool:
+    """从段落开头删掉 n_chars 个字符（只碰纯文本 run，遇到含图形/域的 run 就放弃）。
+
+    ⚠️ 只在「确认前导 run 是纯文字」时动手 —— 列表符号永远在段首纯文本里；
+    若遇到 w:drawing / w:fldChar / w:hyperlink 之类，宁可整条不改，也绝不冒删内容的风险。
+    """
+    remaining = n_chars
+    for r in para.runs:
+        if remaining <= 0:
+            break
+        el = r._r
+        if el is None:
+            continue
+        kids = [c.tag for c in el if c.tag != qn("w:rPr")]
+        if any(t != qn("w:t") for t in kids):
+            return False                     # 这个 run 里不只有文字 → 不动
+        t = r.text or ""
+        if not t:
+            continue
+        take = min(len(t), remaining)
+        r.text = t[take:]
+        remaining -= take
+    return remaining == 0
+
+
+def _normalize_number_markers(entries: list) -> int:
+    """把已有的「1. / 1) / (1)」式列表符号改写成 IEEE 的 `[n]`；返回改了几条。
+
+    🔴 这是**列表符号替换**，不是内容改写：只动开头那个编号记号，条目正文一个字不动。
+    老板 2026-10-21 明确拍板「改成 [1]」（清单第④条要的是 IEEE 规范的数字列表；
+    与第⑤条「文字与标点 100% 锁死」的冲突按老板的选择处理：符号归列表标记，允许换）。
+
+    为什么必须做：真样本的条目是 `1. Ivanov, D. (2020)…`，
+      - 检查器如实报 `No numbered [n] form detected`（IEEE 要 [1]）；
+      - 而旧修正器把 `1.` 也算「已有编号」→ 一个字没改 → 「报了却修不了」的经典脱节。
+    """
+    changed = 0
+    for para in entries:
+        text = para.text or ""
+        if not text.strip():
+            continue
+        if re.match(r"^\s*\[\s*\d+\s*\]", text):
+            continue                                   # 已是 [n]，不重复套
+        m = _NUM_MARKER_PLAIN_RE.match(text)
+        if not m:
+            continue
+        num = m.group(1) or m.group(2)
+        consumed = m.group(0)
+        if not consumed:
+            continue
+        if not _drop_leading_chars(para, len(consumed)):
+            continue                                   # 前导 run 不纯净 → 整条放过
+        if _insert_prefix_run(para, f"[{num}] "):
+            changed += 1
+    return changed
+
+
 def _apply_reference_numbering(entries: list) -> int:
     """给尚无顺序编号的条目补 [n] 前缀，返回实际补了几条。
 
@@ -1295,8 +1356,8 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
       （作者首字母缩写 + 题名引号 + 期刊 vol./no./pp. + 年）。幂等、保守、可回归；
       非 APA 模式或无法安全解析的条目一律不动其文本。
     """
-    info = {"hanging_applied": False, "numbering_added": 0, "rewritten": 0,
-            "entry_reformatted": 0, "entry_spacing_applied": 0,
+    info = {"hanging_applied": False, "numbering_added": 0, "numbering_normalized": 0,
+            "rewritten": 0, "entry_reformatted": 0, "entry_spacing_applied": 0,
             "heading_formatted": 0, "new_page_applied": False}
     if not ref_indices:
         return info
@@ -1323,6 +1384,10 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
         info["hanging_applied"] = True
 
     if target.reference_numbered and fix_number:
+        # v2.3.86：先把「1. / 1) / (1)」式列表符号规范化成 IEEE 的 [n]（老板 2026-10-21 拍板），
+        # 再给真正没编号的条目补前缀。顺序不能反：反了会先给「1.」条目补一个 [n]，
+        # 变成「[1] 1. Ivanov…」两个编号并排。
+        info["numbering_normalized"] = _normalize_number_markers(entries)
         info["numbering_added"] = _apply_reference_numbering(entries)
 
     # —— 条目字体 / 字号 / 行距（学校模板常与正文不同口径：正文小四双倍、条目五号单倍）——
@@ -2227,6 +2292,8 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
             bits.append("hanging indent applied")
         if ref_info.get("numbering_added"):
             bits.append(f"{ref_info['numbering_added']} entries numbered [1]..")
+        if ref_info.get("numbering_normalized"):
+            bits.append(f"{ref_info['numbering_normalized']} list markers changed to [n]")
         if ref_info.get("entry_reformatted"):
             bits.append(f"entry font/size/spacing on {ref_info['entry_reformatted']} entries")
         if ref_info.get("entry_spacing_applied"):
@@ -2469,7 +2536,32 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
                 applied["font_family"] = _want_font
             if _want_size is not None:
                 applied["font_size_pt"] = _want_size
-        if "line_spacing" in fix_dims and _apply_line_spacing(page, no_heading):
+        # v2.3.86：**行距是整篇属性**（APA §2.21「Double-space the entire paper」、
+        # MLA「double-space the whole paper」），标题页与首页标题行也在整篇之内。
+        # 旧写法只喂 no_heading，而标题保护会把「论文大标题」挡在外面 ——
+        # APA 因为 heading_levels=5 走 level_map 过滤，大标题恰好没被判成标题，侥幸拿到 2.0；
+        # MLA 的 heading_levels=0 只能靠 is_heading 兜底，大标题被判成伪标题 →
+        # 整篇只有标题那一行是 1.0 倍（真机实测：61 段里 60 段达标）。
+        # 故这里显式把「标题页段落 + 论文大标题」补进行距目标（只补行距，不碰对齐/缩进，
+        # 那两个维度仍由 title_page 独占，避免一属性两 owner）。
+        _ls_targets = list(no_heading)
+        _ls_seen = {p._p for p in _ls_targets}
+        # tp_ps 里装的是 w:p 元素（不是 Paragraph 包装），要按元素认回段落对象
+        _idx_of = {p._p: i for i, p in enumerate(doc.paragraphs)}
+        _ls_extra_idx = []
+        for _el in tp_ps:
+            _i = _idx_of.get(_el if hasattr(_el, "tag") else getattr(_el, "_p", None))
+            if _i is not None:
+                _ls_extra_idx.append(_i)
+        _dti2 = getattr(prof, "doc_title_index", None)
+        if isinstance(_dti2, int) and 0 <= _dti2 < len(doc.paragraphs):
+            _ls_extra_idx.append(_dti2)
+        for _i in _ls_extra_idx:
+            _p = doc.paragraphs[_i]
+            if _p._p not in _ls_seen:
+                _ls_targets.append(_p)
+                _ls_seen.add(_p._p)
+        if "line_spacing" in fix_dims and _apply_line_spacing(page, _ls_targets):
             applied["line_spacing"] = page.get("line_spacing")
         if "alignment" in fix_dims and _apply_alignment(page, align_targets):
             applied["body_alignment"] = page.get("body_alignment")
@@ -2613,6 +2705,7 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         summary["reference_hanging_indent_in"] = target.reference_hanging_indent_in
         summary["reference_numbered"] = target.reference_numbered
         summary["reference_numbering_added"] = ref_info["numbering_added"]
+        summary["reference_numbering_normalized"] = ref_info["numbering_normalized"]
         summary["reference_entries_reformatted"] = ref_info["entry_reformatted"]
         summary["reference_heading_formatted"] = ref_info["heading_formatted"]
         summary["reference_new_page_applied"] = ref_info["new_page_applied"]
@@ -2651,12 +2744,15 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             add_comment(doc, last_para, summary_text)
             comments_added += 1
     if target.reference_style and ref_indices and ref_info and (
-            ref_info.get("hanging_applied") or ref_info.get("numbering_added")):
+            ref_info.get("hanging_applied") or ref_info.get("numbering_added")
+            or ref_info.get("numbering_normalized")):
         ref_heading_idx = ref_indices[0] - 1
         if 0 <= ref_heading_idx < len(doc.paragraphs):
             rc = (f"References formatted per {target.reference_style}: hanging indent applied"
                   + (f"; {ref_info['numbering_added']} entries numbered [1].."
-                     if ref_info.get("numbering_added") else ""))
+                     if ref_info.get("numbering_added") else "")
+                  + (f"; {ref_info['numbering_normalized']} list markers changed to [n]"
+                     if ref_info.get("numbering_normalized") else ""))
             add_comment(doc, doc.paragraphs[ref_heading_idx], rc)
             comments_added += 1
     summary["comments_added"] = comments_added
@@ -3198,6 +3294,20 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
                 cur_txt = _UNREC[L] if cur_hang is None else f"{cur_hang}\""
                 lines.append(f"{_dim_label(L, 'ref_hanging')}: {cur_txt} → {want_hang}\"")
     if _gate("reference_numbered"):
+        # v2.3.86：已有「1. / 1) / (1)」式列表符号的条目，会被规范化成 IEEE 的 [n]。
+        # 预览必须把这条也说清楚，否则客户点完修正会发现「文字没变但符号变了」而不知为何。
+        _plain_markers = [t for t in prof.reference_entries
+                          if t.strip() and _NUM_MARKER_PLAIN_RE.match(t)]
+        if _plain_markers:
+            n_norm = len(_plain_markers)
+            prefix = _dim_label(L, "ref_numbering")
+            if L == "zh":
+                lines.append(f"{prefix}：把 {n_norm} 条条目的「1.」式列表符号换成 [n]"
+                             f"（{target.reference_style}；条目文字不动）")
+            else:
+                lines.append(
+                    f"{prefix}: change {n_norm} list marker(s) from \"1.\" to \"[n]\" "
+                    f"({target.reference_style}; entry text untouched)")
         missing = [t for t in prof.reference_entries if t.strip()
                    and not _has_leading_number(t)]
         if missing:
