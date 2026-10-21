@@ -1450,3 +1450,49 @@ def test_help_dialog_title_is_pinned_above_scroll(ui):
     win.geometry("680x520")
     win.update()
     _assert_title_outside_scroll(win, ui.tr("help_title"), "Help")
+
+
+# ------------------------------------------------- 启动首帧（v2.3.82）
+# 老板 2026-10-21：「打开软件的时候，启动时，刚进入界面会有一阵花屏」。
+# 取证（_smoke/probe_startup_flicker.py 抓屏 + probe_startup_timeline.py 时间轴）
+# 定位到：deiconify 一落，窗口就被系统映射上屏，但它此时还没画过 —— 要等映射后的
+# 布局收敛 + 首帧 flush（实测空窗 1.2 秒）才有内容；期间屏幕上是空白纸壳和
+# "右卡压在左卡上、文字重影"的错位叠影（截图 _smoke/_startup_frames_noshroud/
+# f028_t1521ms.png）。修法：**屏幕外完成映射与首帧绘制，画完再移入最终位置**
+# （纯位置变化，Windows 不重绘客户区 → 客户第一眼就是成品）。
+# 下面钉住：①首帧钩子只跑一次；②main() 里"先挪屏幕外、后 deiconify、画完再移回"
+# 的顺序；③兜底挪回必须存在（否则窗口可能永远留在屏幕外 = P0）。
+
+def test_first_frame_callback_runs_once(ui, _tk_session):
+    """首帧钩子只能跑一次：它负责把窗口从屏幕外挪回来，重复跑没意义。"""
+    _tk_session.update_idletasks()
+    ok = []
+
+    ui._first_layout_flushed = False
+    ui.on_first_frame_ready(lambda: ok.append(1))
+    ui._schedule_first_layout()
+    assert ok == [1], "首帧画完必须触发一次回调，实际 %r" % ok
+
+    # 再来一次（模拟重复调用）不许重复触发
+    ui._schedule_first_layout()
+    assert ok == [1], "首帧回调被重复触发（应幂等）"
+
+
+def test_start_geometry_recorded(ui):
+    """App 必须记下自己算出的起始几何 —— 移回最终位置要靠它。"""
+    g = ui._start_geometry
+    assert "x" in g and "+" in g, "起始几何格式不对：%r" % g
+
+
+def test_main_maps_offscreen_and_moves_back():
+    """main() 的三条顺序铁律：先挪屏幕外 → 再 deiconify → 首帧画完移回 + 4 秒兜底。"""
+    src = open(os.path.join(ROOT, "src", "ui", "app.py"), encoding="utf-8").read()
+    body = src[src.index("def main():"):]
+    i_off = body.find("+20000+20000")
+    i_dei = body.find("root.deiconify()")
+    i_hook = body.find("on_first_frame_ready(")
+    i_fb = body.find("after(4000, _place_on_screen)")
+    assert i_off > 0 and i_dei > 0 and i_hook > 0 and i_fb > 0, "main() 缺少关键步骤"
+    assert i_off < i_dei, "必须先挪到屏幕外再 deiconify（否则客户会看到空壳）"
+    assert i_dei < i_hook, "首帧钩子必须在 deiconify 之后才注册"
+    assert i_fb > 0, "缺少 4 秒兜底挪回（窗口可能永远留在屏幕外，P0）"

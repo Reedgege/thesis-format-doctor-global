@@ -476,6 +476,9 @@ class App:
         _x = max(8, (_sw - _w) // 2)
         _y = max(8, (_avail - _h) // 2)
         root.geometry("%dx%d+%d+%d" % (_w, _h, _x, _y))
+        # v2.3.82：记下算出来的起始几何。main() 要先把窗口挪到屏幕外完成首帧绘制
+        # （治启动花屏），画完再挪回这里 —— 挪回时得知道"这里"是哪。
+        self._start_geometry = "%dx%d+%d+%d" % (_w, _h, _x, _y)
         # minsize 必须**按屏幕夹一次**：写死 1100×720 的话，在 1280×720 这类小屏
         # （或 1366×768 / 150% 缩放）上 WM 会把窗口强行撑到比可用区域还高，
         # side="bottom" 的页脚与状态栏直接落到屏幕外 —— 正好推翻 v2.1.1 修过的 P0。
@@ -831,6 +834,9 @@ class App:
         不依赖 <Configure> 何时派发（缩放屏/Nuitka 下它常迟到、甚至要等点击才来）；
         也不在尺寸未就绪(1x1)时提前画残帧。每 30ms 查一次，拿到真实宽后立即纠正首屏，
         并把画面用 _flush_frame(RedrawWindow UPDATENOW) 强制画出来。
+
+        v2.3.82：这一帧画完就调用 ``on_first_frame_ready`` 注册的回调（main() 用它把
+        窗口从屏幕外移回最终位置）—— 客户看到的第一眼就是成品。
         """
         if getattr(self, "_first_layout_flushed", False):
             return
@@ -849,6 +855,42 @@ class App:
             pass
         self._first_layout_flushed = True
         self._flush_frame()
+        # v2.3.82：首帧画完的钩子（main() 用它把窗口从屏幕外挪回来）。
+        # 只跑一次，异常不影响后续。
+        _cb = getattr(self, "_first_frame_cb", None)
+        if _cb is not None:
+            self._first_frame_cb = None
+            try:
+                _cb()
+            except Exception:
+                pass
+
+    def on_first_frame_ready(self, cb):
+        """注册"首帧已画完"回调（只跑一次）。用于启动时把窗口移入最终位置。"""
+        self._first_frame_cb = cb
+
+    # ------------------------------------------ 启动花屏：三条走不通的路（v2.3.82）
+    #
+    # 老板 2026-10-21：「打开软件的时候，启动时，刚进入界面会有一阵花屏」。
+    # 取证脚本与结论见 main() 里的注释。这里只记三条**实测过、不能走**的路，
+    # 免得以后有人（包括我）再花时间重试：
+    #
+    # ① 隐藏状态下先排版（"先排好再显示"）
+    #    withdraw + update_idletasks() 会让 Tk 把请求的几何**提前兑现**到内部模型：
+    #    deiconify 之后 Tk 以为自己已经是 1126x640、不再向系统申请尺寸，而真实 HWND
+    #    只有 1x1 —— 窗口**永久停在 1x1**（A/B 实测：不预排则会正常变成 1126x640）。
+    #    窗口真实客户区尺寸只能等 map 之后由系统给，抢不得。
+    #
+    # ② 用 ``-alpha 0`` 当遮罩（画完再淡入）
+    #    Tk 在 alpha=0 状态下**不产生任何重绘**；把 alpha 调回 1.0 也不补画，
+    #    实测 4 秒后屏幕上依然是桌面（窗口永久空白）。比花屏严重得多。
+    #
+    # ③ 复用 v2.3.32 的 WM_SETREDRAW 重绘闸门
+    #    ``_flush_frame()`` 开头那条 ``_thaw_paint()`` 保险丝会在首帧 flush 时立刻把
+    #    闸门清零（实测 depth 1→0），闸门等于没关。那条保险丝是故意的（防"窗口永远
+    #    画不出来"），不能为这个需求拆。
+    #
+    # 结论：只剩"在屏幕外完成映射与首帧绘制、画完再移入"这一条路（见 main()）。
 
     def _center(self, win: tk.Toplevel, w: int, h: int):
         try:
@@ -4734,6 +4776,33 @@ def main():
     root = tk.Tk()
     root.withdraw()          # 消掉启动一闪：先隐藏主窗，等 UI 全部建完再显示
     app = App(root)
+    # v2.3.82 启动花屏（老板 2026-10-21 报）。
+    #
+    # 抓屏取证（_smoke/probe_startup_flicker.py）与时间轴（probe_startup_timeline.py）
+    # 说明问题：deiconify 一到窗口就被系统映射上屏，但它此时**还没画过**，要等映射后
+    # 的布局收敛 + 首帧 flush（实测空窗 1.2 秒）才有内容；期间屏幕上是空白纸壳，
+    # 以及"右卡片压在左卡片上、文字重影"的错位叠影（截图见
+    # _smoke/_startup_frames_noshroud/f028_t1521ms.png）。
+    #
+    # 为什么不能简单"先排好再显示"：窗口真实客户区尺寸只有**映射之后**才由系统给
+    # （隐藏时 Tk 报 1x1；强行在隐藏状态排，会让 Tk 提前兑现几何 → 映射后窗口永久
+    # 停在 1x1，实测过，是 P0）。也不能用 ``-alpha 0`` 当遮罩：Tk 在 alpha=0 时根本不
+    # 产生重绘，调回 1.0 后窗口永久空白（实测过，也是 P0）。这两条都写进了
+    # _smoke/probe_startup_paint.py 的注释里，别再试。
+    #
+    # 现方案：**在屏幕外完成映射与首帧绘制，画完再移入最终位置**。窗口尺寸/布局走的是
+    # 完全正常的路径（不会被 1x1 卡住），只是这段时间它在屏幕外，客户看不到；画完后
+    # 的移动是纯位置变化，Windows 不需要重绘客户区 —— 客户看到的第一眼就是成品。
+    # 三重保险，任何一环失败都只会退回"跟旧版一样"，不会让窗口消失：
+    #   ①挪不动位置就留在原位；②首帧钩子没触发时，4 秒后强制挪回；③移入幂等。
+    _final_geo = getattr(app, "_start_geometry", None)
+    _moved_off = False
+    if _final_geo:
+        try:
+            root.geometry("+20000+20000")   # 只改位置，尺寸沿用 App 请求值
+            _moved_off = True
+        except Exception:
+            _moved_off = False
     root.deiconify()         # UI 构建完毕，正式显示
     # 强制窗口可见并置于前台/激活：缩放屏 + Nuitka 打包下，deiconify 有时不会让 OS 真正
     # 映射/激活窗口，导致客户区一直不绘制，直到用户点击上边缘才激活并画出来（"需点击才出"
@@ -4754,7 +4823,32 @@ def main():
             root.after(_d, app._reapply_window_icon)
         except Exception:
             pass
-    # 首帧布局：轮询到真实尺寸再 relayout + 强制整窗重绘，不依赖 <Configure> 何时到达。
+
+    if _moved_off and _final_geo:
+        # 只取位置部分（"+370+8"）：移回时**连尺寸都不碰**，免得触发 resize → 重绘。
+        _pos = ""
+        _i = _final_geo.find("+")
+        if _i > 0:
+            _pos = _final_geo[_i:]
+        _state = {"done": False}
+
+        def _place_on_screen():
+            """把窗口移入最终位置（幂等；只改位置，不重绘客户区）。"""
+            if _state["done"]:
+                return
+            _state["done"] = True
+            try:
+                root.geometry(_pos or _final_geo)
+                root.update_idletasks()
+            except Exception:
+                pass
+
+        # ①首帧画完立刻移回；②兜底：万一钩子没触发（异常/几何一直没就绪），4 秒必回
+        app.on_first_frame_ready(_place_on_screen)
+        root.after(4000, _place_on_screen)
+
+    # 首帧布局：映射后的 <Configure> 收敛、排版、整窗重绘都在这一句里跑完
+    # （窗口在屏幕外时，客户什么都看不到）。
     app._schedule_first_layout()
     root.mainloop()
 
