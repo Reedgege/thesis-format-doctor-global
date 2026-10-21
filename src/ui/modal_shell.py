@@ -37,8 +37,8 @@ class ModalShell(tk.Toplevel):
     def __init__(self, parent, title: str, width: int = 600, height: int = None, **kw):
         bg = kw.pop("bg", None) or theme.BG
         # v2.3.64：吸底动作栏。长表单（手填问卷 16 个字段）内容比可视区高时，主按钮
-        # 会被挤到折线以下 —— 客户看不到"保存"在哪。置 True 时动作栏挂在 canvas 上
-        # 而不是 _inner 里，滚动时钉在可视区底部；默认 False，其余弹窗行为不变。
+        # 会被挤到折线以下 —— 客户看不到"保存"在哪。置 True 时动作栏钉在**窗口**底部
+        # （真控件，不参与滚动，见下方 v2.3.81 注释）；默认 False，其余弹窗行为不变。
         sticky_actions = bool(kw.pop("sticky_actions", False))
         super().__init__(parent, bg=bg, **kw)
         self._sticky = sticky_actions
@@ -56,6 +56,18 @@ class ModalShell(tk.Toplevel):
         self._center()
         self.resizable(False, False)  # 默认不可调整大小（保持简洁）
         self.title(title)
+
+        # v2.3.81：吸底动作栏升级为**真控件**，先 pack 到窗口底部。
+        # 旧版它是画布里的 create_window item —— 每滚一格都要 ``coords()`` 移动它，
+        # 而移动子窗口必然触发重绘，于是底部按钮区跟着一起闪（老板实测圈出来的
+        # 正是这一块）。现在它完全不参与滚动：画布视口天生就短了一截，滚多少格
+        # 按钮栏都纹丝不动，也就不可能有重绘。
+        if sticky_actions:
+            self._button_bar = tk.Frame(self, bg=theme.SURFACE)
+            self._button_bar.pack(side="bottom", fill="x")
+            tk.Frame(self._button_bar, bg=theme.BORDER, height=1).pack(fill="x")
+            self._bar_pad = tk.Frame(self._button_bar, bg=theme.SURFACE)
+            self._bar_pad.pack(fill="x", padx=24, pady=(10, 16))
 
         # 画圆角边框和投影的 Canvas（作为底层，可纵向滚动）
         # v2.3.80：显式 ``yscrollincrement=1`` —— 让 ``yview_scroll`` 的 "units"
@@ -95,25 +107,9 @@ class ModalShell(tk.Toplevel):
         self._content = tk.Frame(self._inner, bg=theme.SURFACE)
         self._content.pack(fill="both", expand=True, padx=24, pady=16)
 
-        # 按钮区（默认隐藏，需要时调用 add_primary_action / add_secondary_action）
-        if sticky_actions:
-            # 底部占位：让滚动区末尾留出动作栏的高度，否则最后一行内容会被动作栏
-            # 永久盖住、滚也滚不到。高度在 _sync_scroll 里按动作栏真实高度补齐。
-            self._bar_spacer = tk.Frame(self._inner, bg=theme.SURFACE, height=0)
-            self._bar_spacer.pack(fill="x", side="bottom")
-            # 动作栏是 canvas 的独立 item（不是 _inner 的子控件）→ 不随内容滚动
-            self._button_bar = tk.Frame(self._cv, bg=theme.SURFACE)
-            self._bar_item = self._cv.create_window(0, 0, window=self._button_bar,
-                                                    anchor="sw")
-            # 只在这里提一次图层：它创建晚于内容窗口，本就该在最上层；滚动时
-            # 反复 raise 会强制整画布重绘（见 _place_bar 的注释）。
-            self._cv.tag_raise(self._bar_item)
-            tk.Frame(self._button_bar, bg=theme.BORDER, height=1).pack(fill="x")
-            self._bar_pad = tk.Frame(self._button_bar, bg=theme.SURFACE)
-            self._bar_pad.pack(fill="x", padx=24, pady=(10, 16))
-        else:
-            self._bar_spacer = None
-            self._bar_item = None
+        # 按钮区：吸底的在 __init__ 开头已钉到窗口底部（完全不参与滚动）；
+        # 非吸底的仍随内容排在末尾，需要时调用 add_primary_action / add_secondary_action。
+        if not sticky_actions:
             self._button_bar = tk.Frame(self._inner, bg=theme.SURFACE)
             self._button_bar.pack(fill="x", padx=24, pady=(0, 24))
             self._bar_pad = self._button_bar
@@ -169,6 +165,16 @@ class ModalShell(tk.Toplevel):
         pts = widgets.rounded_points(1, 1, w - 1, h - 1, r)
         cv.create_polygon(pts, fill=theme.SURFACE, outline=theme.BORDER,
                           width=1, tags="modal")
+
+        # v2.3.81：吸底动作栏搬到窗口底部后，画布下沿不再是窗口下沿 —— 卡的
+        # 下圆角会露在动作栏正上方，两角各留一个薄荷色的小豁口（卡内纯白、底
+        # 下也是纯白，中间却凹进去一块，看着像画坏了）。这里把底部 r+2 像素补
+        # 成实心白条、盖掉下边框，卡片就与动作栏白色连成一片，只剩动作栏自己
+        # 那条分隔线。只在吸底模式下补（其余弹窗卡片本来就到底，不需要）。
+        if self._sticky:
+            cv.create_rectangle(0, h - (r + 2), w, h,
+                                fill=theme.SURFACE, outline=theme.SURFACE,
+                                tags="modal")
         cv.tag_lower("modal")
 
         # 更新内容容器尺寸 + 滚动区域（内容超出可视区时显示滚动条）
@@ -188,17 +194,8 @@ class ModalShell(tk.Toplevel):
         self._relaying = True
         try:
             self.update_idletasks()
-            # 吸底动作栏：先按可视区宽度摆好，再把它的真实高度补进内容末尾的占位。
-            # 动作栏是 canvas 的 item，会随 canvas 一起滚动，所以每次重排 / 滚动都要
-            # 重新贴到底边（见 _place_bar）。
-            if self._sticky:
-                self._cv.itemconfigure(self._bar_item, width=max(1, w - 2))
-                self.update_idletasks()
-                bh = int(self._button_bar.winfo_reqheight())
-                if int(self._bar_spacer.cget("height") or 0) != bh:
-                    self._bar_spacer.configure(height=bh)
-                    self.update_idletasks()
-                self._place_bar(h)
+            # v2.3.81：吸底动作栏已是窗口底部的**真控件**（不进球、不滚动），
+            # 旧版这里"按可视区宽度摆 item + 补占位高度 + 每次贴底"的一套全部作废。
             ih = int(self._inner.winfo_reqheight())
             inner_w = max(1, w - 2)
             # 至少填满可视区，避免内容短时下方留空；内容更高则按自然高度
@@ -221,38 +218,22 @@ class ModalShell(tk.Toplevel):
         finally:
             self._relaying = False
 
-    def _place_bar(self, h: int):
-        """把吸底动作栏贴到**当前可视区**底部（它自己也是 canvas item，会跟着滚）。
-
-        canvas item 的坐标是"画布坐标"，滚动后视口顶部对应 ``canvasy(0)``，
-        所以要贴底就得写成 ``canvasy(0) + h``；写死成 0 的话一滚就跑没影了。
-        """
-        if not self._sticky or self._bar_item is None:
-            return
-        try:
-            top = self._cv.canvasy(0)
-            self._cv.coords(self._bar_item, 1, top + h - 1)
-            # v2.3.80：**不再**每次都 tag_raise。改变图层顺序会强制整张画布重绘，
-            # 而本方法由 yscrollcommand 在**每一次滚轮事件**里调用 —— 鼠标每滚一格
-            # 就整屏重画一遍，这就是「闪」的直接来源。动作栏创建晚于内容窗口，
-            # 本来就在最上层，只需在 __init__ 里 raise 一次（见那里的注释）。
-        except Exception:
-            pass
-
     def _on_scroll(self, first: str, last: str):
-        """Canvas 的 yscrollcommand 回调：同步滚动条位置 + 让动作栏跟着贴底。
+        """Canvas 的 yscrollcommand 回调：只同步滚动条位置。
 
         显隐的唯一权威是 ``_sync_scroll``（它才知道内容自然高度 vs 可视高度）。
         旧版这里也自己 pack/pack_forget 一遍滚动条 —— 两处各判一次、判据还不一样
         （这边看 yview 比例，那边看像素高），必然互相拆台：内容刚好卡在临界高度时
         滚动条一会儿出来一会儿藏，Canvas 宽度跟着变，整个弹窗内容左右晃。
+
+        v2.3.81：这里**不再**碰吸底动作栏。它已经是窗口底部的真控件，滚动与本方法
+        完全无关；旧版每次滚轮都 ``coords()`` 挪一次 canvas item，等于每格移动一个
+        子窗口 → 必然重绘 → 底部按钮区跟着闪。
         """
         try:
             self._sb.set(first, last)
         except Exception:
             pass
-        if self._sticky:
-            self._place_bar(self._cv.winfo_height())
 
     def _on_wheel(self, event):
         """鼠标滚轮滚动内容（按**像素**滚，鼠标一格约 120px）。

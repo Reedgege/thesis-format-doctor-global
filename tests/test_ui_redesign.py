@@ -1245,6 +1245,12 @@ def test_questionnaire_exposes_heading_and_body_spacing(ui):
 # 旧版每格滚 ±3 units ≈ 209px（弹窗的 30%）→ 每次新露出大片区域要重绘，又跳又闪。
 # 顺带实测出主区 ScrollArea / _scroll_frame 是同一根因（一格 3400+px = 一下到底），
 # 与它们自己注释里写的「每格约 120px」不符，一并钉住。
+#
+# v2.3.81（老板复测仍闪，明确点名「你把下边这部分固定住」）：①②只是减弱，真正的
+# 每一格都必然发生的重绘来自动作栏本身 —— 它是画布 item，靠 ``coords()`` 挪位置，
+# 挪子窗口 = 重绘。现在动作栏改成 Toplevel 上 ``side="bottom"`` 的真控件，画布视口
+# 天生短一截，滚多少格它都一动不动。对应测试见
+# ``test_modal_action_bar_is_not_a_canvas_item``。
 
 
 def _new_modal(root, tall: bool = False):
@@ -1285,12 +1291,16 @@ def test_modal_canvas_scrolls_in_pixels(_tk_session):
 
 
 def test_modal_draw_does_not_accumulate_polygons(_tk_session):
-    """反复 _draw 不能越叠越多：始终只有「投影 + 卡片」两件。"""
+    """反复 _draw 不能越叠越多：始终只有「投影 + 卡片 + 接缝白条」三件。
+
+    （接缝白条是 v2.3.81 加的：动作栏搬到窗口底部后，要拿它盖住卡片的下圆角，
+    否则白色卡片与白色动作栏之间会各留一个薄荷色小豁口。）
+    """
     win = _new_modal(_tk_session)
     try:
         win._draw()
         first = len(win._cv.find_withtag("modal"))
-        assert first == 2, "首次绘制应只有投影+卡片两件，实为 %d" % first
+        assert first == 3, "首次绘制应为投影+卡片+接缝三件，实为 %d" % first
         for _ in range(5):
             win._draw()
         assert len(win._cv.find_withtag("modal")) == first, \
@@ -1316,14 +1326,37 @@ def test_modal_wheel_step_is_about_120px(_tk_session):
         win.destroy()
 
 
-def test_modal_place_bar_keeps_canvas_stacking(_tk_session):
-    """贴底动作栏只改坐标，不许改图层顺序（改顺序 = 整画布重绘 = 闪）。"""
-    win = _new_modal(_tk_session)
+def test_modal_action_bar_is_not_a_canvas_item(_tk_session):
+    """v2.3.81：吸底动作栏必须是**窗口底部的真控件**，不是画布里的 item。
+
+    旧版它是 ``create_window`` 放进画布的 item，每滚一格都得 ``coords()`` 移动它；
+    移动一个子窗口必然触发重绘 → 底部按钮区跟着闪（老板实测圈的就是这一块）。
+    钉三件事：① 它的父窗口是 Toplevel 本身（不在 _inner 里）；② 它不在画布的
+    item 列表里；③ 滚到底之后它的屏幕纵坐标一个像素都没动。
+    """
+    from types import SimpleNamespace
+
+    win = _new_modal(_tk_session, tall=True)
     try:
-        before = tuple(win._cv.find_all())
-        win._place_bar(win._cv.winfo_height())
-        assert before == tuple(win._cv.find_all()), \
-            "_place_bar 改了画布 item 顺序（每次滚轮都会触发整屏重绘）"
+        bar = win._button_bar
+        assert bar.master is win, "动作栏不是窗口底部的真控件（父窗口应为 Toplevel）"
+        assert bar.master is not win._inner, "动作栏还在滚动内容里"
+
+        # 画布里不许有任何指向按钮栏的 window item
+        for item in win._cv.find_all():
+            if win._cv.type(item) == "window":
+                assert win._cv.itemcget(item, "window") != str(bar), \
+                    "动作栏仍是画布 item（会跟着滚动、每格都要移动重绘）"
+
+        # 滚动到底：按钮栏的屏幕位置必须纹丝不动
+        y0 = bar.winfo_rooty()
+        win._cv.yview_moveto(0)
+        _tk_session.update()
+        win._on_wheel(SimpleNamespace(delta=-120))
+        win._on_wheel(SimpleNamespace(delta=-120))
+        _tk_session.update()
+        assert win._cv.yview()[0] > 0, "测试内容没滚动起来，断言无意义"
+        assert bar.winfo_rooty() == y0, "滚动时动作栏跟着动了（→ 每格重绘 → 闪）"
     finally:
         win.destroy()
 
