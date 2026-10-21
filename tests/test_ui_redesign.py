@@ -1234,3 +1234,186 @@ def test_questionnaire_exposes_heading_and_body_spacing(ui):
                           ("line_spacing", "line_spacing")):
         assert '("%s", "%s"' % (field, varkey) in src, \
             "_save 没有把第 N 级标题的 %s 收进 heading_formats" % field
+
+
+# ------------------------------------------------- 弹窗 / 主区滚轮（v2.3.80）
+# 老板 2026-10-21：「格式问卷弹窗在鼠标滚动滑轮的时候会闪」。三条根因全在
+# modal_shell.py：① ``_draw`` 每次 <Configure> 都叠卡片+投影多边形却从不删旧的
+# （越用越多，后续每次重绘都要全画）；② ``_place_bar`` 在**每一次滚轮事件**里
+# ``tag_raise`` 动作栏 —— 改图层顺序会强制整张画布重绘（闪的直接来源）；
+# ③ 画布没设 ``yscrollincrement``，1 unit = 视口 1/10（实测 720 高 ≈69px），
+# 旧版每格滚 ±3 units ≈ 209px（弹窗的 30%）→ 每次新露出大片区域要重绘，又跳又闪。
+# 顺带实测出主区 ScrollArea / _scroll_frame 是同一根因（一格 3400+px = 一下到底），
+# 与它们自己注释里写的「每格约 120px」不符，一并钉住。
+
+
+def _new_modal(root, tall: bool = False):
+    """在共享 root 上建一个带吸底动作栏的 ModalShell（问卷弹窗就是这个形态）。"""
+    import tkinter as tk
+
+    from src.ui import theme
+    from src.ui.modal_shell import ModalShell
+
+    for w in list(root.winfo_children()):
+        try:
+            w.destroy()
+        except Exception:
+            pass
+    win = ModalShell(root, "T", width=420, height=320, sticky_actions=True)
+    root.update()
+    if tall:
+        for i in range(40):
+            tk.Label(win.content, text="row %d" % i,
+                     bg=theme.SURFACE).pack(anchor="w")
+        win.refresh_layout()
+        root.update()
+    return win
+
+
+def _region_h(cv) -> float:
+    parts = str(cv.cget("scrollregion")).split()
+    return float(parts[3]) if len(parts) >= 4 else 0.0
+
+
+def test_modal_canvas_scrolls_in_pixels(_tk_session):
+    """画布必须 1 unit == 1px，否则滚动量随视口高度漂移（又跳又闪）。"""
+    win = _new_modal(_tk_session)
+    try:
+        assert int(win._cv.cget("yscrollincrement")) == 1
+    finally:
+        win.destroy()
+
+
+def test_modal_draw_does_not_accumulate_polygons(_tk_session):
+    """反复 _draw 不能越叠越多：始终只有「投影 + 卡片」两件。"""
+    win = _new_modal(_tk_session)
+    try:
+        win._draw()
+        first = len(win._cv.find_withtag("modal"))
+        assert first == 2, "首次绘制应只有投影+卡片两件，实为 %d" % first
+        for _ in range(5):
+            win._draw()
+        assert len(win._cv.find_withtag("modal")) == first, \
+            "反复 _draw 后多边形累积了（越用越慢越闪）"
+    finally:
+        win.destroy()
+
+
+def test_modal_wheel_step_is_about_120px(_tk_session):
+    """鼠标一格应滚约 120px，而不是旧版的 ~209px。"""
+    from types import SimpleNamespace
+
+    win = _new_modal(_tk_session, tall=True)
+    try:
+        total = _region_h(win._cv)
+        assert total > win._cv.winfo_height() + 100, "测试内容不够高"
+        win._cv.yview_moveto(0)
+        f0 = win._cv.yview()[0]
+        win._on_wheel(SimpleNamespace(delta=-120))
+        moved = (win._cv.yview()[0] - f0) * total
+        assert 117 <= moved <= 123, "每格应滚约 120px，实测 %.1fpx" % moved
+    finally:
+        win.destroy()
+
+
+def test_modal_place_bar_keeps_canvas_stacking(_tk_session):
+    """贴底动作栏只改坐标，不许改图层顺序（改顺序 = 整画布重绘 = 闪）。"""
+    win = _new_modal(_tk_session)
+    try:
+        before = tuple(win._cv.find_all())
+        win._place_bar(win._cv.winfo_height())
+        assert before == tuple(win._cv.find_all()), \
+            "_place_bar 改了画布 item 顺序（每次滚轮都会触发整屏重绘）"
+    finally:
+        win.destroy()
+
+
+def test_main_scroll_area_wheel_step_is_about_120px(_tk_session):
+    """主区 ScrollArea 同样要 1 unit == 1px（旧版一格 3400+px，直接到底）。"""
+    import tkinter as tk
+    from types import SimpleNamespace
+
+    from src.ui import theme, widgets
+
+    for w in list(_tk_session.winfo_children()):
+        try:
+            w.destroy()
+        except Exception:
+            pass
+    area = widgets.ScrollArea(_tk_session)
+    area.pack(fill="both", expand=True)
+    for i in range(60):
+        tk.Label(area.inner, text="r%d" % i, bg=theme.BG).pack(anchor="w")
+    _tk_session.update()
+    area.refresh_layout()
+    _tk_session.update()
+    try:
+        assert int(area._cv.cget("yscrollincrement")) == 1
+        total = _region_h(area._cv)
+        assert total > area._cv.winfo_height() + 100, "测试内容不够高"
+        area._in_area = lambda e: True      # 测试里指针不在控件上，直接放行
+        area._cv.yview_moveto(0)
+        f0 = area._cv.yview()[0]
+        area.handle_wheel(SimpleNamespace(delta=-120, x_root=0, y_root=0))
+        moved = (area._cv.yview()[0] - f0) * total
+        assert 117 <= moved <= 123, "主区每格应约 120px，实测 %.1fpx" % moved
+    finally:
+        try:
+            area._cancel_hide()
+        except Exception:
+            pass
+        area.destroy()
+
+
+# ------------------------------------------- About / Help 标题钉顶（v2.3.80）
+# 老板 2026-10-21：「about 那个弹窗，鼠标滑轮一滑，上边的标题都掉下来了，
+# 好像上面还有空，标题不是最上面的」。根因：标题/版本（Help 是标题/导语）原先
+# 和正文一起塞在 _scroll_frame 的滚动内容里 → 一滚就跟着走。修法：头部独立成
+# frame 先 pack(side="top")，正文才进滚动区。
+
+def _assert_title_outside_scroll(win, title_text, label):
+    """① 结构：标题不能是滚动区内容的后代；② 行为：滚一下它不许动。"""
+    import tkinter as tk
+
+    cvs = _descendants(win, tk.Canvas)
+    assert cvs, "%s 弹窗没有滚动画布" % label
+    cv = cvs[0]
+    inner = None
+    for w in cv.winfo_children():
+        if isinstance(w, tk.Frame):
+            inner = w
+            break
+    assert inner is not None, "%s 滚动区没有内容 frame" % label
+
+    title = [w for w in _descendants(win, tk.Label)
+             if str(w.cget("text")) == title_text]
+    assert title, "%s 弹窗找不到标题「%s」" % (label, title_text)
+    title = title[0]
+
+    w = title
+    while w is not None and w is not inner:
+        w = w.master
+    assert w is None, "%s 的标题被放进了滚动区（一滚就跟着走）" % label
+
+    f0 = cv.yview()[0]
+    y0 = title.winfo_rooty()
+    cv.yview_scroll(80, "units")
+    win.update()
+    if cv.yview()[0] > f0:                  # 内容确实溢出，才谈得上"钉住"
+        assert title.winfo_rooty() == y0, "%s 滚动时标题跟着动了" % label
+
+
+def test_about_dialog_title_is_pinned_above_scroll(ui):
+    ui._about_dialog()
+    win = ui._popups[-1]
+    win.geometry("520x520")
+    win.update()
+    _assert_title_outside_scroll(win, ui.tr("app_title"), "About")
+
+
+def test_help_dialog_title_is_pinned_above_scroll(ui):
+    ui._help_dialog()
+    win = ui._popups[-1]
+    win.geometry("680x520")
+    win.update()
+    _assert_title_outside_scroll(win, ui.tr("help_title"), "Help")

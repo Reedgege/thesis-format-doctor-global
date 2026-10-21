@@ -58,7 +58,12 @@ class ModalShell(tk.Toplevel):
         self.title(title)
 
         # 画圆角边框和投影的 Canvas（作为底层，可纵向滚动）
-        self._cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        # v2.3.80：显式 ``yscrollincrement=1`` —— 让 ``yview_scroll`` 的 "units"
+        # 明确等于 1 像素。不设时（默认 0）canvas 的 1 unit = **视口高度的 1/10**
+        # （实测 720 高弹窗 ≈ 69px），而旧版每格滚 ±3 units ≈ 209px（弹窗的 30%）：
+        # 每次滚动都新露出一大片区域要重绘，肉眼看到的就是「闪 + 跳」。
+        self._cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0,
+                             yscrollincrement=1)
         self._cv.pack(side="left", fill="both", expand=True)
         self._sb = ttk.Scrollbar(self, orient="vertical", command=self._cv.yview)
         self._cv.configure(yscrollcommand=self._on_scroll)
@@ -100,6 +105,9 @@ class ModalShell(tk.Toplevel):
             self._button_bar = tk.Frame(self._cv, bg=theme.SURFACE)
             self._bar_item = self._cv.create_window(0, 0, window=self._button_bar,
                                                     anchor="sw")
+            # 只在这里提一次图层：它创建晚于内容窗口，本就该在最上层；滚动时
+            # 反复 raise 会强制整画布重绘（见 _place_bar 的注释）。
+            self._cv.tag_raise(self._bar_item)
             tk.Frame(self._button_bar, bg=theme.BORDER, height=1).pack(fill="x")
             self._bar_pad = tk.Frame(self._button_bar, bg=theme.SURFACE)
             self._bar_pad.pack(fill="x", padx=24, pady=(10, 16))
@@ -139,6 +147,15 @@ class ModalShell(tk.Toplevel):
             return
         if w <= 2 or h <= 2:
             return
+
+        # v2.3.80：先清掉上一批"卡片+投影"多边形再画。旧版每次 <Configure>
+        # 都 create_polygon 一遍却从不删旧的 —— 折叠展开 / 滚动条显隐 / DPI 变化
+        # 都会让画布层层叠上几十上百个一模一样的多边形，之后每次重绘都要把它们
+        # 全画一遍：越用越慢、滚动越闪。只删带 "modal" 标签的（按钮栏等不受影响）。
+        try:
+            cv.delete("modal")
+        except Exception:
+            pass
 
         # 14px 圆角（modal-shell 规格）
         r = 14
@@ -215,7 +232,10 @@ class ModalShell(tk.Toplevel):
         try:
             top = self._cv.canvasy(0)
             self._cv.coords(self._bar_item, 1, top + h - 1)
-            self._cv.tag_raise(self._bar_item)
+            # v2.3.80：**不再**每次都 tag_raise。改变图层顺序会强制整张画布重绘，
+            # 而本方法由 yscrollcommand 在**每一次滚轮事件**里调用 —— 鼠标每滚一格
+            # 就整屏重画一遍，这就是「闪」的直接来源。动作栏创建晚于内容窗口，
+            # 本来就在最上层，只需在 __init__ 里 raise 一次（见那里的注释）。
         except Exception:
             pass
 
@@ -235,9 +255,23 @@ class ModalShell(tk.Toplevel):
             self._place_bar(self._cv.winfo_height())
 
     def _on_wheel(self, event):
-        """鼠标滚轮滚动内容（Windows 用 delta，跨平台兜底）。"""
+        """鼠标滚轮滚动内容（按**像素**滚，鼠标一格约 120px）。
+
+        v2.3.80：画布已设 ``yscrollincrement=1`` → 1 unit == 1px。
+        旧版 ``int(-delta/120)`` 只取 ±3 个 **unit**；在没设 increment 的
+        canvas 上 1 unit = 视口 1/10（实测 ≈69px），于是每格跳 ≈209px（视口的
+        30%）—— 跳得猛、每次新露出大片区域要重绘，看着就是「闪」。
+        现在直接按 delta 滚像素：鼠标一格 ±120px（≈视口 1/5，与主窗口手感一致），
+        触控板的小 delta（±30/±60）逐像素平滑。X11 少数环境只给 ±1（一格），
+        归一成一格 120px，免得「滚不动」。
+        """
         try:
-            self._cv.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            d = int(getattr(event, "delta", 0) or 0)
+            if d == 0:
+                return "break"
+            if abs(d) < 10:                     # X11 的 ±1 一格
+                d *= 120
+            self._cv.yview_scroll(-d, "units")
         except Exception:
             pass
         return "break"

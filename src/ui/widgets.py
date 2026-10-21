@@ -275,8 +275,13 @@ class ScrollArea(tk.Frame):
         self._bar_shown = False
         self._bar_needed = False      # 内容是否溢出（需要滚动）
         self._hide_timer = None       # 静止隐去计时器
+        # v2.3.80：显式 ``yscrollincrement=1`` —— "units" 才等于 1px。
+        # 不设时（默认 0）canvas 的 1 unit = **视口高度的 1/10**（实测 564 高 ≈56px），
+        # 而 ``handle_wheel`` 按 ``-e.delta``（鼠标一格 ±120）滚 units → 一格滚
+        # 3400+px，等于"一下就到底"，与 v2.3.22 注释里写的「每格约 120px」根本不符
+        # （那句「yscrollincrement=0 → 1 unit=1px」是错的）。设 1 后口径才真对齐。
         self._cv = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0,
-                             width=1, height=1)
+                             width=1, height=1, yscrollincrement=1)
         self._vsb = ttk.Scrollbar(self, orient="vertical", command=self._cv.yview)
         self._cv.configure(yscrollcommand=self._on_scroll)
         self._cv.pack(side="left", fill="both", expand=True)

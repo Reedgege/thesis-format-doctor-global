@@ -233,7 +233,10 @@ def _btn_display_width(text: str, pad: int = 2) -> int:
 
 def _scroll_frame(parent, bg: str = PAPER):
     """可滚动容器：返回 inner frame，内容 pack/grid 进去即可，超出自动出滚动条。"""
-    canvas = tk.Canvas(parent, bg=bg, highlightthickness=0)
+    # v2.3.80：与 ScrollArea 同口径 —— 显式 1 unit == 1px。不设时 canvas 的
+    # 1 unit = 视口 1/10，下面 ``yview_scroll(-e.delta, "units")`` 的「每格约 120px」
+    # 会实际变成一格 3000+px（直接到底）。
+    canvas = tk.Canvas(parent, bg=bg, highlightthickness=0, yscrollincrement=1)
     vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
     inner = tk.Frame(canvas, bg=bg)
     win = canvas.create_window((0, 0), window=inner, anchor="nw")
@@ -3671,8 +3674,21 @@ class App:
         win.minsize(520, 520)
         self._track(win)
 
-        inner = _scroll_frame(win, bg=PAPER)
         padx = 44
+
+        # v2.3.80：标题**钉在顶部**，不随正文滚动。
+        # 老板实测：一滚滑轮，上面的标题就跟着走、还露出一段空白 —— 因为标题
+        # / 版本原先和正文一起塞在滚动区（_scroll_frame）里。头部独立成 frame
+        # 先 pack(side="top")，正文才进滚动区，标题就永远在最上面。
+        head = tk.Frame(win, bg=PAPER)
+        head.pack(side="top", fill="x")
+        tk.Label(head, text=tr("app_title"), bg=PAPER, fg=INK,
+                 font=self.F["F_TITLE"]).pack(padx=padx, pady=(20, 2))
+        tk.Label(head, text=tr("about_version", self.version), bg=PAPER, fg=MUTED,
+                 font=self.F["F_SUBTITLE"]).pack(padx=padx, pady=(0, 8))
+        tk.Frame(head, bg=LINE, height=1).pack(fill="x", padx=padx, pady=(0, 10))
+
+        inner = _scroll_frame(win, bg=PAPER)
 
         def center_lbl(text, fg, font, pady, nowrap=False):
             opts = dict(bg=PAPER, fg=fg, font=font, justify="center")
@@ -3686,12 +3702,6 @@ class App:
 
         def rule(pady=(0, 14)):
             tk.Frame(inner, bg=LINE, height=1).pack(fill="x", padx=padx, pady=pady)
-
-        tk.Label(inner, text=tr("app_title"), bg=PAPER, fg=INK,
-                 font=self.F["F_TITLE"]).pack(padx=padx, pady=(24, 2))
-        tk.Label(inner, text=tr("about_version", self.version), bg=PAPER, fg=MUTED,
-                 font=self.F["F_SUBTITLE"]).pack(padx=padx, pady=(0, 12))
-        rule()
 
         center_lbl(tr("about_tagline"), INK, self.F["F_HDR"], (0, 8), nowrap=True)
         center_lbl(tr("about_body"), BODY, self.F["F_BODY"], (0, 14))
@@ -3727,15 +3737,21 @@ class App:
         win.minsize(680, 520)
         self._track(win)
 
-        inner = _scroll_frame(win, bg=PAPER)
         padx = 40
 
-        def head(text, fg, font, pady):
-            lbl = tk.Label(inner, text=text, bg=PAPER, fg=fg, font=font,
-                           justify="center", wraplength=660)
-            _auto_wrap(lbl, inner, padx)
-            lbl.pack(padx=padx, pady=pady)
-            return lbl
+        # v2.3.80：同 About —— 标题钉在顶部，不随正文滚动（原来标题/导语在
+        # 滚动区里，一滚就跟着走）。
+        hdr = tk.Frame(win, bg=PAPER)
+        hdr.pack(side="top", fill="x")
+        tk.Label(hdr, text=tr("help_title"), bg=PAPER, fg=INK,
+                 font=self.F["F_TITLE"]).pack(padx=padx, pady=(18, 4))
+        _intro = tk.Label(hdr, text=tr("help_intro"), bg=PAPER, fg=BODY,
+                          font=self.F["F_BODY"], justify="center", wraplength=660)
+        _auto_wrap(_intro, hdr, padx)
+        _intro.pack(padx=padx, pady=(0, 10))
+        tk.Frame(hdr, bg=LINE, height=1).pack(fill="x", padx=padx, pady=(0, 8))
+
+        inner = _scroll_frame(win, bg=PAPER)
 
         def section(text):
             tk.Label(inner, text=text, bg=PAPER, fg=ACCENT, font=self.F["F_HDR"],
@@ -3753,11 +3769,6 @@ class App:
                           wraplength=660)
             _auto_wrap(bl, inner, padx)
             bl.pack(fill="x", padx=padx, pady=(0, 4))
-
-        tk.Label(inner, text=tr("help_title"), bg=PAPER, fg=INK,
-                 font=self.F["F_TITLE"]).pack(padx=padx, pady=(22, 4))
-        head(tr("help_intro"), BODY, self.F["F_BODY"], (0, 12))
-        tk.Frame(inner, bg=LINE, height=1).pack(fill="x", padx=padx, pady=(0, 8))
 
         section(tr("help_sec1"))
         for title, body in tr("help_steps"):
