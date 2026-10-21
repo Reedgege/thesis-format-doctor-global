@@ -18,6 +18,7 @@ from .docx_reader import (DocumentProfile, read_docx, DocxReadError,
                           describe_paper_size, identify_paper_size,
                           find_abstract_section)
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT, origin_of_source
+from .policy import TEXT_IS_LOCKED
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec,
                     resolve_heading_formats, describe_heading, size_for_font,
                     spec_is_baseline)
@@ -95,6 +96,27 @@ _NUMBER_PREFIX_HINT = {
     "lower_letter": "a), b), c)",
     "lower_roman": "i), ii), iii)",
 }
+
+
+def _append_text_lock_note(findings: list, lvl: int, text_bits: list,
+                           source) -> None:
+    """v2.3.84：把「改文字类要求」（章节编号 / 全大写）记成 info 提示，不绑修正。
+
+    老板 2026-10-21 更新清单第 5 条要求「文字内容 100% 锁死，只改 Style 与 Layout」，
+    而 IEEE 规范恰好要求标题带 ``I. / A. / 1.`` 编号并全大写 —— 这两件事都是改字符。
+    产品选择：**不改**（承诺优先），但必须在报告里如实告诉客户"规范要求这样，请自行处理"。
+    与脚注/尾注、目录条目「不修只提示」同一套做法。
+    """
+    if not text_bits:
+        return
+    findings.append(Finding(
+        dimension="heading", severity="info",
+        message="Level %d heading numbering/case (left as-is on purpose)" % lvl,
+        expected=", ".join(text_bits),
+        actual="Text is never rewritten (format-only tool). Add the numbering or "
+               "uppercasing yourself, or use Word multi-level list numbering.",
+        source=source,
+    ))
 
 
 def _tp_expected_text(vals: dict) -> str:
@@ -670,17 +692,28 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             # 标题却多出了 "A."。现在缺编号要说出来，修正才有据可依。
             # 只报「缺」不报「形态不同」：作者手打的 "1. Introduction" 若被判成
             # 「应为 I.」，修正器会在前面再插一个前缀（I. 1. Introduction），宁可不碰。
+            #
+            # v2.3.84：编号与全大写都是**改文字**，与老板清单第 5 条冲突 →
+            # policy.TEXT_IS_LOCKED 为 True 时不再计入"待修正"（exp_bits/act_bits），
+            # 改走下面的 info 提示。否则就是"报了改不了"（点了修正一个字都不变）。
+            _text_bits: list = []
             if want.number_prefix:
                 if got.number_prefix is None:
-                    exp_bits.append("numbering (%s)"
-                                    % _NUMBER_PREFIX_HINT.get(want.number_prefix,
-                                                              want.number_prefix))
-                    act_bits.append("no numbering")
+                    _hint = _NUMBER_PREFIX_HINT.get(want.number_prefix,
+                                                    want.number_prefix)
+                    if TEXT_IS_LOCKED:
+                        _text_bits.append("numbering (%s)" % _hint)
+                    else:
+                        exp_bits.append("numbering (%s)" % _hint)
+                        act_bits.append("no numbering")
             # 全大写：只报「该大写却没大写」；反向（作者全大写、目标不要求）
             # 不报也不改 —— 小写化会破坏专有名词。读不到（文本无字母等）也不硬判。
             if want.uppercase and got.uppercase is False:
-                exp_bits.append("uppercase")
-                act_bits.append("not uppercased")
+                if TEXT_IS_LOCKED:
+                    _text_bits.append("uppercase")
+                else:
+                    exp_bits.append("uppercase")
+                    act_bits.append("not uppercased")
             # 段前分页（v2.3.67）：三态。want 为 None=不规定；got 为 None=读不到（可能由
             # 样式承载）→ 不硬判，只记 unreadable；两者都非 None 且不一致才判 fail。
             if want.page_break_before is not None:
@@ -733,6 +766,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     actual="Could not read: " + ", ".join(unreadable),
                     source=hf_origin,
                 ))
+                _append_text_lock_note(findings, lvl, _text_bits, hf_origin)
                 continue
             sev = "pass" if not exp_bits else "fail"
             sev = _downgrade(sev, hf_origin, is_page_or_heading=True,
@@ -744,6 +778,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 actual=_actual_text(),
                 source=hf_origin,
             ))
+            _append_text_lock_note(findings, lvl, _text_bits, hf_origin)
 
         # —— 超出目标声明范围的更深层级（v2.3.73）——
         # 目标声明了完整多级（APA/IEEE 五级）而文档更深（第 6 级）：检查要**明说**

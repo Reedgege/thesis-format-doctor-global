@@ -25,9 +25,27 @@ from typing import Optional
 
 from docx import Document
 from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.oxml import parse_xml
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from copy import deepcopy
+
+# 软换行（Shift+Enter）：真实学生论文用它分隔标题/正文/参考文献，必须当段边界看待。
+# 注意 w:br 还有 page/column 两个变体，属于排版语义，不能当段边界 —— 见 _is_soft_break。
+def _is_soft_break(el) -> bool:
+    """是不是「软换行」（Shift+Enter）。
+
+    ⚠️ ``<w:br>`` 有三个变体：``textWrapping``（默认，软换行）、``page``（分页符）、
+    ``column``（分栏符）。后两者是**排版语义**，绝不能被当段边界拆掉 ——
+    把分页符拆没会让客户丢分页（tests/test_review_fixes.py::test_numbering_preserves_page_break
+    就是这条守卫）。只认 ``w:cr`` 与「无 type / type=textWrapping」的 ``w:br``。
+    """
+    if el.tag == qn("w:cr"):
+        return True
+    if el.tag == qn("w:br"):
+        return el.get(qn("w:type")) in (None, "textWrapping")
+    return False
 
 # 参考文献标题常见写法（含前缀/包含匹配）
 _REF_HEADING_MARKERS = (
@@ -1945,6 +1963,11 @@ def _read_docx_impl(doc) -> DocumentProfile:
     except Exception:
         pass
 
+    # v2.3.84：参考文献区的软换行先拆成**真实段落**再统计条目数。
+    # 真实学生论文常把整份文献表用 Shift+Enter 粘成一段，不拆就只认成 1 条，
+    # 悬挂缩进也没处落（实测样本：应有 12 条，旧版只认 1 条）。
+    # 只动参考文献区，正文段落一律不碰；文字一个字符不变（只增加段落标记）。
+    split_reference_soft_breaks(doc)
     paras = list(doc.paragraphs)
 
     # —— 参考文献段（先定位，正文统计时要排除）——
@@ -2375,5 +2398,117 @@ def reference_paragraph_indices(doc) -> list:
 
     复用与 read_docx 完全一致的 find_reference_section（唯一实现），
     供 fixer 与测试精确区分「正文段落」与「参考文献段落」。
+
+    v2.3.84：调用前先把参考文献区的软换行拆成真实段落 —— 否则「整份文献表被
+    Shift+Enter 粘成一个段落」的文档（真实学生论文极常见）只会被认成 1 条，
+    悬挂缩进无从落地（真实样本实测：应有 12 条，引擎只认 1 条）。
     """
+    split_reference_soft_breaks(doc)
     return find_reference_section(list(doc.paragraphs))[1]
+
+
+def _run_pieces(run_el):
+    """把 <w:r> 按软换行切段，返回 [[子元素...], ...]（已剔除 rPr；长度>1 表示有换行）。"""
+    pieces = [[]]
+    for child in run_el:
+        if child.tag == qn("w:rPr"):
+            continue
+        if _is_soft_break(child):
+            pieces.append([])
+        else:
+            pieces[-1].append(deepcopy(child))
+    return pieces
+
+
+def _new_run(like_run_el, children):
+    """按参考 run 的 rPr 造一个新 run，装载给定子元素。"""
+    run = OxmlElement("w:r")
+    rpr = like_run_el.find(qn("w:rPr"))
+    if rpr is not None:
+        run.append(deepcopy(rpr))
+    for el in children:
+        run.append(el)
+    return run
+
+
+def split_paragraph_on_soft_breaks(para) -> int:
+    """把一段里的软换行（``<w:br/>`` / ``<w:cr>``）拆成真正的段落。返回拆出的段数。
+
+    为什么必须拆：真实学生论文大量用 Shift+Enter 分隔「章节标题 / 每条参考文献」，
+    于是标题与正文、或十几条文献全挤在一个 ``<w:p>`` 里。引擎按段落工作，
+    粘在一起就既不能逐条悬挂缩进、也不能分别套标题格式。
+
+    铁律：**一个字符都不动**（老板 2026-10-21 清单第 5 条）。这里只做结构性操作：
+    复制 ``pPr``（段落格式原样）与 ``rPr``（字符格式原样），把原来的子元素按换行
+    位置重新分配到多个 ``<w:p>`` 里；超链接、域、书签等容器元素整体搬到所属段落，
+    内容与顺序完全保持。空行（连续换行）也如实保留。
+    """
+    p = para._p
+    body = p.getparent()
+    if body is None:
+        return 0
+    # 只有真的含软换行才动手
+    if not any(_is_soft_break(ch) or
+               (ch.tag == qn("w:r") and any(_is_soft_break(x) for x in ch))
+               for ch in p):
+        return 0
+    ppr = p.find(qn("w:pPr"))
+    lines = [[]]
+    for child in list(p):
+        if child.tag == qn("w:pPr"):
+            continue
+        if _is_soft_break(child):
+            lines.append([])
+            continue
+        if child.tag == qn("w:r"):
+            pieces = _run_pieces(child)
+            if len(pieces) == 1:
+                lines[-1].append(deepcopy(child))
+            else:
+                for i, children in enumerate(pieces):
+                    if i > 0:
+                        lines.append([])
+                    if children:
+                        lines[-1].append(_new_run(child, children))
+            continue
+        # 超链接 / 域 / 书签等容器：整块放进当前行（内部软换行不拆，保守）
+        lines[-1].append(deepcopy(child))
+
+    if len(lines) < 2:
+        return 0
+
+    # 第一行复用原段落，其余新建段落插在它后面
+    for child in list(p):
+        if child.tag != qn("w:pPr"):
+            p.remove(child)
+    for el in lines[0]:
+        p.append(el)
+    prev = p
+    for line in lines[1:]:
+        new_p = OxmlElement("w:p")
+        if ppr is not None:
+            new_p.append(deepcopy(ppr))
+        for el in line:
+            new_p.append(el)
+        prev.addnext(new_p)
+        prev = new_p
+    return len(lines) - 1
+
+
+def split_reference_soft_breaks(doc) -> int:
+    """只拆参考文献区里的软换行（保守：正文段落一律不动）。返回拆出的段数。"""
+    try:
+        ref_start, ref_indices = find_reference_section(list(doc.paragraphs))
+    except Exception:
+        return 0
+    if not ref_indices:
+        return 0
+    paras = list(doc.paragraphs)
+    targets = [paras[i] for i in ref_indices if i < len(paras)]
+    n = 0
+    for para in targets:
+        try:
+            n += split_paragraph_on_soft_breaks(para)
+        except Exception:
+            continue
+    return n

@@ -39,6 +39,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from .checker import (ALIGN_LABEL, run_check, Finding, FixAction,
                       _NUMBER_PREFIX_HINT)  # 对齐/编号提示文案单一来源（避免两处硬编码）
+from .policy import TEXT_IS_LOCKED
 from .docx_reader import (
     DocxReadError, heading_level, is_heading, is_pseudo_heading, read_docx,
     reference_paragraph_indices, find_reference_section, find_abstract_section,
@@ -1881,7 +1882,10 @@ def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | No
             # 该级检查没报问题 → 一字节都不动（不写格式、不改大小写、不加批注）
             continue
         changed = _format_heading_one(para, f, body_font, body_size)
-        if _apply_heading_text_transform(para, f, prefix):
+        # 🔴 v2.3.84 文字锁死（老板清单第 5 条）：TEXT_IS_LOCKED 时不改大写、不插编号。
+        # 这两件事都是改字符；要改请把 policy.TEXT_IS_LOCKED 置 False（检查器会同步恢复
+        # "待修正"口径，两端不会脱节）。
+        if not TEXT_IS_LOCKED and _apply_heading_text_transform(para, f, prefix):
             changed = True
         if changed:
             info["formatted"] += 1
@@ -2206,6 +2210,16 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
 
     ref_indices = reference_paragraph_indices(doc)
     ref_set = set(ref_indices)
+    # v2.3.84：参考文献**标题段**也要一并排除出「正文排版」目标。
+    # 以前标题和第一条文献被软换行粘在同一段里，它自然落在 ref_set 中；v2.3.84 把粘段拆开
+    # 之后标题变成独立段落，若不补这一行，正文首行缩进会顺手套到 "References" 上
+    # （实测输出 References 变成缩进 0.5″ 的正文样式）。标题格式另有专门流程管辖。
+    try:
+        _ref_start, _ = find_reference_section(list(doc.paragraphs))
+        if _ref_start is not None:
+            ref_set.add(_ref_start)
+    except Exception:
+        pass
 
     # 规范解析：优先使用 caller 传入的 spec（来自 checker 的同一次解析，单一真相源），
     # 未传入时自行用 resolve_spec 解析——与 checker 走同一表达式，根除「规范还不一样」的漂移。

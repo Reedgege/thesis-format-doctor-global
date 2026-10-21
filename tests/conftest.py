@@ -19,6 +19,20 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture
+def legacy_text_transform(monkeypatch):
+    """临时放开「改写文字」能力（v2.3.84 产品默认已按老板清单第 5 条锁死）。
+
+    这批用例覆盖的是**底层实现**（章节编号/全大写/引文重写）是否还正确、是否幂等；
+    产品默认行为由 tests/test_text_lock.py 钉死。检查器与修正器两个开关必须一起翻，
+    否则会造出"报了改不了"的假环境。
+    """
+    from src.engine import checker, fixer
+    monkeypatch.setattr(checker, "TEXT_IS_LOCKED", False)
+    monkeypatch.setattr(fixer, "TEXT_IS_LOCKED", False)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _isolated_recents(tmp_path, monkeypatch):
     """每个用例独立 recents.json，绝不读写真实用户配置。"""

@@ -225,7 +225,7 @@ def test_real_check_scopes_heading_fix_to_the_failing_level(tmp_path):
 
 
 # ---------------------------------------------------------------- 检查器必须「看得见」才能被修正
-def test_checker_reports_missing_heading_numbering(tmp_path):
+def test_checker_reports_missing_heading_numbering(tmp_path, legacy_text_transform):
     """IEEE 要求的章节编号（I./A./1)）以前**从不检查**，修正器却在补编号。
 
     报告说「标题格式合规」、标题却多出 "A." —— 检查看不见的项被改了。
@@ -247,7 +247,7 @@ def test_checker_reports_missing_heading_numbering(tmp_path):
     assert 2 in _heading_scope(findings)
 
 
-def test_checker_reports_missing_uppercase_once_fixed(tmp_path):
+def test_checker_reports_missing_uppercase_once_fixed(tmp_path, legacy_text_transform):
     """IEEE 一级标题要求全大写：没大写要报，修完复检不再报（幂等）。"""
     src = tmp_path / "caps.docx"
     doc = Document()
@@ -315,7 +315,9 @@ def test_no_reference_problem_means_no_content_rewrite(tmp_path):
     src = _doc_numbered_apa_refs(tmp_path)
     out = tmp_path / "out.docx"
     target = target_from_spec("IEEE")
-    assert target.reference_rewrite is True, "产品路径默认开启（但必须被检查结论门控）"
+    # v2.3.84：默认关闭；本用例测的是"门控"本身，所以显式开启后再验它不乱改
+    assert target.reference_rewrite is False, "产品默认必须关闭（清单第 5 条）"
+    target.reference_rewrite = True
     before = [p.text for p in Document(str(src)).paragraphs[2:]]
 
     # 只给一个「参考文献悬挂缩进」类修正（真实场景：条目文字合规、只是缩进不对）
@@ -335,7 +337,9 @@ def test_reference_problem_reported_opens_the_rewrite(tmp_path):
     reported = Finding(dimension="reference", severity="warn",
                        message="Reference sequential numbering")
     reported.fix = FixAction(dimension="reference_numbered", value=True)
-    fix_docx(str(src), str(out), target_from_spec("IEEE"), findings=[reported])
+    _t = target_from_spec("IEEE")
+    _t.reference_rewrite = True              # v2.3.84：默认关闭，本用例显式开启
+    fix_docx(str(src), str(out), _t, findings=[reported])
     after = [p.text for p in Document(str(out)).paragraphs[2:]]
     assert 'vol. 12, no. 3, pp. 45-67, 2019.' in after[0], after[0]
     assert after[1].startswith("[2] J. A. Smith,"), after[1]
@@ -346,6 +350,7 @@ def test_preview_shows_reference_rewrite_when_it_will_happen(tmp_path):
     src = _doc_numbered_apa_refs(tmp_path)
     prof = read_docx(str(src))
     target = target_from_spec("IEEE")
+    target.reference_rewrite = True          # v2.3.84：默认关闭，本用例显式开启
     reported = Finding(dimension="reference", severity="warn",
                        message="Reference sequential numbering")
     reported.fix = FixAction(dimension="reference_numbered", value=True)

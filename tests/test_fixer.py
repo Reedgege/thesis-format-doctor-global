@@ -367,7 +367,7 @@ def _make_ieee_headings_doc(path):
     doc.save(path)
 
 
-def test_fix_ieee_headings_numbered_and_bolded(tmp_path):
+def test_fix_ieee_headings_numbered_and_bolded(tmp_path, legacy_text_transform):
     """IEEE 章节标题：罗马/字母/数字编号 + L1 全大写 + 加粗，且遇更浅层重置更深层编号。
 
     对齐 IEEE_Paper_Format_Rules V1.0 §3：仅 L1 全大写（"I. INTRODUCTION"），
@@ -394,7 +394,7 @@ def test_fix_ieee_headings_numbered_and_bolded(tmp_path):
     assert doc.paragraphs[4].text == "A. Sampling"
 
 
-def test_fix_ieee_headings_idempotent_on_rerun(tmp_path):
+def test_fix_ieee_headings_idempotent_on_rerun(tmp_path, legacy_text_transform):
     """重跑不应叠加编号前缀（I. I. ...）；用独立输出文件避免原地改写。"""
     src = tmp_path / "in.docx"
     out1 = tmp_path / "out1.docx"
@@ -425,6 +425,8 @@ def test_fix_ieee_references_rewritten_to_ieee_style(tmp_path):
     out = tmp_path / "out.docx"
     _make_ieee_apa_refs_doc(src)
     target = target_from_spec("IEEE")
+    # v2.3.84：引文改写默认关闭（清单第 5 条「文字 100% 锁死」），本用例测的是改写实现本身
+    target.reference_rewrite = True
     fix_docx(str(src), str(out), target)
     doc = Document(str(out))
     # 期刊条目 → IEEE 编号引文 + [1] 前缀
@@ -443,6 +445,7 @@ def test_fix_ieee_references_rewrite_idempotent(tmp_path):
     out2 = tmp_path / "out2.docx"
     _make_ieee_apa_refs_doc(src)
     target = target_from_spec("IEEE")
+    target.reference_rewrite = True          # v2.3.84：默认关闭，本用例显式开启
     fix_docx(str(src), str(out1), target)
     fix_docx(str(out1), str(out2), target)          # 第二次跑在 out1 产物上
     doc = Document(str(out2))
@@ -489,7 +492,7 @@ def _make_real_ieee_doc(path):
     return str(path)
 
 
-def test_fix_ieee_realistic_bold_normal_headings_numbered(tmp_path):
+def test_fix_ieee_realistic_bold_normal_headings_numbered(tmp_path, legacy_text_transform):
     """真实样例形态（12pt 加粗 Normal 伪标题）也必须被识别 + 编号（I./II./…）。
 
     守护 2026-10-06 修复：旧阈值 13pt 让 12pt 加粗标题整体漏判 →
@@ -547,8 +550,9 @@ def test_ieee_reference_rewrite_requires_explicit_opt_in(tmp_path):
     after = Document(str(out)).paragraphs[1].text
     assert after.startswith("[1] "), "仍应补编号前缀"
     assert after[len("[1] "):] == before, "未显式开启时，条目文字必须逐字不动"
-    # 而真实产品路径（target_from_spec）会开启改写
-    assert target_from_spec("IEEE").reference_rewrite is True
+    # v2.3.84：真实产品路径**也默认关闭**改写（清单第 5 条：文字 100% 锁死），
+    # 想改写必须调用方自己置 TargetProfile.reference_rewrite = True。
+    assert target_from_spec("IEEE").reference_rewrite is False
     assert target_from_spec("APA").reference_rewrite is False
 
 
@@ -562,7 +566,9 @@ def test_ieee_reference_rewrite_handles_multi_author(tmp_path):
                       "function. Journal of Educational Psychology, 113(4), 612-630.")
     doc.save(src)
     out = tmp_path / "multi_out.docx"
-    fix_docx(src, str(out), target_from_spec("IEEE"))
+    _t = target_from_spec("IEEE")
+    _t.reference_rewrite = True              # v2.3.84：默认关闭，本用例显式开启
+    fix_docx(src, str(out), _t)
     text = Document(str(out)).paragraphs[2].text
     assert text.startswith("[1] T. Becker, R. Muller, and F. Schmidt,"), text
     assert "vol. 113, no. 4, pp. 612-630, 2021." in text
@@ -600,7 +606,7 @@ def test_spec_key_none_reference_style_ieee_resolves_same_spec(tmp_path):
     assert numbered, "IEEE 编号制须绑定 reference_numbered 修正，否则 fixer 不会补 [n]"
 
 
-def test_ieee_title_page_never_numbered_as_section(tmp_path):
+def test_ieee_title_page_never_numbered_as_section(tmp_path, legacy_text_transform):
     """标题页标题（被加粗后）绝不能被当成章节标题编号。
 
     守护 2026-10-06 修复：标题页流程会把大标题加粗，而加粗 + 短文本恰好满足伪标题

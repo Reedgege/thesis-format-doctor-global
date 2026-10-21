@@ -22,7 +22,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from src.engine import checker
-from src.engine.docx_reader import read_docx, reference_paragraph_indices
+from src.engine.docx_reader import (read_docx, reference_paragraph_indices,
+                                    find_reference_section)
 from src.engine.fixer import fix_docx, preview_fix, unique_output_path
 from src.engine.questionnaire import TargetProfile, target_from_dict, target_from_spec
 from src.engine.specs import get_spec
@@ -159,6 +160,11 @@ def test_fix_applies_body_layout(tmp_path):
     fix_docx(str(src), str(out), target)
     doc = Document(str(out))
     ref_idx = set(reference_paragraph_indices(doc))
+    # v2.3.84：参考文献**标题段**也归参考文献流程管辖，不再当正文刷缩进
+    # （否则 "References" 会变成一个缩进 0.5″ 的正文段落）。
+    _rs, _ = find_reference_section(list(doc.paragraphs))
+    if _rs is not None:
+        ref_idx.add(_rs)
     checked = 0
     for i, p in enumerate(doc.paragraphs):
         if i in ref_idx or not p.text.strip():

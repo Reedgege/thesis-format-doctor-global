@@ -522,9 +522,15 @@ def target_from_spec(key: str) -> TargetProfile:
         reference_style=ref.style_key,
         reference_hanging_indent_in=ref.hanging_indent_in,
         reference_numbered=ref.numbered,
-        # 只有「顺序编码制 + IEEE」才允许 best-effort 引文内容改写；APA/MLA 等
-        # 著者-出版年制改写风险大于收益，保持「只改格式」承诺。
-        reference_rewrite=(ref.style_key == "IEEE" and bool(ref.numbered)),
+        # 🔴 v2.3.84：**默认关闭**参考文献正文改写（老板 2026-10-21 更新清单第 5 条：
+        # 「文字内容 100% 锁死，只改 Style 与 Layout」）。
+        # 旧行为：规范选 IEEE 且顺序编码 → 自动把 APA 作者-年条目改写成 IEEE 引文
+        #        （实测把 "Ivanov, D. (2020). Predicting…" 改成 "D. Ivanov, Predicting…"，
+        #        等于改了客户的文字与标点，与第 5 条承诺直接冲突）。
+        # 新行为：条目文字一个字都不动，只补 [n] 顺序前缀（列表标记）+ 悬挂缩进等格式；
+        #        引用格式本身不符合规范时由检查器如实报告，交客户自行决定。
+        # 需要旧行为的话可显式把 TargetProfile.reference_rewrite 置 True（内部/测试用）。
+        reference_rewrite=False,
         resolution=resolution,
         # 把所选规范的「期望说明」（含学生/专业分层的前置材料差异）带入画像，
         # 供报告展示「正确说明」。空说明不塞，避免报告出现空行。

@@ -89,7 +89,7 @@ def test_numbering_preserves_inline_image(tmp_path):
     assert entry.text[len("[1] "):] == REF_TEXT_A, "除新增前缀外必须逐字一致"
 
 
-def test_numbering_preserves_page_break(tmp_path):
+def test_numbering_preserves_page_break(tmp_path, legacy_text_transform):
     def add_break(run):
         run.add_break(WD_BREAK.PAGE)
 

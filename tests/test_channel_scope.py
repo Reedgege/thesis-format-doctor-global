@@ -172,7 +172,7 @@ def test_spec_baseline_still_formats_headings_per_spec(tmp_path):
     assert ch.alignment == WD_ALIGN_PARAGRAPH.CENTER
 
 
-def test_spec_baseline_ieee_preview_lists_the_numbering_it_will_add(tmp_path):
+def test_spec_baseline_ieee_preview_lists_the_numbering_it_will_add(tmp_path, legacy_text_transform):
     """编号/全大写是改文字 —— 规范基线模式下预览必须先写出来（预览 = 实际）。"""
     paper = _paper(tmp_path)
     t = build_target(spec_key="IEEE")
