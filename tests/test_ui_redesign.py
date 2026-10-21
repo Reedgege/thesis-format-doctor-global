@@ -1496,3 +1496,51 @@ def test_main_maps_offscreen_and_moves_back():
     assert i_off < i_dei, "必须先挪到屏幕外再 deiconify（否则客户会看到空壳）"
     assert i_dei < i_hook, "首帧钩子必须在 deiconify 之后才注册"
     assert i_fb > 0, "缺少 4 秒兜底挪回（窗口可能永远留在屏幕外，P0）"
+
+
+# --------------------------------------------------- v2.3.83 原生对话框显示自愈
+def test_display_guard_is_noop_when_nothing_changed(ui, _tk_session):
+    """正常路径下自愈必须是空操作 —— 否则每次保存都会把窗口挪一下，反而更糟。"""
+    from src.ui import dpi as dpi_mod
+
+    _tk_session.update_idletasks()
+    snap = dpi_mod.snapshot(ui.root)
+    before = (ui.root.winfo_width(), ui.root.winfo_height(),
+              ui.root.winfo_x(), ui.root.winfo_y())
+    acted = dpi_mod.restore_if_drifted(ui.root, snap)
+    after = (ui.root.winfo_width(), ui.root.winfo_height(),
+             ui.root.winfo_x(), ui.root.winfo_y())
+    assert acted == [], "没有变化时不该动手，实际 %r" % (acted,)
+    assert before == after
+
+
+def test_display_guard_restores_window_when_it_drifted(ui, _tk_session):
+    """模拟「系统把窗口挪了/缩了」：自愈要把窗口摆回快照时的位置与尺寸。
+
+    老板 2026-10-21 报的现象就是保存后窗口自己变了且不回来；这里钉住"能回来"。
+    """
+    import sys as _sys
+
+    if not _sys.platform.startswith("win"):
+        import pytest as _pytest
+        _pytest.skip("Windows 专属行为")
+    from src.ui import dpi as dpi_mod
+
+    _tk_session.update_idletasks()
+    snap = dpi_mod.snapshot(ui.root)
+    assert snap["geo"], "快照里没有几何，测不了"
+    want = snap["geo"]
+
+    # 人为制造漂移：挪位置 + 改尺寸（尺寸取 minsize 以上的值，避免被 WM 夹住）
+    _tk_session.geometry("%dx%d+%d+%d" % (max(want[0] - 120, 720),
+                                         max(want[1] - 80, 480),
+                                         want[2] + 40, want[3] + 30))
+    _tk_session.update_idletasks()
+    assert (_tk_session.winfo_x(), _tk_session.winfo_y()) != (want[2], want[3])
+
+    acted = dpi_mod.restore_if_drifted(ui.root, snap)
+    _tk_session.update_idletasks()
+    assert acted, "明明漂移了却没动作"
+    got = (_tk_session.winfo_width(), _tk_session.winfo_height(),
+           _tk_session.winfo_x(), _tk_session.winfo_y())
+    assert got == want, "没摆回去：要 %r 实际 %r" % (want, got)

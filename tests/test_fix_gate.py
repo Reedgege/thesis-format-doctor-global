@@ -75,6 +75,15 @@ class _FixStub:
     def _upgrade_dialog(self, *a, **k):
         self.calls.append(("upgrade", a, k))
 
+    # v2.3.83：_run_fix 在弹原生对话框（确认/另存为/完成）前后要抓/还原显示状态，
+    # 防「保存后窗口变小、字变清楚且退不回去」（见 src/ui/dpi.py）。stub 必须镜像。
+    def _snap_display(self, *a, **k):
+        self.calls.append(("snap", a, k))
+        return {"geo": None}
+
+    def _heal_display(self, snap, *a, **k):
+        self.calls.append(("heal", (snap,), k))
+
     def _build_target(self, *a, **k):
         return object()
 
@@ -142,3 +151,6 @@ def test_fix_gate_allowed_reaches_confirm(monkeypatch):
     s._run_fix()
     assert _has(s.calls, "report"), "allowed 应进入预览"
     assert not _has(s.calls, "upgrade"), "allowed 不应弹激活窗"
+    # v2.3.83：原生确认框弹出前抓快照、取消返回后自愈（原生框已经开过了）
+    assert _has(s.calls, "snap"), "弹原生对话框前必须先抓显示状态"
+    assert _has(s.calls, "heal"), "取消路径也必须自愈"

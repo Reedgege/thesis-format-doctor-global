@@ -58,6 +58,7 @@ from ..engine.specs import (SPEC_ORDER, spec_display, REFERENCE_STYLE_KEYS,
 from ..license import license as lic
 from .. import versioninfo
 from . import i18n, iconpath, recents, theme
+from . import dpi as _dpi_mod
 from .fonts import Fonts
 from .modal_shell import ModalShell
 from .widgets import (BrandMark, IconBadge, ProgressBar, RoundButton, RoundCard,
@@ -4141,6 +4142,29 @@ class App:
         except Exception:
             return 1.0
 
+    # ------------------------------------------------ 原生对话框的显示自愈（v2.3.83）
+    #
+    # 老板 2026-10-21 报：保存修正稿时窗口突然变小、字变清楚、一直保持到关软件。
+    # 根因是「原生 shell 对话框把进程 DPI 感知提升 → Windows 停止位图拉伸」，
+    # 完整取证见 src/ui/dpi.py 顶部。主治在 main() 里锁死感知（pin_process_dpi_awareness），
+    # 这里这两个方法只是**保险**：万一某些 Windows 版本仍改了缩放/窗口框，弹完立刻还原。
+    # 正常路径下 _heal_display 是空操作（restore_if_drifted 只在实测到变化时才动手）。
+    def _snap_display(self):
+        """原生对话框弹出**之前**抓一份显示状态；抓不到返回 None（不影响主流程）。"""
+        try:
+            return _dpi_mod.snapshot(self.root)
+        except Exception:
+            return None
+
+    def _heal_display(self, snap):
+        """原生对话框返回**之后**自愈：窗口被改了尺寸/缩放就恢复原样。"""
+        if not snap:
+            return
+        try:
+            _dpi_mod.restore_if_drifted(self.root, snap)
+        except Exception:
+            pass
+
     def _fit_modal(self, win, width: int):
         """把弹窗调到内容的真实高度，并保证**整窗留在屏幕工作区内**。
 
@@ -4682,8 +4706,13 @@ class App:
                 messagebox.showwarning(tr("msg_need_activation_title"), gate_no_go)
             return
 
+        # v2.3.83：从这里开始连弹三个**Windows 原生**对话框（确认 / 另存为 / 完成），
+        # 而原生 shell 对话框会把进程 DPI 感知提升、让窗口停止位图拉伸（变小+变清晰
+        # 且退不回去，老板 2026-10-21 报的就是这个）。先抓一份显示状态，返回后自愈。
+        _disp = self._snap_display()
         if not messagebox.askyesno(tr("msg_fix_confirm_title"),
                                    preview_text + tr("msg_fix_confirm_body")):
+            self._heal_display(_disp)
             self._set_bar("idle")
             return
 
@@ -4693,12 +4722,14 @@ class App:
             filetypes=[("Word", "*.docx")], initialfile=default_name,
             initialdir=os.path.dirname(docx) or None)
         if not out:
+            self._heal_display(_disp)
             self._set_bar("idle")
             return
         # 保存对话框已自带覆盖确认，这里只拦「与原件同一文件」这一种不可逆情形
         if same_file(out, docx):
             messagebox.showerror(tr("msg_cannot_overwrite_title"),
                                  tr("msg_cannot_overwrite"))
+            self._heal_display(_disp)
             self._set_bar("idle")
             return
 
@@ -4710,9 +4741,11 @@ class App:
             self._last_output = out
             self._phase = "fixed"
         except DocxReadError as e:
+            self._heal_display(_disp)
             self._fail(tr("msg_read_error_title"), str(e))
             return
         except (ValueError, OSError) as e:
+            self._heal_display(_disp)
             self._fail(tr("msg_fix_error_title"), str(e))
             return
         finally:
@@ -4725,6 +4758,8 @@ class App:
         messagebox.showinfo(tr("msg_fix_done_title"),
                             "%s\n%s\n\n%s" % (tr("msg_fix_done_before_file"), out,
                                               lic.post_fix_message(gate, counted)))
+        # 三个原生对话框全部走完 —— 最后一次自愈，客户看到的窗口纹丝不动
+        self._heal_display(_disp)
 
     # ------------------------------------------------------------ 报告 / 模板
     def _save_report(self):
@@ -4733,12 +4768,14 @@ class App:
         if not content:
             messagebox.showwarning(tr("save_no_report_title"), tr("save_no_report"))
             return
+        _disp = self._snap_display()
         dst = filedialog.asksaveasfilename(
             title=tr("save_report_dialog"), defaultextension=".docx",
             filetypes=[("Word document", "*.docx"), ("Markdown", "*.md"),
                        ("All files", "*.*")],
             initialfile="format-check-report.docx")
         if not dst:
+            self._heal_display(_disp)
             return
         try:
             if dst.lower().endswith(".docx") and getattr(self, "_last_report", None) is not None:
@@ -4749,30 +4786,44 @@ class App:
                 with open(dst, "w", encoding="utf-8") as fh:
                     fh.write(content + "\n")
         except OSError as e:
+            self._heal_display(_disp)
             messagebox.showerror(tr("msg_fix_error_title"), str(e))
             return
         messagebox.showinfo(tr("save_report_done_title"),
                             "%s\n%s" % (tr("save_report_done"), dst))
+        self._heal_display(_disp)
 
     def _export_template(self):
         tr = self.tr
+        _disp = self._snap_display()
         dst = filedialog.asksaveasfilename(
             defaultextension=".yaml", filetypes=[("YAML", "*.yaml *.yml"),
                                                  ("All files", "*.*")],
             initialfile="ai_questionnaire_template.yaml")
         if not dst:
+            self._heal_display(_disp)
             return
         try:
             with open(_TEMPLATE_PATH, "r", encoding="utf-8") as src, \
                     open(dst, "w", encoding="utf-8") as out:
                 out.write(src.read())
         except OSError as e:
+            self._heal_display(_disp)
             messagebox.showerror(tr("msg_fix_error_title"), str(e))
             return
         messagebox.showinfo(tr("export_done_title"), tr("export_done", dst))
+        self._heal_display(_disp)
 
 
 def main():
+    # v2.3.83：DPI 感知锁定（老板 2026-10-21 报「保存修正稿时窗口变小、字变清楚、
+    # 一直保持到关软件」）。根因与取证见 src/ui/dpi.py 顶部说明。一句话：
+    # 进程默认 DPI 不感知 → 150% 屏上整窗被 Windows 拉伸；弹原生「另存为」框时
+    # 进程感知被提升 → 停止拉伸 → 窗口按物理像素呈现（缩小 + 变清晰），且进程级
+    # 设定退不回去。这里**在创建任何窗口之前**显式锁成 UNAWARE：实测锁定后任何
+    # 提升尝试（V2 / GDIscaled）都返回 False，感知保持 UNAWARE —— 显示方式与现状
+    # 完全一致，只是再也跳不了。必须在 tk.Tk() 之前，否则窗口已按旧感知建好。
+    _dpi_mod.pin_process_dpi_awareness()
     root = tk.Tk()
     root.withdraw()          # 消掉启动一闪：先隐藏主窗，等 UI 全部建完再显示
     app = App(root)
