@@ -209,6 +209,26 @@ def _downgrade(sev: str, origin: str, is_page_or_heading: bool,
     return sev
 
 
+def _page_number_severity(origin: str, target) -> str:
+    """页码的严重度（v2.3.90，老板 2026-10-22 拍板「升为可修」）。
+
+    页码**不是版面偏好**，是三家规范的硬要求：APA 7th §2.18 每页右上角；
+    MLA 右上角「姓氏 + 页码」；IEEE 页脚居中。此前它和页边距/字体一起被
+    「规范来源的页面维度一律降级为 info」吞掉 —— 报告写 info、修正器不动手，
+    客户拿到「已按 APA 改好」的论文却一页页码都没有（2026-10-22 实测：四份产物
+    zip 里连页眉部件都不存在，headerReference 出现 0 次）。
+
+    新口径：客户**真的在规范下拉里选了内置规范**（``spec_is_baseline``）时，
+    页码缺失/错位至少 warn（从而绑上修正动作）；走学校模板 / 手填 / AI 导入时，
+    仍按模板说话 —— 显式来源本来就不会被降级，这条分支不受影响。
+    """
+    sev = _downgrade("warn", origin, True, "page_number",
+                     getattr(target, "spec_key", None))
+    if sev == "info" and spec_is_baseline(target):
+        return "warn"
+    return sev
+
+
 # ---------------------------------------------------------------------------
 # 参考文献检查：数据驱动（依据 ReferenceRule.checks 分发）
 # 每个子检查返回 (severity, message)。
@@ -1095,7 +1115,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         if not prof.page_number_present:
             findings.append(Finding(
                 dimension="page_number",
-                severity=_downgrade("warn", _pn_origin, True, "page_number", target.spec_key),
+                severity=_page_number_severity(_pn_origin, target),
                 message="Page number",
                 expected=f"Page number at {_pos_label}",
                 actual="No page number found in the header or footer",
@@ -1110,7 +1130,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             if _bad:
                 findings.append(Finding(
                     dimension="page_number",
-                    severity=_downgrade("warn", _pn_origin, True, "page_number", target.spec_key),
+                    severity=_page_number_severity(_pn_origin, target),
                     message="Page number position",
                     expected=_pos_label,
                     actual="Page number is " + " and ".join(_bad),
@@ -1228,11 +1248,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
 
     if apa_spec.running_head and getattr(apa_spec, "running_head_kind", "apa") == "apa":
         # 仅专业版 running_head=True 且 kind="apa" 才进此分支；学生版 running_head=False 完全跳过
-        # （学生版不要求页眉短标题，绝不被误报「缺 running head」）。属页面维度，spec 来源 → info。
+        # （学生版不要求页眉短标题，绝不被误报「缺 running head」）。
+        # 🔴 v2.3.90：规范基线时升为 warn 且**可修**。此前恒为 info，于是 apa-stu 与
+        # apa-p 的产物 document.xml 逐字节 100% 相同（实测 95272 字节全等）——
+        # 清单第②条「首页按 APA-Stu/APA-Pro 分别处理」等于没做。
+        # 现在基线模式下由 fixer 从**客户自己的论文标题**派生短标题写入页眉（正文不动）。
+        _rh_sev = "warn" if spec_is_baseline(target) else "info"
         rh = prof.header_text or ""
         if not rh:
             findings.append(Finding(
-                dimension="running_head", severity="info",
+                dimension="running_head", severity=_rh_sev,
                 message="Running head",
                 expected=f"Short title in the header (≤ {apa_spec.running_head_max_chars} characters) + page number",
                 actual="No running-head text detected in the header (APA Professional requires a short title)",
@@ -1240,7 +1265,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             ))
         elif apa_spec.running_head_max_chars and len(rh) > apa_spec.running_head_max_chars:
             findings.append(Finding(
-                dimension="running_head", severity="info",
+                dimension="running_head", severity=_rh_sev,
                 message="Running head length",
                 expected=f"≤ {apa_spec.running_head_max_chars} characters",
                 actual=f"{len(rh)} characters: {rh[:60]}{'…' if len(rh) > 60 else ''}",
@@ -1258,14 +1283,15 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     if spec.running_head and getattr(spec, "running_head_kind", "apa") == "mla":
         # MLA running head：姓氏 + 空格 + 页码，每页右上（Purdue OWL general_format）。
         # 页码常以 PAGE 域形式存在（header_text 中不含数字），故同时看 header_text 与 page_number_present。
-        # 属页面维度，spec 来源 → info；绝不改动内容。
+        # 🔴 v2.3.90：与 APA 专业版同理，规范基线时可修 —— 姓氏从客户**自己的姓名行**派生。
+        _mla_sev = "warn" if spec_is_baseline(target) else "info"
         rh = prof.header_text or ""
         name_part = re.sub(r"\d+", "", rh).strip()
         has_name = bool(re.search(r"[A-Za-z]", name_part)) or (rh.strip() != "" and not rh.strip().isdigit())
         has_page = bool(prof.page_number_present) or bool(re.search(r"\d", rh))
         if not rh.strip() and not prof.page_number_present:
             findings.append(Finding(
-                dimension="running_head", severity="info",
+                dimension="running_head", severity=_mla_sev,
                 message="Running head",
                 expected="Your last name followed by the page number, in the upper-right corner of every page",
                 actual="No header text detected (MLA requires a running head with your last name + page number)",
@@ -1273,7 +1299,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             ))
         elif not has_name:
             findings.append(Finding(
-                dimension="running_head", severity="info",
+                dimension="running_head", severity=_mla_sev,
                 message="Running head",
                 expected="Your last name + page number (e.g., 'Smith 1')",
                 actual=f"Header text detected: {rh[:60]!r}; MLA expects your last name followed by the page number",
@@ -1281,7 +1307,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             ))
         elif not has_page:
             findings.append(Finding(
-                dimension="running_head", severity="info",
+                dimension="running_head", severity=_mla_sev,
                 message="Running head",
                 expected="Your last name + page number",
                 actual="Running head has a name but no page number detected",
@@ -1953,6 +1979,13 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         _fix_value["page_number"] = _pn_pos
     elif _pn_pos and _pn_explicit and not prof.page_number_present:
         _fix_value["page_number"] = _pn_pos      # 完全没有页码时，显式要求就补一个
+    elif _pn_pos and spec_is_baseline(target):
+        # 🔴 v2.3.90（老板 2026-10-22 拍板「升为可修」）：客户真的在规范下拉里
+        # 选了内置规范 = 全篇按该规范走，页码是它的硬要求，必须落地。
+        # 这里**不区分**「完全没有页码」与「页码在别处/对齐不对」：两者都按规范重写
+        # （_apply_page_number 会先写目标位置、再清另一处，绝不会出现两个页码）。
+        # 保持「检查报了 → 修正就能改」，不留 v2.3.71 那类报了却修不了的缺口。
+        _fix_value["page_number"] = _pn_pos
     # 字体白名单的字号配对：值传**整张配对表**（不是单一字号）—— fixer 需要逐 run
     # 按各自字体查自己的规范字号，正文混用 TNR 与 Calibri 时才能各改各的。
     if font_size_by_font:
@@ -2012,7 +2045,15 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             # v2.3.85：三线表可修。与栏数同理，规范来源就是显式版式意图
             # （APA/IEEE/MLA 三家的表格都不许有竖线），故 spec 来源也绑定修正。
             f.fix = FixAction(dimension="table_lines", value="three_line")
-        # running_head / reference_new_page / font_allowlist（字体本身，不换字体）/
+        elif f.dimension == "running_head" and spec_is_baseline(target) \
+                and getattr(resolve_spec(target), "running_head", False):
+            # 🔴 v2.3.90（老板 2026-10-22 拍板「做」）：running head 可修。
+            # 文字从**客户自己的论文标题**（APA 短标题）或**自己的姓名行**（MLA 姓氏）
+            # 派生，只写页眉、正文一字不动；派生结果在预览与报告里逐字列出。
+            f.fix = FixAction(
+                dimension="running_head",
+                value=getattr(resolve_spec(target), "running_head_kind", "apa"))
+        # reference_new_page / font_allowlist（字体本身，不换字体）/
         # reference_heading / reference_sort / title_format / first_page_heading /
         # abstract / author_note / 内容提示类：均为「仅提示、改内容」项，fix=None → fixer 绝不碰。
         # （page_number 与 font_size_by_font 已在 _fix_value 里，可修。）

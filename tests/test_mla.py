@@ -16,7 +16,7 @@ from docx.oxml import OxmlElement
 
 from src.engine.docx_reader import read_docx
 from src.engine.checker import run_check
-from src.engine.questionnaire import target_from_spec
+from src.engine.questionnaire import target_from_dict, target_from_spec
 
 
 def _add_page_field(paragraph):
@@ -143,12 +143,32 @@ def test_mla_running_head_present_pass(tmp_path):
         f"running_head should pass, got {[(f.severity,f.actual) for f in _find(findings,'running_head')]}"
 
 
-def test_mla_running_head_missing_info(tmp_path):
+def test_mla_running_head_missing_is_fixable_on_spec_baseline(tmp_path):
+    """v2.3.90：MLA 基线模式下「页眉没有姓氏 + 页码」升为 warn 且可修。
+
+    旧契约（v2.3.89 及以前）是 ``info`` + ``fix=None``。后果：检查只提示、修正不动手，
+    老板 2026-10-22 清单第 ② 条「首页按 APA-Stu / APA-Pro / MLA 分别处理」因此等于
+    没做 —— 实测四份产物 zip 里连页眉部件都不存在。现在由 fixer 从客户**自己的
+    姓名行**派生姓氏写进页眉（正文一字不动），老板当天拍板「做」。
+    """
     docx = tmp_path / "m.docx"
     _make_mla_doc(docx, with_rh=False)
     prof, findings = run_check(str(docx), target_from_spec("MLA"))
-    assert _sev(findings, "running_head") == "info"
-    assert "No header text" in _find(findings, "running_head")[0].actual
+    f = _find(findings, "running_head")[0]
+    assert f.severity == "warn"
+    assert f.fix is not None and f.fix.dimension == "running_head"
+    assert "No header text" in f.actual
+
+
+def test_mla_running_head_missing_stays_info_when_not_baseline(tmp_path):
+    """非规范基线（只把参考文献选成 MLA / 学校模板）时仍只提示，绝不替客户写页眉。"""
+    docx = tmp_path / "m.docx"
+    _make_mla_doc(docx, with_rh=False)
+    prof, findings = run_check(str(docx), target_from_dict({"reference_style": "MLA"}))
+    f = [x for x in findings if x.dimension == "running_head"]
+    for x in f:
+        assert x.severity == "info"
+        assert x.fix is None
 
 
 # —— G3 标题 ——

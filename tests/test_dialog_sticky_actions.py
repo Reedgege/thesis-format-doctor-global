@@ -56,6 +56,13 @@ def ui(tmp_path, monkeypatch, _tk_session):
         except Exception:
             pass
     from src.ui import app as ui_app
+    # 掐掉启动时的授权心跳线程：它在**非主线程**里调 ``root.after()``（Tk 不是线程安全的），
+    # pytest 同一进程里连续建十几个 App，残留线程会在主循环之外注册命令，抛
+    # ``RuntimeError: main thread is not in main loop``，**偶发**把后续用例的
+    # setup 打成 ERROR（2026-10-22 实测：本文件单跑 11 passed，全量连跑出现 5 errors，
+    # 再跑一遍又全绿）。修 CI 的确定性，不改产品行为。
+    monkeypatch.setattr(ui_app.App, "_refresh_license_at_launch",
+                        lambda self: None, raising=False)
     a = ui_app.App(_tk_session)
     _tk_session.update_idletasks()
     yield a

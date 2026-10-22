@@ -35,7 +35,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 
 from .checker import (ALIGN_LABEL, run_check, Finding, FixAction,
                       _NUMBER_PREFIX_HINT)  # 对齐/编号提示文案单一来源（避免两处硬编码）
@@ -839,6 +839,16 @@ def _ensure_page_number_in_part(part, align: str) -> tuple:
     # ① 已有 PAGE 域：只校对齐
     for p in paras:
         if _para_has_page_field(p):
+            # 🔴 v2.3.90：同一段落里「短标题 + TAB + 页码」（APA 专业版页眉的
+            # running head 就长这样）**绝不能**把段落对齐改成 right —— 那会把
+            # 左侧的短标题一起甩到右边。这种段落靠制表位定位，对齐必须是 left，
+            # 所以这里只认「除了页码没有别的实质文字」的情形才校对齐。
+            try:
+                _reside = _para_text_excl_fields(p)
+            except Exception:
+                _reside = ""
+            if _reside.strip():
+                return "kept", False
             return "kept", _set_para_align(p, align)
     # ② 手打静态页码：原地替换 + 校对齐
     for p in paras:
@@ -987,6 +997,221 @@ def _apply_page_number(doc, position: str) -> dict:
                 stats["removed_elsewhere"] += n
                 changed = True
     return stats if changed else {}
+
+
+# ---------------------------------------------------------------------------
+# running head（页眉短标题）—— v2.3.90
+#
+# 老板 2026-10-22 拍板「做」：清单第 ② 条「首页按 APA-Stu / APA-Pro / MLA
+# 分别处理」，而这三档在**排版层**唯一的真差异就是页眉。此前 apa-stu 与 apa-p
+# 两份产物 document.xml 逐字节 100% 相同（实测 95272 字节全等），第 ② 条等于没做。
+#
+# 边界（守「文字不改」铁律）：
+#   * 只写**页眉**，正文/标题页/参考文献一个字符都不动；
+#   * 页眉文字从**客户自己的论文标题**派生（APA）或从**客户自己的姓名行**派生（MLA），
+#     绝不凭空编造；派生结果在修正预览与报告里**逐字列出**，客户看得见；
+#   * 页眉已有实质文字时**绝不覆盖**（那是客户自己写的），只在报告里提示；
+#   * 非规范基线（学校模板 / 手填 / AI 导入）一律不动。
+# ---------------------------------------------------------------------------
+
+def _short_title_from_doc(doc, max_chars: Optional[int]) -> str:
+    """从文档标题派生 APA running head 文本：全大写、按词边界截到 ``max_chars``。
+
+    APA 7th 专业版要求页眉短标题 **全部大写、不超过 50 个字符**（含空格）。
+    截断必须在词边界 —— 硬切会切出半个单词（"RESILIEN"），客户一眼看出是机器干的。
+    """
+    title = ""
+    try:
+        tp = _detect_title_page(doc)
+    except Exception:
+        tp = None
+    if tp:
+        try:
+            title = (doc.paragraphs[tp["title"]].text or "").strip()
+        except Exception:
+            title = ""
+    if not title:
+        # 退化：标题页检测不出来时，用第一段非空文本（Cover 页不规范也照样能用）
+        for p in doc.paragraphs:
+            t = (p.text or "").strip()
+            if t:
+                title = t
+                break
+    if not title:
+        return ""
+    up = " ".join(title.upper().split())
+    if max_chars and len(up) > int(max_chars):
+        cut = up[:int(max_chars)]
+        if " " in cut:
+            cut = cut[:cut.rfind(" ")]
+        up = cut.strip(" ,;:-–—")
+    return up
+
+
+def _mla_surname_from_doc(doc) -> str:
+    """从首页姓名行派生 MLA running head 用的「姓氏」。
+
+    MLA 收的是「姓氏 + 页码」。客户文档里的姓名行常见形态：
+        ``By: Alex Morgan (Student ID: 2023081192)``
+    先剥掉 ``By:`` 前缀与括号内容，再取最后一个词作姓。中文名整体保留
+    （中文姓名不分词，取最后一个词会把名字截掉一半）。
+    """
+    lines = []
+    try:
+        tp = _detect_title_page(doc)
+    except Exception:
+        tp = None
+    if tp:
+        for ai in tp.get("authors", ()):  # 标题页检测给的作者段下标
+            try:
+                lines.extend((doc.paragraphs[ai].text or "").splitlines())
+            except Exception:
+                continue
+    for ln in lines:
+        s = re.sub(r"\([^)]*\)", " ", ln)                 # (Student ID: ...) 去掉
+        s = re.sub(r"(?i)^\s*(by|name|author)\s*[:：]\s*", "", s.strip())
+        s = re.sub(r"[^A-Za-z\u4e00-\u9fff'’\-\s]", " ", s).strip()
+        toks = [t for t in s.split() if t]
+        if not toks:
+            continue
+        if any("\u4e00" <= ch <= "\u9fff" for t in toks for ch in t):
+            return "".join(toks)                          # 中文名整段保留
+        return toks[-1]
+    return ""
+
+
+def _write_running_head_part(part, text: str, kind: str, band: dict) -> bool:
+    """把「短标题 + 页码」写进一个页眉 part。返回是否真写了。
+
+    APA：``短标题<TAB>{PAGE}`` —— 靠右制表位把页码推到右边界，段落对齐保持 left；
+    MLA：``姓氏 {PAGE}`` —— 整段右对齐（MLA 只要求右上角，不需要左侧短标题）。
+    """
+    if not text:
+        return False
+    try:
+        paras = list(part.paragraphs)
+    except Exception:
+        return False
+    # 客户页眉里已有实质文字 → 绝不覆盖（那是他自己写的，我们只提示）
+    for p in paras:
+        try:
+            if (p.text or "").strip():
+                return False
+            if _para_has_page_field(p):
+                return False
+        except Exception:
+            continue
+    p = paras[0] if paras else None
+    if p is None:
+        try:
+            p = part.add_paragraph()
+        except Exception:
+            return False
+    for r in list(p.runs):
+        try:
+            r._r.getparent().remove(r._r)
+        except Exception:
+            pass
+
+    name = band.get("font_family")
+    size = band.get("font_size_pt")
+    size_obj = Pt(float(size)) if size else None
+
+    if kind == "mla":
+        try:
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        except Exception:
+            pass
+        _restore_run_fmt(p.add_run(text + " "), name, size_obj, None)
+        _restore_run_fmt(_write_page_field(p), name, size_obj, None)
+        return True
+
+    # APA：左侧短标题 + 右制表位页码
+    try:
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    except Exception:
+        pass
+    _tab_pos = band.get("_right_tab")
+    try:
+        if _tab_pos is not None:
+            p.paragraph_format.tab_stops.add_tab_stop(
+                _tab_pos, WD_TAB_ALIGNMENT.RIGHT)
+    except Exception:
+        pass
+    _restore_run_fmt(p.add_run(text + "\t"), name, size_obj, None)
+    _restore_run_fmt(_write_page_field(p), name, size_obj, None)
+    return True
+
+
+def _apply_running_head(doc, target: TargetProfile, spec) -> dict:
+    """按规范写 running head（APA 专业版短标题 / MLA 姓氏 + 页码）。
+
+    只在**规范基线**（客户真的在规范下拉里选了内置规范）且 ``spec.running_head``
+    为真时动手；页眉已有实质文字时不覆盖。返回 {"running_head": 文本, "kind": ...}，
+    空 dict = 一个字没改（供预览与报告如实展示）。
+    """
+    if not spec_is_baseline(target):
+        return {}
+    if not getattr(spec, "running_head", False):
+        return {}
+    kind = getattr(spec, "running_head_kind", "apa") or "apa"
+    if kind == "mla":
+        text = _mla_surname_from_doc(doc)
+    else:
+        text = _short_title_from_doc(doc, getattr(spec, "running_head_max_chars", None))
+    if not text:
+        return {}
+
+    page = target.page or {}
+    band = dict(page)
+    # APA 用「正文右边界」当制表位：纸宽 − 左右页边距。算不出来就跳过制表位
+    # （页码会紧跟在短标题后面，不完美但绝不报错）。
+    try:
+        sec0 = list(doc.sections)[0]
+        band["_right_tab"] = sec0.page_width - sec0.left_margin - sec0.right_margin
+    except Exception:
+        band["_right_tab"] = None
+
+    wrote = False
+    try:
+        sections = list(doc.sections)
+    except Exception:
+        sections = []
+    for i, sec in enumerate(sections):
+        parts = []
+        try:
+            hdr = sec.header
+        except Exception:
+            hdr = None
+        if hdr is not None:
+            linked = False
+            if i > 0:
+                try:
+                    linked = bool(hdr.is_linked_to_previous)
+                except Exception:
+                    linked = False
+            if not linked:
+                parts.append(hdr)
+        # 首页不同 → 标题页也是独立 part，APA 要求标题页同样带 running head
+        try:
+            diff = bool(sec.different_first_page_header_footer)
+        except Exception:
+            diff = False
+        if diff:
+            try:
+                parts.append(sec.first_page_header)
+            except Exception:
+                pass
+        for part in parts:
+            try:
+                if _write_running_head_part(part, text, kind, band):
+                    wrote = True
+            except Exception:
+                continue
+    if not wrote:
+        return {}
+    return {"running_head": text, "kind": kind}
+
 
 
 def _apply_columns(doc, target: TargetProfile) -> bool:
@@ -2244,6 +2469,44 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
             f"Paragraph structure: {applied['paragraphs_split']} glued paragraph(s) split into "
             f"separate paragraphs (Shift+Enter line breaks became real paragraph ends; "
             f"no character of your text was changed)")
+    # —— 页眉（v2.3.90）：running head + 页码 ——
+    # 这一步是**唯一**会往文档里加字的地方（而且只加在页眉），必须在这里如实披露，
+    # 否则结尾那句「没有增删任何正文文字」会误导客户。
+    if applied.get("running_head"):
+        _rh = applied["running_head"]
+        _txt = _rh.get("running_head") if isinstance(_rh, dict) else str(_rh)
+        _kind = (_rh.get("kind") if isinstance(_rh, dict) else "") or "apa"
+        if _kind == "mla":
+            lines.append(
+                f'Running head: the header now reads "{_txt}" + the page number, flush '
+                f'right (MLA style). Both come from information already in your document '
+                f'(your name line); no body text was touched.')
+        else:
+            lines.append(
+                f'Running head: the header now reads "{_txt}" (all capitals, flush left) '
+                f'+ the page number flush right (APA 7 Professional). The short title is '
+                f'taken from your own paper title and cut at a word boundary to stay '
+                f'within the character limit; no body text was touched. An existing '
+                f'header of yours is never overwritten.')
+    if applied.get("page_number"):
+        _pn = applied["page_number"]
+        if isinstance(_pn, dict):
+            _loc = _pn.get("location", "header")
+            _al = _pn.get("alignment", "right")
+            _bits = []
+            if _pn.get("added"):
+                _bits.append(f"automatic PAGE field added to the {_loc}")
+            if _pn.get("replaced"):
+                _bits.append("typed number replaced with an automatic PAGE field")
+            if _pn.get("aligned_only"):
+                _bits.append("alignment corrected")
+            if _pn.get("removed_elsewhere"):
+                _bits.append(f"{_pn['removed_elsewhere']} page number(s) removed from the "
+                             f"other location so two numbers never appear on a page")
+            lines.append(
+                f"Page number: {', '.join(_bits) or 'position set'} "
+                f"({_al}-aligned in the {_loc})")
+
     # —— 页面 / 正文级（统一改动）——
     if applied.get("margins") is not None:
         after = f"{float(applied['margins']):.2f}\" on all four sides"
@@ -2628,6 +2891,15 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     if "paper_size" in fix_dims and _apply_paper_size(doc, target):
         applied["paper_size"] = target.paper_size
 
+    # running head（v2.3.90）：必须排在页码**之前**。
+    # APA 专业版的页眉是「短标题 + TAB + 页码」同一段，先写短标题（连页码一起），
+    # 后面页码那步看到段里已有 PAGE 域就会判 kept、不再把整段右对齐冲掉短标题。
+    # 反过来先写页码的话，页码会独占一行/整个页眉右对齐，短标题再塞进去就歪了。
+    if "running_head" in fix_dims:
+        _rh_info = _apply_running_head(doc, target, spec)
+        if _rh_info:
+            applied["running_head"] = _rh_info
+
     # 页码位置（v2.3.66）：fixer 第一次操作页眉/页脚 part，必须由检查结论驱动。
     # 只有客户/学校/AI 显式要求时 checker 才会绑这个 FixAction（spec 来源只提示）。
     if "page_number" in fix_dims and target.page_number_position:
@@ -2925,6 +3197,12 @@ _SPLIT_PREVIEW = {
     "en": "Glued paragraphs split: {n} (Shift+Enter line breaks become real paragraphs)",
     "zh": "拆分粘连段落：{n} 处（Shift+Enter 软换行拆成真正的段落）",
 }
+# v2.3.90：running head 会往页眉写一段由客户原文派生的文字 —— 预览里逐字列出。
+_RH_PREVIEW = {
+    "en": "Running head written into the header: \"{t}\" "
+          "(derived from your own title / name line; body text untouched)",
+    "zh": "页眉写入 running head：「{t}」（取自您自己的标题/姓名行，正文一字不动）",
+}
 _NOTES_TMPL = {
     "en": "Note: text inside tables ({n} paragraph(s)) is not modified; only body "
           "paragraph formatting is fixed this run.",
@@ -3032,7 +3310,8 @@ def _diff_line(label: str, cur, exp, unit: str, lang="en") -> str | None:
     return f"{label}: {cur}{unit} → {exp}{unit}"
 
 
-def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> list:
+def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
+                     rh_text: str = "") -> list:
     """根据实测画像算出「真正会发生变化」的格式修正项（可能为空列表）。
 
     单一真相源：若传入 findings（来自 ``checker.run_check`` 的同一份比对结论），则只列出
@@ -3136,6 +3415,12 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
             lines.append("%s: %s%s%s" % (_dim_label(L, "paper_size"),
                                          cur_desc if cur_desc != "unknown" else _UNKNOWN[L],
                                          sep, want_p))
+
+    # —— running head（页眉短标题，v2.3.90）——
+    # 这一步会往页眉写入一段**由客户原文派生**的文字，所以预览里必须逐字列出，
+    # 让客户在点「修正」之前就知道页眉会多出哪几个字（而不是修完才发现）。
+    if _gate("running_head") and rh_text:
+        lines.append(_RH_PREVIEW[L].format(t=rh_text))
 
     # —— 标题页 / 块引用：这两项以前会改但预览里看不见，现在补上 ——
     # —— 页码位置（v2.3.66）——
@@ -3604,7 +3889,23 @@ def preview_fix(input_path: str, target: TargetProfile, lang="en") -> list:
     raises: DocxReadError（文档无法读取）
     """
     prof, findings = run_check(input_path, target)
-    lines = _compute_changes(prof, target, lang, findings=findings)
+    # v2.3.90：running head 要往页眉写派生文字，预览里必须逐字列出 ——
+    # 文字得从文档里现算（标题 / 姓名行），所以这里按需开一次文档。
+    # 只在 checker 真的绑了 running_head 修正时才开，绝大多数调用零额外开销。
+    _rh_text = ""
+    _dims = {f.fix.dimension for f in findings if getattr(f, "fix", None) is not None}
+    if "running_head" in _dims:
+        try:
+            _spec = resolve_spec(target)
+            _doc = Document(input_path)
+            if (getattr(_spec, "running_head_kind", "apa") or "apa") == "mla":
+                _rh_text = _mla_surname_from_doc(_doc)
+            else:
+                _rh_text = _short_title_from_doc(
+                    _doc, getattr(_spec, "running_head_max_chars", None))
+        except Exception:
+            _rh_text = ""
+    lines = _compute_changes(prof, target, lang, findings=findings, rh_text=_rh_text)
     tail = _notes(prof, lang)
     if not lines:
         return [_NO_CHANGE[_lang_of(lang)]] + tail

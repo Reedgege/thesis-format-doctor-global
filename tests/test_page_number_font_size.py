@@ -190,14 +190,36 @@ def test_alignment_is_never_none(tmp_path):
 # 二、检查 + 预览
 # ---------------------------------------------------------------------------
 
-def test_spec_source_only_prompts_never_fixes(tmp_path):
-    """规范来源只提示：国内学校普遍要页脚居中，不能拿 APA 的 top-right 去硬改。"""
+def test_spec_baseline_page_number_is_fixable(tmp_path):
+    """v2.3.90（老板 2026-10-22 拍板「升为可修」）：规范基线模式下页码可修。
+
+    旧契约（本用例的前身 ``test_spec_source_only_prompts_never_fixes``）是
+    「spec 来源一律 fix=None，只提示」。留这条旧规矩的代价在 2026-10-22 被实测坐实：
+    客户选了 APA，报告里页码只是 info、修正器一个字没写，四份产物 zip 里
+    **连页眉部件都不存在**（headerReference 出现 0 次）。
+
+    新口径：页码不是版面偏好（页边距/字体那种「学校可能另有要求」的软参考），
+    而是 APA §2.18 / MLA / IEEE 的硬要求 —— 客户真的在规范下拉里选了内置规范，
+    就必须落地。走学校模板 / 手填 / AI 导入时不受影响，见下一条用例。
+    """
     p = _with_footer_field(tmp_path / "spec.docx", WD_ALIGN_PARAGRAPH.CENTER)
-    target = target_from_spec("APA")          # resolution = "spec"
+    target = target_from_spec("APA-Professional")
     _, findings = checker.run_check(p, target)
     f = [x for x in findings if x.dimension == "page_number"]
     assert f
-    assert all(x.fix is None for x in f), [(x.severity, x.fix) for x in f]
+    assert all(x.fix is not None for x in f), [(x.severity, x.fix) for x in f]
+    assert all(x.severity == "warn" for x in f), [(x.severity, x.actual) for x in f]
+
+
+def test_non_baseline_page_number_is_only_prompted(tmp_path):
+    """非规范基线（学校模板 / 手填 / AI 导入）时仍只提示、绝不替客户改页码。"""
+    p = _with_footer_field(tmp_path / "spec.docx", WD_ALIGN_PARAGRAPH.CENTER)
+    target = target_from_dict({"reference_style": "APA"})   # spec_key 为空 → 非基线
+    _, findings = checker.run_check(p, target)
+    f = [x for x in findings if x.dimension == "page_number"]
+    for x in f:
+        assert x.fix is None, (x.severity, x.fix)
+        assert x.severity == "info", (x.severity, x.actual)
 
 
 def test_explicit_position_is_reported_and_previewed(tmp_path):

@@ -1527,6 +1527,48 @@ def _iter_header_footer_parts(doc):
                     yield ev, kind, "even"
 
 
+def _page_field_pushed_right_by_tab(para) -> bool:
+    """页码是否靠「右制表位」被推到右边界（APA 专业版页眉的标准写法）。
+
+    APA 7th 专业版的页眉是**同一段**里「短标题<TAB>页码」：段落对齐必须是
+    left（否则左制表位上的短标题会被一起甩到右边），页码靠 ``w:tab w:val="right"``
+    定位到正文右边界。若只看 ``w:jc``，这种**完全合规**的页眉会被判成
+    ``left-aligned`` —— v2.3.90 实测：修正器刚写好的 APA 专业版页眉，复检立刻报
+    「Page number is left-aligned」，客户会看到「修了还是错」。
+
+    判定：段内有 right 制表位，且 PAGE 域之前出现过 ``<w:tab/>``。
+    """
+    try:
+        tabs = para._p.findall(
+            qn("w:pPr") + "/" + qn("w:tabs") + "/" + qn("w:tab"))
+    except Exception:
+        return False
+    has_right_tab = any((t.get(qn("w:val")) or "") == "right" for t in tabs)
+    if not has_right_tab:
+        return False
+    # 逐个走 run 子元素：见到 <w:tab/> 记一笔，见到 PAGE 域的 fldChar(begin) 就结算
+    seen_tab = False
+    try:
+        for r in para._p.findall(qn("w:r")):
+            for el in r:
+                if el.tag == qn("w:tab"):
+                    seen_tab = True
+                elif el.tag == qn("w:fldChar") \
+                        and (el.get(qn("w:fldCharType")) or "") == "begin":
+                    return seen_tab
+    except Exception:
+        return False
+    return False
+
+
+def _page_number_alignment(para) -> str:
+    """页码段的「有效对齐」——左对齐但靠右制表位推到右边界，等同于右对齐。"""
+    al = _effective_para_alignment(para)
+    if al != "right" and _page_field_pushed_right_by_tab(para):
+        return "right"
+    return al
+
+
 def read_page_number_info(doc) -> PageNumberInfo:
     """读页码：有无（域/手打）+ 在页眉还是页脚 + 有效对齐。
 
@@ -1544,7 +1586,7 @@ def read_page_number_info(doc) -> PageNumberInfo:
                 if not info.has_field or (kind == "header" and info.location != "header"):
                     info.has_field = True
                     info.location = kind
-                    info.alignment = _effective_para_alignment(p)
+                    info.alignment = _page_number_alignment(p)
                 continue
             txt = _para_text_excl_fields(p)
             st = detect_static_page_number(txt)
@@ -2244,6 +2286,20 @@ def _read_docx_impl(doc) -> DocumentProfile:
     skip = set(ref_indices)
     if ref_start is not None:
         skip.add(ref_start)
+    # 🔴 v2.3.90：标题页段落（标题 / 作者 / 单位）**不进正文采样**。
+    # 它们的排版由 ``spec.title_page`` 独占管辖（见 fixer._apply_title_page_format 的
+    # 同一句注释），混进正文样本就是「一个属性两个 owner」——而且是自伤：
+    # 修正器按标题页要求把「作者/单位」行居中后，检查器又把它们当正文样本，
+    # 于是**修完复检反报「正文对齐 = 居中」**。短文档里更狠：
+    # 正文段 2 条 + 居中作者行 2 条 → Counter 2:2 平票，most_common 直接翻成 center。
+    try:
+        _tp_probe = detect_title_page(doc)
+    except Exception:
+        _tp_probe = None
+    if _tp_probe:
+        if _tp_probe.get("title") is not None:
+            skip.add(_tp_probe["title"])
+        skip.update(_tp_probe.get("authors") or ())
     body_paras = [p for i, p in enumerate(paras)
                   if i not in skip and p.text.strip() and not is_heading(p)
                   and toc_entry_level(p) is None and not is_toc_heading(p)]

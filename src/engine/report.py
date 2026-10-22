@@ -14,7 +14,7 @@ from typing import Optional
 from .checker import ALIGN_LABEL, Finding, summarize
 from .docx_reader import DocumentProfile
 from .questionnaire import TargetProfile
-from .specs import get_spec, spec_display
+from .specs import get_spec, resolve_spec, spec_display, spec_is_baseline
 
 ORIGIN_LABEL = {
     "spec": "General Spec",
@@ -81,6 +81,17 @@ _DIM_LABEL = {
 }
 
 _ALIGN_LABEL = ALIGN_LABEL  # single source of truth lives in checker
+
+# v2.3.90：这一条只在**真会往页眉写字**的风格下出现。
+# APA 学生版 / IEEE 的页眉只有页码（不含任何文字），把它当通用限制会给学生版
+# 平白加一条「我们会往页眉写短标题」的说明，反而让人以为文档被动过。
+_RUNNING_HEAD_LIMITATION = (
+    "Running head / page number: the short title written into the header is derived from "
+    "your own paper title (APA Professional) or your own name line (MLA) and is cut at a "
+    "word boundary to stay within the character limit. It is the ONLY text this tool ever "
+    "adds, it goes into the header only, and your body text is never touched. If your "
+    "document already has header text, it is never overwritten — you get a note instead."
+)
 
 # 能力边界 / 已知限制（跨风格通用；报告固定区块，提示用户哪些做不了）。
 # 海外版全英文铁律：本区块面向客户，必须英文，不得出现中文。
@@ -279,7 +290,11 @@ def build_report(docx_path: str, target: TargetProfile,
     lines.append("> The following are out of scope by design. Items the tool cannot fix are "
                  "reported here so you can handle them manually.")
     lines.append("")
-    for lim in KNOWN_LIMITATIONS:
+    _lims = list(KNOWN_LIMITATIONS)
+    # v2.3.90：只有「真会在页眉写 running head」的风格才把那条限制摆出来。
+    if spec_is_baseline(target) and getattr(resolve_spec(target), "running_head", False):
+        _lims.insert(0, _RUNNING_HEAD_LIMITATION)
+    for lim in _lims:
         lines.append(f"- {lim}")
     lines.append("")
 
