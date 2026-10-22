@@ -236,6 +236,15 @@ class DocumentProfile:
     # 此前只有 title_page（居中/加粗/作者居中），垂直位置与分页完全没人管。
     tp_next_break_before: Optional[bool] = None   # 题名页块之后那段是否另起一页；无题名页=None
     tp_author_space_max_pt: Optional[float] = None  # 作者/单位行段前段后的最大值（磅）；应为 0
+    tp_author_gap_paragraphs: Optional[int] = None  # 标题与第一行作者之间夹了几个空段落
+    # ↑ v2.3.92：APA 要求「标题与作者之间留一个双倍行距空行」。这个空行有两种合法实现：
+    #   ① 真有一个空段落（gap ≥ 1）；② 用标题的段后间距撑出来（gap = 0）。
+    #   不区分就会出现「明明有空行却被判缺空行」的误报，所以两种都要能读出来。
+    tp_author_block_text: Optional[str] = None
+    # ↑ 题名页里**标题以外**那块文本（作者 / 单位 / 课程 / 教师 / 日期），换行拼接。
+    #   v2.3.92：APA 学生版题名页还要求课程号+课名、教师名、提交日期 —— 这些内容
+    #   我们绝不代客户编造，只能提示。判定必须在标题之外的文本里做：论文大标题本身
+    #   就常含 "COVID-19" 这类「字母+数字」，混在一起查会把标题误当成课程号。
     text_break_before: Optional[bool] = None      # 摘要之后正文首段是否另起一页；无摘要=None
     # 每级标题格式样本（学校模板驱动：层级 → 代表性样本）。仅记录可从 docx 读出的属性；
     # number_prefix 为编号形态的最佳猜测（读不到为 None）。
@@ -2036,7 +2045,12 @@ def detect_title_page(doc):
         return None
     title_idx = idx0
     authors = []
-    for i in range(idx0 + 1, min(len(paras), idx0 + 4)):
+    # v2.3.92：窗口从 3 段放宽到 7 段。原因是真实 APA 学生版题名页在「作者 + 单位」
+    # 之后还有 **课程号与课名 / 教师名 / 提交日期** 三行，原来的 3 段窗口看不见它们，
+    # 后果有两个：① 内容完整性提示把明明写了的元素说成「缺」；② 这几行不被居中、
+    # 段距也不被清 —— 同一次修正里一半居中一半左对齐，客户一眼看出没做完。
+    # 守卫一个没减：遇到摘要/关键词、标题、超长行（>90 字）立刻停，绝不吞正文。
+    for i in range(idx0 + 1, min(len(paras), idx0 + 8)):
         p = paras[i]
         t = (p.text or "").strip()
         if not t:
@@ -2183,6 +2197,27 @@ def _sample_title_page(doc, prof: "DocumentProfile") -> None:
                 continue
             _mx = _v if _mx is None else max(_mx, _v)
     prof.tp_author_space_max_pt = _mx
+    # ③ 标题与第一行作者之间夹了几个空段落（v2.3.92）。
+    #    APA 的「一个双倍行距空行」既可能是真空段，也可能是标题段后间距撑出来的，
+    #    判定必须两种都认，否则合规文档会被误报「缺空行」。
+    try:
+        prof.tp_author_gap_paragraphs = (
+            max(0, min(tp["authors"]) - tp["title"] - 1) if tp["authors"] else None)
+    except Exception:
+        prof.tp_author_gap_paragraphs = None
+    # ④ 标题以外那块文本（作者 / 单位 / 课程 / 教师 / 日期），供内容完整性提示用。
+    #    刻意不含标题：论文大标题本身常带「字母+数字」（如 COVID-19），混进来会被
+    #    误判成课程号，反而漏掉真正该提示的客户。
+    try:
+        _end = max([tp["title"], *tp["authors"]])
+        _blk = []
+        for _i in range(tp["title"] + 1, _end + 1):
+            _t = (doc.paragraphs[_i].text or "").strip()
+            if _t:
+                _blk.append(_t)
+        prof.tp_author_block_text = "\n".join(_blk) if _blk else None
+    except Exception:
+        prof.tp_author_block_text = None
     # ② 题名页块之后的段落是否另起一页（复用参考文献同一口径：段前分页 或 上一段末尾分页符）。
     try:
         _nxt = doc.paragraphs[_last_tp_idx + 1] if _last_tp_idx + 1 < len(doc.paragraphs) else None

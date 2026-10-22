@@ -38,7 +38,9 @@ from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 
 from .checker import (ALIGN_LABEL, run_check, Finding, FixAction,
-                      _NUMBER_PREFIX_HINT)  # 对齐/编号提示文案单一来源（避免两处硬编码）
+                      _NUMBER_PREFIX_HINT,
+                      # v2.3.92：题名页段距的期望值与区间 —— 检查与修正共用同一份计算
+                      title_page_spacing_plan)  # 对齐/编号提示文案单一来源（避免两处硬编码）
 from .policy import TEXT_IS_LOCKED
 from .docx_reader import (
     DocxReadError, heading_level, is_heading, is_pseudo_heading, read_docx,
@@ -2483,59 +2485,66 @@ def _apply_title_page_new_page(doc, new_page: bool) -> dict:
     return info
 
 
-def _tp_lines_to_points(target, prof, lines: float) -> float:
-    """把「页边距下 N 行」换算成磅：``lines × 字号 × 行距倍数``。
-
-    Word 里的「行」是相对当前行高的，写 ``w:beforeLines`` 会在不同字号下漂移，
-    所以这里算出绝对磅值写 ``space_before``（``_write_one_spacing`` 还会顺手清掉
-    残留的 ``w:beforeLines`` —— 行单位优先级更高，不清等于没改）。
-
-    ⚠️ 公式必须与 checker 的 ``_want_pt`` **一模一样**（同一 page 取值、同一回退），
-    否则修正写 72pt、检查算 74pt，客户点完修正立刻又被报红。
-    """
-    page = target.page or {}
-    try:
-        fs = float(page.get("font_size_pt") or getattr(prof, "font_size_pt", None) or 12.0)
-    except (TypeError, ValueError):
-        fs = 12.0
-    try:
-        ls = float(page.get("line_spacing") or getattr(prof, "line_spacing", None) or 1.0)
-    except (TypeError, ValueError):
-        ls = 1.0
-    return round(float(lines) * fs * ls, 1)
-
-
 def _apply_title_page_layout(doc, target, prof, spec) -> dict:
-    """标题垂直位置 + 题名页零额外段距（APA §2.17 / 2.21 的版式部分）。
+    """标题垂直位置 + 标题后空行 + 其余元素零额外段距。
 
-    ① 垂直位置：标题 ``space_before`` = N 行换算成的磅值；
-    ② 零额外段距：标题段后 + 每一行作者/单位行的段前段后一律清 0。
+    数值全部来自 ``checker.title_page_spacing_plan()``（**同一份计算**，避免「修 72、判 74」）。
+    严格照 APA Style 官方 Title Page Setup 的三句原话：
+
+      ① 标题距顶 3~4 行 → 区间判定，只在下/上界之外才动手，写**下限**（3 行）；
+      ② 标题与作者之间一个双倍行距空行 → 客户已经用一个**空段落**实现了就不碰，
+         否则低于区间才补到「一行」的磅值。**绝不清成 0**（v2.3.91 就是这么错的）；
+      ③ 其余元素（作者/单位/课程/教师/日期）之间 0 额外段距。
 
     只写段落属性，**不插空段落、不动文字** —— 插空行会改变段落下标，而段落下标是
     reader / checker / fixer 三方共用的唯一真相源，动它等于把整条链的坐标轴挪了。
     幂等：全部已合规时返回 ``changed=False``，一个字节都不写。
     """
-    info = {"changed": False, "want_pt": None, "lines": None, "zeroed": False}
+    info = {"changed": False, "want_pt": None, "lines": None,
+            "after_pt": None, "zeroed": False}
     tp = _detect_title_page(doc)
     if not tp:
         return info
-    tpf = getattr(spec, "title_page", None)
-    lines = getattr(tpf, "title_space_before_lines", None) if tpf else None
-    zero = bool(getattr(tpf, "zero_extra_spacing", False)) if tpf else False
-    if lines is None and not zero:
+    plan = title_page_spacing_plan(target, spec, prof)
+    unit = float(plan["unit_pt"] or 0.0)
+    if not (plan["before"] or plan["after"] or plan["author_zero"]):
         return info                       # 规范没声明 → 一个字节都不写
     title_p = doc.paragraphs[tp["title"]]
     changed = False
-    if lines is not None:
-        want_pt = _tp_lines_to_points(target, prof, lines)
-        info["lines"] = float(lines)
-        info["want_pt"] = want_pt
-        if _write_one_spacing(title_p, "space_before", want_pt):
-            changed = True
-    if zero:
-        # 标题段后：APA 题名页上标题与作者之间只靠双倍行距分开，不留额外段距。
-        if _write_one_spacing(title_p, "space_after", 0.0):
-            changed = True
+
+    # ① 标题距顶：只在区间外才动手，写下限
+    if plan["before"]:
+        lo, hi = plan["before"]
+        try:
+            cur_sb = title_p.paragraph_format.space_before
+            cur_pt = float(cur_sb.pt) if cur_sb is not None else 0.0
+        except Exception:
+            cur_pt = 0.0
+        if not (lo <= cur_pt <= hi):
+            want_pt = round(plan["before_lines"][0] * unit, 1)
+            info["lines"] = plan["before_lines"][0]
+            info["want_pt"] = want_pt
+            if _write_one_spacing(title_p, "space_before", want_pt):
+                changed = True
+
+    # ② 标题与作者之间的一个空行：已有真空段就不碰；否则低于区间才补
+    if plan["after"]:
+        gap = getattr(prof, "tp_author_gap_paragraphs", None)
+        if not (gap is not None and int(gap) >= 1):
+            lo, hi = plan["after"]
+            try:
+                cur_sa = title_p.paragraph_format.space_after
+                cur_pt = float(cur_sa.pt) if cur_sa is not None else 0.0
+            except Exception:
+                cur_pt = 0.0
+            if not (lo <= cur_pt <= hi):
+                want_sa = round(float(plan["after_lines"]) * unit, 1)
+                info["after_pt"] = want_sa
+                if _write_one_spacing(title_p, "space_after", want_sa):
+                    changed = True
+
+    # ③ 其余元素之间 0 额外段距
+    if plan["author_zero"]:
         for ai in tp["authors"]:
             try:
                 ap = doc.paragraphs[ai]
@@ -2546,14 +2555,18 @@ def _apply_title_page_layout(doc, target, prof, spec) -> dict:
             if _write_one_spacing(ap, "space_after", 0.0):
                 changed = True
         info["zeroed"] = True
+
     if changed:
         info["changed"] = True
         bits = []
         if info["want_pt"] is not None:
             bits.append("title %g lines (%g pt) below the top margin"
                         % (info["lines"], info["want_pt"]))
+        if info["after_pt"] is not None:
+            bits.append("one blank line (%g pt) kept after the title" % info["after_pt"])
         if info["zeroed"]:
-            bits.append("extra paragraph spacing on the title page set to 0")
+            bits.append("extra paragraph spacing between the remaining title page "
+                        "elements set to 0")
         add_comment(doc, title_p,
                     "Title page layout per %s: %s."
                     % (_spec_label(spec), "; ".join(bits)))
@@ -2701,13 +2714,18 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
             _tl_bits.append(
                 f"the title now sits {_tl.get('lines'):g} lines "
                 f"({float(_tl['want_pt']):g} pt) below the top margin")
+        if isinstance(_tl, dict) and _tl.get("after_pt") is not None:
+            _tl_bits.append(
+                f"one blank line ({float(_tl['after_pt']):g} pt) was kept between the "
+                f"title and the author names, as APA Style requires")
         if isinstance(_tl, dict) and _tl.get("zeroed"):
             _tl_bits.append(
-                "the extra paragraph spacing on the title page was cleared to 0 pt")
+                "the extra paragraph spacing between the remaining title page elements "
+                "was cleared to 0 pt")
         lines.append(
             "Title page layout: " + ("; ".join(_tl_bits) or "position and spacing set")
-            + ". The title page is double-spaced with no extra paragraph spacing, and no "
-              "extra empty paragraph was inserted to move the title down.")
+            + ". No empty paragraph was inserted or removed to move anything on the "
+              "title page.")
     if applied.get("text_new_page"):
         lines.append(
             "Body text: the first paragraph after the abstract now starts on a new page.")
@@ -3854,20 +3872,38 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
                 else "same page → own page"))
     if _gate("title_page_layout"):
         _tpl_bits = []
-        _sp_st = resolve_spec(target)
-        _sp_tpf = getattr(_sp_st, "title_page", None)
-        _tpl_lines = getattr(_sp_tpf, "title_space_before_lines", None) if _sp_tpf else None
-        if _tpl_lines is not None:
-            # 预览只报「改成什么」（当前值合不合规由 checker 判定），与标题页段距那组一致。
-            _tpl_want = _tp_lines_to_points(target, prof, _tpl_lines)
-            _tpl_bits.append(
-                ("标题下移 %g 行（%.1f pt）" % (float(_tpl_lines), _tpl_want))
-                if L == "zh" else
-                ("title %g lines (%.1f pt) below the top margin"
-                 % (float(_tpl_lines), _tpl_want)))
-        if getattr(_sp_tpf, "zero_extra_spacing", False):
-            _tpl_bits.append("题名页额外段距清 0" if L == "zh"
-                             else "extra paragraph spacing cleared")
+        # 数值与区间来自 title_page_spacing_plan()（checker 同一份计算），
+        # 且**只报真的在区间外、fixer 真会改的项** —— 避免「预览说要改、修了没动」。
+        _plan = title_page_spacing_plan(target, resolve_spec(target), prof)
+        _unit = float(_plan["unit_pt"] or 0.0)
+        if _plan["before"]:
+            _lo, _hi = _plan["before"]
+            _cur = getattr(prof, "tp_title_space_before_pt", None)
+            _cur_pt = float(_cur) if _cur is not None else 0.0
+            if not (_lo <= _cur_pt <= _hi):
+                _want = round(_plan["before_lines"][0] * _unit, 1)
+                _tpl_bits.append(
+                    ("标题下移 %g 行（%.1f pt）" % (_plan["before_lines"][0], _want))
+                    if L == "zh" else
+                    ("title %g lines (%.1f pt) below the top margin"
+                     % (_plan["before_lines"][0], _want)))
+        if _plan["after"]:
+            _gap = getattr(prof, "tp_author_gap_paragraphs", None)
+            if not (_gap is not None and int(_gap) >= 1):
+                _alo, _ahi = _plan["after"]
+                _cur = getattr(prof, "tp_title_space_after_pt", None)
+                _cur_pt = float(_cur) if _cur is not None else 0.0
+                if not (_alo <= _cur_pt <= _ahi):
+                    _want = round(float(_plan["after_lines"]) * _unit, 1)
+                    _tpl_bits.append(
+                        ("标题后保留一个空行（%.1f pt）" % _want) if L == "zh"
+                        else ("one blank line (%.1f pt) kept after the title" % _want))
+        if _plan["author_zero"]:
+            _mx_a = getattr(prof, "tp_author_space_max_pt", None)
+            if _mx_a is not None and float(_mx_a) > 0.5:
+                _tpl_bits.append(
+                    "其余题名页元素额外段距清 0" if L == "zh"
+                    else "extra paragraph spacing between the remaining elements cleared")
         if _tpl_bits:
             sep = "：" if L == "zh" else ": "
             lines.append("%s%s%s" % (

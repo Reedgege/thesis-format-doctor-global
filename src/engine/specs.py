@@ -128,16 +128,28 @@ class TitlePageFormat:
     title_centered: Optional[bool] = None
     title_bold: Optional[bool] = None
     author_centered: Optional[bool] = None
-    # —— v2.3.91：垂直位置与额外段距 ——
-    # 老板 2026-10-22 核对 v2.3.90 产物时发现「标题贴在顶边距第一行、题名页还有 12/18pt
-    # 额外段距」，拍板「三件一起做，清掉」。
+    # —— v2.3.92：垂直位置与段距，全部按官方手册原话，一个字都不多加 ——
+    # APA Style（Title Page Setup，Section 2.3 / Concise Guide 1.6）原文三句：
+    #   ① "Place the title three to four lines down from the top of the title page."
+    #      → **区间**，3 行和 4 行都合规。v2.3.91 按精确 3 行判，合规的 4 行会被误报。
+    #   ② "Place one double-spaced blank line between the paper title and the author names."
+    #      → 标题与作者之间要**保留一个双倍行距空行**。v2.3.91 把标题段后清成 0，
+    #        等于把这条要求删掉了，反向违规。
+    #   ③ "no extra lines added between elements, except after the paper title"
+    #      → 其余元素（作者 / 单位 / 课程 / 教师 / 日期）之间 0 额外段距。
     title_space_before_lines: Optional[float] = None
-    # ↑ 标题距顶边距空几行（APA 7 §2.6 Student/Professional 都是 "three to four lines
-    #   down from the top margin" → 取 3）。按「行」而不是磅，是因为行高随正文字号与
-    #   行距变化：磅 = 行数 × 字号 × 行距倍数，写死磅数换个字号就错位。
+    # ↑ 标题距顶边距行数的**下限**（APA = 3）。按「行」而不是磅：行高随字号与行距变化，
+    #   磅 = 行数 × 字号 × 行距倍数，写死磅数换个字号就错位。
+    title_space_before_lines_max: Optional[float] = None
+    # ↑ 上限（APA = 4）；None 表示与下限相同（即精确值）。
+    title_space_after_lines: Optional[float] = None
+    # ↑ 标题与作者之间空几行（APA = 1 个双倍行距空行）。None = 不规定。
+    title_page_lines_tolerance: float = 0.25
+    # ↑ 判定容差（单位：行）。行高换算本来就受字体度量影响，卡到 0.01 行等于自找误报。
     zero_extra_spacing: Optional[bool] = None
-    # ↑ 题名页整页不留额外段前/段后（APA：整页双倍行距，段距为 0）。
-    #   True = 标题段后与作者/单位行的段前段后一律清零；None = 不动。
+    # ↑ 标题页**其余**元素（作者/单位/课程/教师/日期）不留额外段前/段后。
+    #   True = 这些行的段前段后清零；None = 不动。**不作用于标题本身**（标题的段后
+    #   是「一个空行」，由 title_space_after_lines 单独管）。
 
 
 @dataclass
@@ -554,11 +566,17 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         heading_levels=5,
         heading_formats=APA_HEADING,
         paper_size="Letter",     # APA 7th §2.1：8.5 × 11 in（北美 Letter）
-        # v2.3.91：题名页三件套 —— 标题在顶边距下 3 行（APA 7 §2.6「three to four lines
-        # down from the top margin」，取下限 3）+ 整页不留额外段距 + 题名页独立成页。
-        title_page=TitlePageFormat(True, True, True,
-                                   title_space_before_lines=3 if title_page_new_page else None,
-                                   zero_extra_spacing=True if title_page_new_page else None),
+        # v2.3.92：题名页版式 —— 严格照 APA Style「Title Page Setup」的三句原话：
+        #   ① 标题在页面顶部 3~4 行（区间，不是精确 3 行）；
+        #   ② 标题与作者之间留一个双倍行距空行（不是清零！）；
+        #   ③ 其余元素之间不加额外空行。
+        # 三者只在「规范基线」下被判 warn 并可修，学校模板 / 手填 / AI 导入只提示。
+        title_page=TitlePageFormat(
+            True, True, True,
+            title_space_before_lines=3 if title_page_new_page else None,
+            title_space_before_lines_max=4 if title_page_new_page else None,
+            title_space_after_lines=1 if title_page_new_page else None,
+            zero_extra_spacing=True if title_page_new_page else None),
         running_head=running_head,
         expect_abstract=expect_abstract,
         expect_author_note=expect_author_note,

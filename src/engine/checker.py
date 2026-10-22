@@ -229,6 +229,111 @@ def _page_number_severity(origin: str, target) -> str:
     return sev
 
 
+def title_page_spacing_plan(target, spec, prof) -> dict:
+    """题名页段距的「期望值 + 允许区间」（磅）。**checker 与 fixer 共用的唯一计算**。
+
+    老板 2026-10-23「规范里面没有要求的我们不要加，仔细看规范」——
+    于是把 APA Style 官方 Title Page Setup 的三句原话逐条落成数字：
+
+      ① "Place the title three to four lines down from the top of the title page."
+         → **区间** [3, 4] 行。v2.3.91 按精确 3 行判，把合规的 4 行误报成错。
+      ② "Place one double-spaced blank line between the paper title and the author names."
+         → 标题与作者之间是「一个空行」，**不是 0**。v2.3.91 把它清成 0，反向违规。
+      ③ "no extra lines added between elements, except after the paper title"
+         → 其余元素之间 0 额外段距。
+
+    一行 = ``字号 × 行距倍数`` 磅（APA 12pt × 2.0 = 24pt）。容差按「行」给
+    （``title_page_lines_tolerance``），因为行高换算本来就受字体度量影响。
+
+    返回::
+
+        {"unit_pt": 24.0, "tolerance_lines": 0.25,
+         "before": (66.0, 102.0) | None, "before_lines": (3.0, 4.0) | None,
+         "after": (18.0, 30.0) | None,   "after_lines": 1.0 | None,
+         "author_zero": True}
+
+    两个键为 None 表示该规范不规定此项 —— 调用方一个字节都不要写/不要判。
+    """
+    plan = {"unit_pt": None, "tolerance_lines": 0.0,
+            "before": None, "before_lines": None,
+            "after": None, "after_lines": None,
+            "author_zero": False}
+    tpf = getattr(spec, "title_page", None)
+    if tpf is None:
+        return plan
+    page = getattr(target, "page", None) or {}
+    try:
+        fs = float(page.get("font_size_pt") or getattr(prof, "font_size_pt", None) or 12.0)
+    except (TypeError, ValueError):
+        fs = 12.0
+    try:
+        ls = float(page.get("line_spacing") or getattr(prof, "line_spacing", None) or 1.0)
+    except (TypeError, ValueError):
+        ls = 1.0
+    unit = round(fs * ls, 2)
+    try:
+        tol = float(getattr(tpf, "title_page_lines_tolerance", 0.25) or 0.0)
+    except (TypeError, ValueError):
+        tol = 0.0
+    plan["unit_pt"] = unit
+    plan["tolerance_lines"] = tol
+    plan["author_zero"] = bool(getattr(tpf, "zero_extra_spacing", False))
+
+    lo_lines = getattr(tpf, "title_space_before_lines", None)
+    if lo_lines is not None:
+        hi_lines = getattr(tpf, "title_space_before_lines_max", None)
+        hi_lines = lo_lines if hi_lines is None else max(lo_lines, hi_lines)
+        plan["before_lines"] = (float(lo_lines), float(hi_lines))
+        plan["before"] = (round((float(lo_lines) - tol) * unit, 2),
+                          round((float(hi_lines) + tol) * unit, 2))
+
+    sa_lines = getattr(tpf, "title_space_after_lines", None)
+    if sa_lines is not None:
+        plan["after_lines"] = float(sa_lines)
+        plan["after"] = (round((float(sa_lines) - tol) * unit, 2),
+                         round((float(sa_lines) + tol) * unit, 2))
+    return plan
+
+
+# —— 题名页「内容完整性」判定的线索（v2.3.92，仅用于提示，绝不代客户写内容）——
+# 认定刻意宽松：认出任何一条线索就算「有」，宁可漏提示，也不要把客户已经写好的
+# 东西说成缺。论文大标题不在检索范围内（见 docx_reader.tp_author_block_text），
+# 否则 "COVID-19" 这类「字母+数字」会被当成课程号。
+_TP_COURSE_RE = re.compile(r"(?i)\b[a-z]{2,6}[\s\-]?\d{2,4}[a-z]?\b")
+_TP_INSTRUCTOR_RE = re.compile(
+    r"(?i)\b(?:dr|prof|professor|instructor|lecturer|teacher)\b\.?")
+_TP_DATE_RE = re.compile(
+    r"(?i)(?:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b"
+    r"|\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b"
+    r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
+    r"|\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b)")
+
+
+def title_page_missing_elements(prof, spec) -> list:
+    """APA **学生版**题名页要求、但文档里找不到的补充元素（v2.3.92，只用于提示）。
+
+    APA Style 学生版题名页共 7 项：标题 / 作者 / 单位 / **课程号与课名** / **教师名** /
+    **提交日期** / 页码。前三项由版式检查覆盖，后三项是**内容**，本工具绝不代写
+    （文字 100% 锁死），只能如实告诉客户「还差什么，请自己补」。
+
+    只对 ``title_page_kind == "student"`` 生效：APA 专业版题名页要求的是作者注与
+    running head，**没有**课程/教师/日期这三项 —— 规范没有要求的绝不多加。
+    """
+    if getattr(spec, "title_page_kind", "") != "student":
+        return []
+    text = getattr(prof, "tp_author_block_text", None)
+    if not text:
+        return []
+    missing = []
+    if not _TP_COURSE_RE.search(text):
+        missing.append("course number and name")
+    if not _TP_INSTRUCTOR_RE.search(text):
+        missing.append("instructor name")
+    if not _TP_DATE_RE.search(text):
+        missing.append("assignment due date")
+    return missing
+
+
 def _abstract_not_located(prof, suffix: str = "") -> str:
     """「摘要段定位不到」的客户可读解释（v2.3.91）。
 
@@ -956,7 +1061,6 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 才判 warn 并绑定修正；学校模板 / 手填 / AI 导入一律只提示，模板说了算。
     _fm_spec = resolve_spec(target)
     _fm_base = spec_is_baseline(target)
-    _fm_tp = getattr(_fm_spec, "title_page", None)
     _has_tp = bool(getattr(prof, "title_page_detected", False))
 
     # ① 题名页独立成页
@@ -991,45 +1095,63 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 source="spec",
             ))
 
-    # ② 标题垂直位置 + 题名页零额外段距（合成一条结论，客户读一行就够）
-    _fm_lines = getattr(_fm_tp, "title_space_before_lines", None) if _fm_tp else None
-    _fm_zero = bool(getattr(_fm_tp, "zero_extra_spacing", False)) if _fm_tp else False
-    if (_fm_lines is not None or _fm_zero) and _has_tp:
-        _pg = target.page or {}
-        _fs = _pg.get("font_size_pt") or getattr(prof, "font_size_pt", None) or 12.0
-        _ls = _pg.get("line_spacing") or getattr(prof, "line_spacing", None) or 1.0
-        _tpl_bad, _tpl_act = [], []
-        _want_pt = None
-        if _fm_lines is not None:
-            _want_pt = round(float(_fm_lines) * float(_fs) * float(_ls), 1)
+    # ② 标题垂直位置 + 标题后空行 + 其余元素零额外段距（合成一条结论，客户读一行就够）
+    # v2.3.92：判定数字全部来自 title_page_spacing_plan()（与 fixer 同一份计算），
+    # 且严格照 APA 原话 —— 距顶 3~4 行是**区间**；标题与作者之间要**一个空行**（不是 0）。
+    _plan = title_page_spacing_plan(target, _fm_spec, prof)
+    if (_plan["before"] or _plan["after"] or _plan["author_zero"]) and _has_tp:
+        _unit = float(_plan["unit_pt"] or 0.0)
+        _tpl_bad, _tpl_act, _exp_bits = [], [], []
+        # ① 标题距顶 3~4 行（区间）
+        if _plan["before"]:
+            _lo, _hi = _plan["before"]
+            _blo, _bhi = _plan["before_lines"]
+            _exp_bits.append("title %g-%g lines below the top margin" % (_blo, _bhi))
             _got_sb = getattr(prof, "tp_title_space_before_pt", None)
             if _got_sb is None:
                 _tpl_act.append("could not read the title's space before")
-            elif abs(float(_got_sb) - _want_pt) > 1.0:
+            elif not (_lo <= float(_got_sb) <= _hi):
                 _tpl_bad.append(
-                    "title sits %.1f pt below the top margin (expected %.1f pt = %g lines)"
-                    % (float(_got_sb), _want_pt, float(_fm_lines)))
+                    "title sits %.1f pt below the top margin (expected %g-%g lines = "
+                    "%.0f-%.0f pt)" % (float(_got_sb), _blo, _bhi, _blo * _unit, _bhi * _unit))
             else:
                 _tpl_act.append("title %.1f pt below the top margin" % float(_got_sb))
-        if _fm_zero:
-            _extras = [v for v in (getattr(prof, "tp_title_space_after_pt", None),
-                                   getattr(prof, "tp_author_space_max_pt", None))
-                       if v is not None]
-            _mx = max(_extras) if _extras else None
+        # ② 标题与作者之间一个双倍行距空行 —— 真空段与段后间距**两种都认**
+        if _plan["after"]:
+            _alo, _ahi = _plan["after"]
+            _exp_bits.append("one blank line after the title")
+            _gap = getattr(prof, "tp_author_gap_paragraphs", None)
+            if _gap is not None and int(_gap) >= 1:
+                _tpl_act.append("blank line between the title and the author names")
+            else:
+                _got_sa = getattr(prof, "tp_title_space_after_pt", None)
+                if _got_sa is None:
+                    _tpl_act.append("could not read the title's space after")
+                elif not (_alo <= float(_got_sa) <= _ahi):
+                    _tpl_bad.append(
+                        "no blank line between the title and the author names "
+                        "(title space after %.1f pt, expected about %g line = %.0f pt)"
+                        % (float(_got_sa), _plan["after_lines"], _plan["after_lines"] * _unit))
+                else:
+                    _tpl_act.append("blank line after the title")
+        # ③ 其余元素之间 0 额外段距
+        if _plan["author_zero"]:
+            _exp_bits.append("no extra paragraph spacing")
+            _mx = getattr(prof, "tp_author_space_max_pt", None)
             if _mx is None:
                 _tpl_act.append("could not read the extra paragraph spacing")
-            elif _mx > 0.5:
+            elif float(_mx) > 0.5:
                 _tpl_bad.append(
-                    "extra paragraph spacing %.1f pt on the title page (expected 0)" % _mx)
+                    "extra paragraph spacing %.1f pt between title page elements (expected 0)"
+                    % float(_mx))
             else:
                 _tpl_act.append("no extra paragraph spacing")
+        _exp = "; ".join(_exp_bits) or "Matches"
         findings.append(Finding(
             dimension="title_page_layout",
             severity=("warn" if _fm_base else "info") if _tpl_bad else "pass",
             message="Title page position and spacing",
-            expected=("Title %g lines below the top margin, no extra paragraph spacing"
-                      % float(_fm_lines)) if _fm_lines is not None
-            else "No extra paragraph spacing on the title page",
+            expected=_exp[:1].upper() + _exp[1:],
             actual=("Title page: " + ", ".join(_tpl_bad)) if _tpl_bad
             else (", ".join(_tpl_act) or "Matches"),
             source="spec",
@@ -1065,6 +1187,31 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 dimension="text_new_page", severity="pass",
                 message="Text starts on a new page",
                 expected="The body starts on a new page after the abstract",
+                actual="Matches",
+                source="spec",
+            ))
+
+    # ④ 题名页内容完整性（v2.3.92）—— **只提示，永不判红、永不代写**
+    # 老板 2026-10-23 拍板「可以做提示」。APA 学生版题名页除版式外还要求课程号+课名、
+    # 教师名、提交日期；这三项是**内容**，工具一个字都不会替客户写（文字 100% 锁死），
+    # 只能列清楚「还差什么，请自己补」。规范没要求的绝不多加：专业版不查这三项。
+    if _has_tp and _fm_base and getattr(_fm_spec, "title_page_kind", "") == "student":
+        _miss = title_page_missing_elements(prof, _fm_spec)
+        if _miss:
+            findings.append(Finding(
+                dimension="title_page_content", severity="info",
+                message="Title page content",
+                expected=("An APA Style student title page also lists the course number "
+                          "and name, the instructor name, and the assignment due date"),
+                actual=("Not found on the title page: %s. This tool never adds text, so "
+                        "please add these yourself" % ", ".join(_miss)),
+                source="spec",
+            ))
+        else:
+            findings.append(Finding(
+                dimension="title_page_content", severity="pass",
+                message="Title page content",
+                expected="Course, instructor and due date are listed on the title page",
                 actual="Matches",
                 source="spec",
             ))
@@ -2121,8 +2268,10 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             if _tpn_want is not None and _tpn_cur is not None \
                     and bool(_tpn_cur) != bool(_tpn_want):
                 _fix_value["title_page_new_page"] = bool(_tpn_want)
-            if _fm_tpf is not None and (getattr(_fm_tpf, "title_space_before_lines", None) is not None
-                                        or getattr(_fm_tpf, "zero_extra_spacing", False)):
+            if _fm_tpf is not None and (
+                    getattr(_fm_tpf, "title_space_before_lines", None) is not None
+                    or getattr(_fm_tpf, "title_space_after_lines", None) is not None
+                    or getattr(_fm_tpf, "zero_extra_spacing", False)):
                 _fix_value["title_page_layout"] = True
         _txn_cur = getattr(_fm_prof, "text_break_before", None)
         _txn_want = getattr(_fm_st, "text_new_page", None)

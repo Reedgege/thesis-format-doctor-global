@@ -36,6 +36,7 @@ import sys
 import ctypes
 import json
 import re
+import queue
 import threading
 import tkinter as tk
 import traceback
@@ -1120,17 +1121,68 @@ class App:
         # refresh 一次，确保外框完整（见 RoundCard.refresh 的 P0-2 说明）。
         self.root.after_idle(lambda: self._closing or self._relayout_all())
         # 启动即核对在线激活码吊销状态（后台线程，非阻塞；撤销即时生效，方向 A）
-        threading.Thread(target=self._refresh_license_at_launch, daemon=True).start()
+        # v2.3.92：改成「worker 只塞队列 + 主线程 after 轮询」。原先 worker 线程直接调
+        # self.root.after() —— Tk 不是线程安全的，after() 内部会走 tk.createcommand，
+        # 在非主线程上偶发 RuntimeError: main thread is not in main loop（实测能随机把
+        # 后续用例的 setup 打成 ERROR）。现在 after() 只从主线程调用。
+        self._start_launch_check()
 
     # ------------------------------------------------------------ 授权：启动一次性核验（授权 + 版本）
+    def _start_launch_check(self):
+        """起后台线程做启动核验，并在主线程挂一个队列轮询器（幂等，可多次调用）。"""
+        if getattr(self, "_launch_q", None) is None:
+            self._launch_q = queue.Queue()
+        threading.Thread(target=self._refresh_license_at_launch, daemon=True).start()
+        if not getattr(self, "_launch_polling", False):
+            self._launch_polling = True
+            try:
+                self.root.after(250, self._poll_launch_check)
+            except Exception:
+                self._launch_polling = False
+
+    def _poll_launch_check(self):
+        """主线程轮询：把后台核验结果取出来交给 UI 线程处理（5 态状态机）。
+
+        只有拿到结果才停止轮询 —— 后台失败（断网/异常）时线程直接 return，
+        这里不会卡死，也不会漏掉「就是没有结果」这件事。
+        """
+        if getattr(self, "_closing", False):
+            self._launch_polling = False
+            return
+        q = getattr(self, "_launch_q", None)
+        got = None
+        if q is not None:
+            try:
+                got = q.get_nowait()
+            except queue.Empty:
+                got = None
+        if got is not None:
+            self._launch_polling = False
+            try:
+                self._on_launch_check(got)
+            except Exception:
+                pass
+            return
+        try:
+            self.root.after(250, self._poll_launch_check)
+        except Exception:
+            self._launch_polling = False
+
     def _refresh_license_at_launch(self):
-        """后台线程：启动即向中台核对授权 + 版本（fail-soft，不阻塞首屏）。"""
+        """后台线程：启动即向中台核对授权 + 版本（fail-soft，不阻塞首屏）。
+
+        ⚠️ 本方法跑在 worker 线程上，**只许做网络与计算，绝不碰 Tk**
+        （不调 after、不读控件、不弹窗）；结果塞队列，由主线程的
+        ``_poll_launch_check`` 取走。
+        """
         try:
             res = lic.refresh_license_on_launch()
         except Exception:
             return
-        # 回到 UI 线程分状态处理（5 态状态机）
-        self.root.after(0, lambda: self._on_launch_check(res))
+        q = getattr(self, "_launch_q", None)
+        if q is None:
+            return
+        q.put(res)
 
     def _on_launch_check(self, res):
         """启动核验结果分状态处理（5 态状态机）。

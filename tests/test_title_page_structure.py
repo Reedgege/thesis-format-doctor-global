@@ -43,20 +43,32 @@ TITLE = "Digital Transformation and Supply Chain Resilience"
 # 夹具：贴近真实样本（标题 / 作者单位块 / 摘要 / 正文 / 参考文献）
 # ---------------------------------------------------------------------------
 
-def _make_paper(path, *, title_break=False, text_break=False, extra_spacing=True):
+def _make_paper(path, *, title_break=False, text_break=False, extra_spacing=True,
+                title_space_before_pt=None, title_space_after_pt=None,
+                blank_after_title=False, title=TITLE,
+                course=None, instructor=None, due_date=None):
     """造一篇题名页结构完整的论文。
 
     ``title_break`` / ``text_break`` 控制客户**原本**有没有那两个分页；
-    ``extra_spacing`` 控制原文是否残留 12pt/18pt 段距（老板实测的那份就有）。
+    ``extra_spacing`` 控制原文是否残留 12pt/18pt 段距（老板实测的那份就有）；
+    ``title_space_before_pt`` 直接指定标题段前（None = 不写，等同 0）；
+    ``blank_after_title`` 用一个真空段落实现 APA 要求的那一个空行。
     """
     doc = Document()
     t = doc.add_paragraph()
-    r = t.add_run(TITLE)
+    r = t.add_run(title)
     r.bold = True
     r.font.size = Pt(16)
     t.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    if extra_spacing:
+    if title_space_before_pt is not None:
+        t.paragraph_format.space_before = Pt(title_space_before_pt)
+    if title_space_after_pt is not None:
+        t.paragraph_format.space_after = Pt(title_space_after_pt)
+    elif extra_spacing:
         t.paragraph_format.space_after = Pt(18)
+
+    if blank_after_title:
+        doc.add_paragraph("")
 
     a1 = doc.add_paragraph("By: Alex Morgan")
     a1.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -65,6 +77,18 @@ def _make_paper(path, *, title_break=False, text_break=False, extra_spacing=True
     if extra_spacing:
         a1.paragraph_format.space_after = Pt(12)
         a2.paragraph_format.space_after = Pt(12)
+
+    # APA 学生版题名页的可选补充行（课程 / 教师 / 日期）：给不给由调用方决定
+    for _line in (course, instructor, due_date):
+        if _line:
+            _p = doc.add_paragraph(_line)
+            _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # APA 学生版题名页的可选补充行（课程 / 教师 / 日期）：给不给由调用方决定
+    for _line in (course, instructor, due_date):
+        if _line:
+            _p = doc.add_paragraph(_line)
+            _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     h = doc.add_paragraph("Abstract")
     h.style = doc.styles["Heading 1"]
@@ -168,11 +192,46 @@ def test_title_sits_three_lines_below_top_margin_after_fix(tmp_path):
     assert _sev(findings2, "title_page_layout") == "pass"
 
 
-def test_title_page_extra_spacing_is_cleared(tmp_path):
-    """原文残留的 12pt / 18pt 段距必须清 0（APA 题名页整页双倍行距、不留额外段距）。"""
-    p = _make_paper(tmp_path / "a.docx", extra_spacing=True)
+def test_title_three_to_four_lines_is_a_range(tmp_path):
+    """APA 原文是 "three to four lines" —— **3 行与 4 行都必须判 pass**。
+
+    v2.3.91 按精确 3 行（72pt）判、容差 1pt，一份合规的 4 行标题（96pt）会被误报成错。
+    老板 2026-10-23「规范里面没有要求的我们不要加，仔细看规范」—— 逐字读原文才发现。
+    """
     t = target_from_spec("APA-Student")
-    # 改之前确实有额外段距（否则这条测试没意义）
+    for pt in (72.0, 84.0, 96.0):
+        p = _make_paper(tmp_path / ("a%d.docx" % int(pt)),
+                         title_space_before_pt=pt, title_space_after_pt=24.0,
+                         extra_spacing=False)
+        prof, findings = checker.run_check(p, t)
+        assert prof.tp_title_space_before_pt == pytest.approx(pt, abs=0.5)
+        assert _sev(findings, "title_page_layout") == "pass", "%.0fpt 应判合规" % pt
+        # 合规就不许绑修正动作（绝不白改客户文档）
+        assert all(getattr(f, "fix", None) is None for f in _dim(findings, "title_page_layout"))
+
+
+def test_title_far_below_or_above_range_is_flagged_and_fixed(tmp_path):
+    """区间之外（贴顶 = 0pt / 5 行以上）才判错，修到 3 行。"""
+    t = target_from_spec("APA-Student")
+    for pt in (0.0, 200.0):
+        p = _make_paper(tmp_path / ("b%d.docx" % int(pt)), title_space_before_pt=pt)
+        prof, findings = checker.run_check(p, t)
+        assert _sev(findings, "title_page_layout") == "warn"
+        out = tmp_path / ("o%d.docx" % int(pt))
+        fix_docx(p, str(out), t)
+        prof2, findings2 = checker.run_check(str(out), t)
+        assert prof2.tp_title_space_before_pt == pytest.approx(72.0, abs=0.5)
+        assert _sev(findings2, "title_page_layout") == "pass"
+
+
+def test_one_blank_line_after_title_is_kept_not_cleared(tmp_path):
+    """APA：标题与作者之间要留**一个双倍行距空行**，不是清零。
+
+    v2.3.91 把标题段后清成 0，等于删掉了这条要求（反向违规）。v2.3.92 改为「约一行」：
+    原文的 18pt 在允许带内 → 一个字节都不动；作者等其余元素才清 0。
+    """
+    t = target_from_spec("APA-Student")
+    p = _make_paper(tmp_path / "a.docx", extra_spacing=True)
     prof, _ = checker.run_check(p, t)
     assert prof.tp_title_space_after_pt == pytest.approx(18.0, abs=0.5)
     assert prof.tp_author_space_max_pt == pytest.approx(12.0, abs=0.5)
@@ -180,13 +239,43 @@ def test_title_page_extra_spacing_is_cleared(tmp_path):
     out = tmp_path / "out.docx"
     fix_docx(p, str(out), t)
     prof2, findings2 = checker.run_check(str(out), t)
-    assert (prof2.tp_title_space_after_pt or 0.0) == pytest.approx(0.0, abs=0.1)
+    # 空行必须还在
+    assert prof2.tp_title_space_after_pt == pytest.approx(18.0, abs=0.5)
+    # 其余元素之间清 0
     assert (prof2.tp_author_space_max_pt or 0.0) == pytest.approx(0.0, abs=0.1)
     assert _sev(findings2, "title_page_layout") == "pass"
 
 
+def test_missing_blank_line_after_title_is_supplied(tmp_path):
+    """标题后既没有空段落、段后也是 0 → 补齐到约一行（24pt = 1 行 × 12pt × 2.0）。"""
+    t = target_from_spec("APA-Student")
+    p = _make_paper(tmp_path / "a.docx", extra_spacing=False)
+    prof, findings = checker.run_check(p, t)
+    assert _sev(findings, "title_page_layout") == "warn"
+    out = tmp_path / "out.docx"
+    fix_docx(p, str(out), t)
+    prof2, findings2 = checker.run_check(str(out), t)
+    assert prof2.tp_title_space_after_pt == pytest.approx(24.0, abs=1.0)
+    assert _sev(findings2, "title_page_layout") == "pass"
+
+
+def test_blank_paragraph_between_title_and_author_is_accepted(tmp_path):
+    """空行也可以用一个真空段落实现 —— 两种写法都得认，否则合规文档被误报。"""
+    t = target_from_spec("APA-Student")
+    p = _make_paper(tmp_path / "a.docx", extra_spacing=False,
+                    blank_after_title=True, title_space_before_pt=72.0)
+    prof, findings = checker.run_check(p, t)
+    assert prof.tp_author_gap_paragraphs == 1
+    assert _sev(findings, "title_page_layout") == "pass"
+
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    # 已有真空段 → 不许再补段后间距（否则一个空行变两个）
+    assert "after_pt" not in (summary["applied"].get("title_page_layout") or {})
+
+
 def test_title_page_layout_stays_info_when_not_baseline(tmp_path):
-    p = _make_paper(tmp_path / "a.docx")
+    p = _make_paper(tmp_path / "a.docx", title_space_before_pt=0.0)
     t = target_from_dict({"reference_style": "APA"}, "school")
     prof, findings = checker.run_check(p, t)
     assert _sev(findings, "title_page_layout") == "info"
@@ -344,7 +433,7 @@ def test_preview_discloses_three_structural_changes(tmp_path):
     joined_en = "\n".join(en)
     assert "题名页独立成页" in joined_zh
     assert "标题下移 3 行（72.0 pt）" in joined_zh
-    assert "题名页额外段距清 0" in joined_zh
+    assert "其余题名页元素额外段距清 0" in joined_zh
     assert "正文另起一页" in joined_zh
     # 海外版英文界面绝不泄漏中文
     assert "Title page on its own page" in joined_en
@@ -363,3 +452,72 @@ def test_summary_comment_discloses_page_break(tmp_path):
     assert "title page now occupies its own page" in xml.lower()
     assert "no paragraph or character was added" in xml.lower()
     assert "below the top margin" in xml.lower()
+
+
+# ---------------------------------------------------------------------------
+# ④ 题名页内容完整性：只提示，永不代写（老板 2026-10-23「可以做提示」）
+# ---------------------------------------------------------------------------
+
+def test_student_title_page_missing_content_is_only_prompted(tmp_path):
+    """APA 学生版还要求课程号+课名、教师名、提交日期 —— 缺了只出 info，绝不代写。
+
+    这三项是**内容**不是版式，工具一个字都不会加（文字 100% 锁死），
+    只能告诉客户还差什么。severity 恒为 info、fix 恒为 None。
+    """
+    p = _make_paper(tmp_path / "a.docx")
+    t = target_from_spec("APA-Student")
+    prof, findings = checker.run_check(p, t)
+    got = _dim(findings, "title_page_content")
+    assert got, "应出题名页内容提示"
+    assert got[0].severity == "info"
+    assert all(getattr(f, "fix", None) is None for f in got)
+    assert "course number and name" in got[0].actual
+    assert "instructor name" in got[0].actual
+    assert "assignment due date" in got[0].actual
+
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert "title_page_content" not in summary["applied"]
+    # 修正前后文字必须一模一样（绝不代写）
+    assert _texts(out) == _texts(p)
+
+
+def test_student_title_page_complete_content_passes(tmp_path):
+    p = _make_paper(tmp_path / "a.docx", course="PSY 201: Introduction to Psychology",
+                    instructor="Dr. Rowan J. Estes", due_date="October 18, 2020")
+    t = target_from_spec("APA-Student")
+    prof, findings = checker.run_check(p, t)
+    got = _dim(findings, "title_page_content")
+    assert got and got[0].severity == "pass"
+
+
+def test_title_page_content_not_checked_for_professional(tmp_path):
+    """APA 专业版题名页要的是作者注与 running head，**没有**课程/教师/日期这三项。
+
+    规范里没要求的一律不查 —— 否则专业版客户会收到一条根本没依据的提示。
+    """
+    p = _make_paper(tmp_path / "a.docx")
+    t = target_from_spec("APA-Professional")
+    prof, findings = checker.run_check(p, t)
+    assert not _dim(findings, "title_page_content")
+
+
+def test_title_page_content_not_checked_when_not_baseline(tmp_path):
+    """学校模板模式：模板可能压根不要课程/教师/日期，不许拿 APA 去指点客户。"""
+    p = _make_paper(tmp_path / "a.docx")
+    t = target_from_dict({"reference_style": "APA"}, "school")
+    prof, findings = checker.run_check(p, t)
+    assert not _dim(findings, "title_page_content")
+
+
+def test_course_code_inside_paper_title_does_not_suppress_prompt(tmp_path):
+    """论文大标题里出现 "COVID-19" 这类「字母+数字」，不能把它当成课程号。
+
+    所以内容提示只在**标题以外**那块文本里找线索（reader 的 tp_author_block_text）。
+    """
+    p = _make_paper(tmp_path / "a.docx", title="COVID-19 and Supply Chain Resilience")
+    t = target_from_spec("APA-Student")
+    prof, findings = checker.run_check(p, t)
+    got = _dim(findings, "title_page_content")
+    assert got and got[0].severity == "info"
+    assert "course number and name" in got[0].actual
