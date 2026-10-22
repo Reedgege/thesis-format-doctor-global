@@ -4176,12 +4176,29 @@ class App:
         try:
             win.update_idletasks()
             need = int(win._inner.winfo_reqheight()) + 6
+            # v2.3.88：吸底弹窗的动作栏是**窗口底部**的真控件，不在 _inner 里 ——
+            # 窗口高度 = 画布可视高 + 动作栏高。不把栏高算进来，窗口就正好少一条
+            # 按钮栏的高度：画布比内容矮一截，明明装得下也永远挂个滚动条，最后一行
+            # 还被裁在按钮栏后面。非吸底弹窗栏本来就在 _inner 里（reqheight 已含），
+            # 不能重复加。
+            if getattr(win, "_sticky", False):
+                try:
+                    need += int(win._button_bar.winfo_reqheight())
+                except Exception:
+                    pass
             sh = int(self.root.winfo_screenheight())
             # 桌面保留区（任务栏）：1080p 下约 40-48px，取 56 留余量。
             bottom_limit = sh - 56
-            cap = max(320, bottom_limit - 8)
+            # v2.3.88：``geometry`` 给的是**客户区**高度，而屏幕装得下的是**外框**
+            # 高度（客户区 + 标题栏 + 边框）。旧写法按客户区直接顶到 bottom_limit，
+            # 外框就超出了工作区 —— Windows 会把窗口自己压小：
+            # 实测请求 704 高，系统只给了 656（差 48 = 标题栏），
+            # 而 pack 早已按 704 排好版 → 吸底动作栏被挤出窗口下沿，
+            # 按钮底边落在窗口外 48px（小屏笔记本上就是「按钮看不全 / 点不到」）。
+            # dy = 标题栏 + 边框高度，cap 必须先把它扣掉，再谈客户区能有多高。
+            dy = max(0, win.winfo_rooty() - win.winfo_y())
+            cap = max(320, bottom_limit - 8 - dy)
             height = min(max(need, 1), cap)
-            dy = win.winfo_rooty() - win.winfo_y()
             y = min(win.winfo_y(), bottom_limit - height - dy)
             y = max(8, y)
             win.geometry("%dx%d+%d+%d" % (width, height, win.winfo_x(), y))
@@ -4250,7 +4267,13 @@ class App:
         """
         tr = self.tr
         F = self.F
-        win = ModalShell(self.root, tr("review_title"), width=680, height=720)
+        # v2.3.88：吸底动作栏。这个弹窗是四个里内容最高的（4 个分区 + 页面网格 +
+        # 栏数/纸型/页码三行 + 标题表 + 风格规则），内容必然超出 720 的可视区；
+        # 旧版按钮栏排在 _inner 末尾，客户必须一路滚到底才看得见 Back / Run check
+        # （老板实测圈出来的就是这块）。置 sticky_actions 后按钮栏是**窗口底部**
+        # 的真控件，完全不参与滚动。
+        win = ModalShell(self.root, tr("review_title"), width=680, height=720,
+                         sticky_actions=True)
         self._track(win)
         body = win.content
 
