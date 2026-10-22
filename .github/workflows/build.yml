@@ -51,6 +51,25 @@ jobs:
           path: pytest-log.txt
           if-no-files-found: warn
 
+      # 把失败用例变成 **workflow 注解**（v2.3.89）。
+      # 为什么加这一步：构件和 job logs 都要鉴权才能下，而注解走
+      # `GET /repos/{o}/{r}/check-runs/{id}/annotations` 是**匿名可读**的。
+      # 2026-10-22 v2.3.88 就卡在这里 —— CI 红在 Tests(Windows)，可本机既没有
+      # admin 也没有 PAT，拿不到「到底哪条用例红了」，只能靠猜（违反"先取证"）。
+      # 现在任何一台机器、不带任何凭据，都能把失败用例原文拉出来。
+      - name: Surface test failures as annotations
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path pytest-log.txt)) { Write-Host "no pytest-log.txt"; exit 0 }
+          $hits = Select-String -Path pytest-log.txt -Pattern '^(FAILED|ERROR) ' | Select-Object -First 25
+          if (-not $hits) { Write-Host "no FAILED/ERROR lines - all good"; exit 0 }
+          foreach ($h in $hits) {
+            $msg = $h.Line.Trim()
+            $msg = $msg -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+            Write-Host "::error title=pytest::$msg"
+          }
+
       # 真机入口验证：「无参数启动必须进 GUI」—— 这就是"双击打不开"的回归防线。
       # 打包版用 --windows-console-mode=disable，没有控制台可看，静默退出=用户以为没反应。
       - name: Verify entry point (no-arg must open the GUI)

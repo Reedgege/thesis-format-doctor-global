@@ -2815,12 +2815,18 @@ class App:
             pass
         return out
 
-    def _freeze_win_paint(self, win, freeze: bool):
+    def _freeze_win_paint(self, win, freeze: bool, redraw: bool = True):
         """冻结 / 解冻**指定窗口**的重绘，用完立刻解冻（不进深度计数）。
 
         与 ``_freeze_paint`` 的分工：那个是主窗的**可嵌套**闸门（深度计数在
         ``_paint_depth``）；弹窗（Toplevel）自带独立 HWND，主窗的闸门管不到它，
         所以弹窗内的一次性显隐（如折叠面板展开）要单独冻一次。非 Windows 平台 no-op。
+
+        ``redraw=False``（v2.3.89）：解冻但**先别画**。给「解冻后还要改窗口尺寸」的
+        场景用 —— 冻结期间 ``geometry()`` 会被整条丢掉（实测：``WM_SETREDRAW(0)``
+        期间请求 600x560，``wm geometry`` 仍报 600x400，解冻后也不补上），
+        所以尺寸变更必须排到解冻之后；先解冻不重绘、改完尺寸再统一画，才不会出现
+        「旧尺寸画一帧 → 再改尺寸重画」的抖动。
         """
         if not sys.platform.startswith("win"):
             return
@@ -2834,7 +2840,8 @@ class App:
                     user32.SendMessageW(h, self._WM_SETREDRAW, 0, 0)
                 else:
                     user32.SendMessageW(h, self._WM_SETREDRAW, 1, 0)
-                    user32.RedrawWindow(h, None, None, self._RDW_FLAGS)
+                    if redraw:
+                        user32.RedrawWindow(h, None, None, self._RDW_FLAGS)
             except Exception:
                 pass
 
@@ -3974,7 +3981,13 @@ class App:
         """
         tr = self.tr
         F = self.F
-        win = ModalShell(self.root, tr("up_title"), width=600, height=720)
+        # v2.3.89：吸底动作栏（老板 2026-10-22「升级/激活那个弹窗这个也做了吧」）。
+        # 内容高度随「离线激活」折叠区展开而变：收起时约 640px 勉强装得下，
+        # 一展开就冲到 1100px 以上 —— Close 按钮排在 _inner 末尾，展开后
+        # 客户得滚到最底才能关（右上角 ✕ 虽在，但不该逼客户去找）。
+        # 置 sticky 后 Close 固定在窗口右下角，折叠展开都纹丝不动。
+        win = ModalShell(self.root, tr("up_title"), width=600, height=720,
+                         sticky_actions=True)
         self._track(win)
         body = win.content
 
@@ -4112,6 +4125,12 @@ class App:
             # 「内容先跳到新位置、窗口还是旧高度」的那一帧 —— 肉眼看到的"弹窗抖一下/漂移"。
             # 弹窗是独立 Toplevel，主窗的重绘闸门管不到它，这里单独冻一次，
             # 显隐 + 重新定高 + 重算滚动区全部做完再整体画出来。
+            #
+            # ⚠️ v2.3.89：定高必须排在**解冻之后**。冻结（WM_SETREDRAW 0）期间调
+            # `win.geometry()` 会被整条丢掉（实测：冻结中请求 560，`wm geometry` 仍报
+            # 400，解冻后也不补），于是「点开离线激活 → 内容长高了、窗口没长高」，
+            # 新展开的机器码/离线码全落在折线以下，客户以为点了没反应。
+            # 现在的顺序：冻结 → 显隐 → 解冻但不重绘 → 定高 → 补一次重绘。
             self._freeze_win_paint(win, True)
             try:
                 if pane.winfo_ismapped():
@@ -4120,9 +4139,10 @@ class App:
                 else:
                     pane.pack(fill="x")
                     marker.set("[-]")
+                self._freeze_win_paint(win, False, redraw=False)   # 解冻，先别画
                 self._fit_modal(win, 600)      # 内含 refresh_layout（重算滚动区）
             finally:
-                self._freeze_win_paint(win, False)
+                self._freeze_win_paint(win, False)                 # 补一次重绘（幂等）
 
         head.bind("<Button-1>", lambda e: _toggle())
         mark_lbl.bind("<Button-1>", lambda e: _toggle())
