@@ -40,6 +40,12 @@ _how_to_fill: |-
   title_page_space_before_pt / title_page_space_after_pt are the space above / below the
   thesis title on the title page, in points ("1 line" ≈ 1.2 × the title's font size).
   Omit them when the requirement says nothing.
+  title_page_new_page says whether the title page occupies its own page, and
+  title_page_zero_extra_spacing says whether no extra paragraph spacing is allowed between
+  the title page elements (author, affiliation, course, instructor, date). text_new_page says
+  whether the body starts on a new page after the abstract. All three are true or false —
+  omit them unless the requirement actually states that, because the tool will change the
+  student's page layout to match whatever you report.
   abstract_space_before_pt / abstract_space_after_pt and caption_space_before_pt /
   caption_space_after_pt are the space above / below each Abstract paragraph and each
   figure/table caption, in points. Omit them when the requirement says nothing.
@@ -166,6 +172,23 @@ fields:
     example: 12.0
     note: >-
       Space below the thesis title on the title page, in points. Omit when unspecified.
+  - key: title_page_new_page
+    label: Title page on its own page
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      true = the title page occupies its own page (a page break follows it); false = the next
+      section may continue on the title page. Omit when the requirement says nothing about it.
+  - key: title_page_zero_extra_spacing
+    label: Title page - no extra paragraph spacing between elements
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      true = no extra paragraph spacing (space before/after) between the author, affiliation,
+      course, instructor and date lines on the title page; false = the requirement does not
+      demand this. Omit when unspecified.
   - key: paper_size
     label: Paper size
     unit: ""
@@ -268,6 +291,14 @@ fields:
     note: >-
       true = the Abstract begins on a new page (APA Professional); false = it continues on the
       same page. Omit when unspecified.
+  - key: text_new_page
+    label: Body text starts on a new page after the abstract
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      true = the body begins on a new page after the Abstract; false = it may continue right
+      after the abstract. Omit when unspecified.
   - key: abstract_space_before_pt
     label: Abstract - space before each paragraph
     unit: pt
@@ -405,6 +436,9 @@ example_filled:
   # title_page_author_centered: true     # optional — omit when unspecified
   # title_page_space_before_pt: 0        # optional — space above the title, in points
   # title_page_space_after_pt: 12        # optional — space below the title, in points
+  # title_page_new_page: true            # optional — title page occupies its own page
+  # title_page_zero_extra_spacing: true  # optional — no extra spacing between the title page lines
+  # text_new_page: true                  # optional — body starts on a new page after the abstract
   heading_levels: 3
   heading_formats:
     1:

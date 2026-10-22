@@ -147,6 +147,17 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "title_page_space_after_pt", "label": "标题页标题段后", "group": "page",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
      "help": "论文大标题下方的间距（磅，通常就是标题与作者块之间）；留空=不规定"},
+    # v2.3.93：首页结构两项。v2.3.91/92 只让**内置规范**能表达（APA 学生版要求
+    # 题名页独立成页、其余元素之间不留额外段距），学校模板 / 手填 / AI 三个通道
+    # 根本无处填 —— 客户学校模板明确要求「封面单独一页」也表达不出来，
+    # 传进 target_from_dict 还会被 _coerce 静默丢掉。现在三路齐平。
+    {"key": "title_page_new_page", "label": "题名页独立成页", "group": "page",
+     "type": "tri", "default": "", "unit": "",
+     "help": "是=题名页之后强制分页（APA 学生版要求）；否=明确允许接排；—=不规定"},
+    {"key": "title_page_zero_extra_spacing", "label": "题名页元素间不留额外段距",
+     "group": "page", "type": "tri", "default": "", "unit": "",
+     "help": "是=作者/单位/课程/教师/日期各行之间段前段后清 0（APA 学生版要求）；"
+             "否=明确不要求；—=不规定"},
 
     # 栏数：单栏=1 / 双栏=2。结构性页面维度，不进 PAGE_KEYS；复核弹窗用单选下拉。
     # 标签双语：zh 走此处的 label，en 走 i18n.Q_LABELS_EN（英文界面绝不泄漏中文）。
@@ -237,6 +248,11 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "abstract_new_page", "label": "摘要另起一页", "group": "page", "type": "tri",
      "default": "", "unit": "",
      "help": "是=摘要标题前插分页（APA 专业版要求）；否=明确不另起；—=不规定"},
+    # v2.3.93：摘要之后正文是否另起一页。同样从「只有内置规范能表达」放开到三路齐平
+    # （APA 学生版/专业版都要求正文另起一页；国内学校模板常写「摘要页后接正文」）。
+    {"key": "text_new_page", "label": "正文另起一页", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=摘要之后正文另起一页（APA 要求）；否=明确允许摘要后接排；—=不规定"},
     # v2.3.76：摘要正文段的段前/段后（摘要上方与下方各留多少，学校模板常写死）。
     {"key": "abstract_space_before_pt", "label": "摘要正文段前", "group": "page", "type": "float",
      "default": "", "unit": "磅", "range": (0.0, 200.0),
@@ -341,12 +357,19 @@ class TargetProfile:
     # 不单独建字段：它跟随标题、且引擎只识别「标题 + 作者块」两段，多建会臆造）。
     title_page_space_before_pt: Optional[float] = None
     title_page_space_after_pt: Optional[float] = None
+    # v2.3.93：首页结构（题名页独立成页 / 其余元素零额外段距）。三态 None = 不规定。
+    # 这两项 v2.3.91/92 只存在于内置规范（``StyleSpec``）里，三个显式通道无处表达，
+    # 客户学校模板明确写了也带不出来 —— 与「模板驱动」铁律相悖，故补进画像。
+    title_page_new_page: Optional[bool] = None
+    title_page_zero_extra_spacing: Optional[bool] = None
     # —— 摘要页特化（v2.3.67）——
     # 摘要正文的口径与正文相反：APA 摘要不首行缩进（顶格）、专业版摘要另起一页。
     # None = 不规定（不检查、不改动）。这两个字段独立于正文 first_line_indent_in，
     # 因为「正文 0.5″ 首行缩进」绝不能刷到摘要段上。
     abstract_first_line_indent_in: Optional[float] = None
     abstract_new_page: Optional[bool] = None
+    # v2.3.93：摘要之后正文是否另起一页（同上，从「只有内置规范能表达」放开）。
+    text_new_page: Optional[bool] = None
     # v2.3.76：摘要正文段的段前/段后（磅）。None = 不规定（不检查、不改动）。
     abstract_space_before_pt: Optional[float] = None
     abstract_space_after_pt: Optional[float] = None
@@ -408,7 +431,9 @@ class TargetProfile:
     TITLE_PAGE_KEYS = ("title_page_title_centered", "title_page_title_bold",
                        "title_page_author_centered",
                        # v2.3.76：标题页标题段的段前 / 段后
-                       "title_page_space_before_pt", "title_page_space_after_pt")
+                       "title_page_space_before_pt", "title_page_space_after_pt",
+                       # v2.3.93：首页结构两项（三路通道齐平，此前只有内置规范能表达）
+                       "title_page_new_page", "title_page_zero_extra_spacing")
 
     # 参考文献细项（不进 PAGE_KEYS：它们只作用于参考文献段，与正文口径分开）
     REFERENCE_KEYS = ("reference_font_family", "reference_size_pt",
@@ -422,7 +447,9 @@ class TargetProfile:
     # 摘要页特化（不进 PAGE_KEYS：它们只作用于摘要正文段，与正文口径分开）
     ABSTRACT_KEYS = ("abstract_first_line_indent_in", "abstract_new_page",
                      # v2.3.76：摘要正文段的段前 / 段后
-                     "abstract_space_before_pt", "abstract_space_after_pt")
+                     "abstract_space_before_pt", "abstract_space_after_pt",
+                     # v2.3.93：摘要之后正文另起一页
+                     "text_new_page")
 
     # 表格内段落（v2.3.77；不进 PAGE_KEYS：只作用于表格单元格段落）
     TABLE_KEYS = ("table_space_before_pt", "table_space_after_pt")
@@ -938,6 +965,16 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
             _val = getattr(doc_profile, _attr, None)
             if _val is not None:
                 tpl_tp[_key] = round(float(_val), 1)
+        # 首页结构（v2.3.93）：模板里题名页之后的分页是**看得见的事实**，
+        # 「模板要求题名页独立成页」是它最强的证据，必须能带出来。
+        _tp_np = getattr(doc_profile, "tp_next_break_before", None)
+        if _tp_np is not None:
+            tpl_tp["title_page_new_page"] = bool(_tp_np)
+        # 「其余元素之间不留额外段距」只在模板**确实是 0** 时才声明；
+        # 模板自己留着 6/12 磅 → 说明它不禁止，此时留「不规定」，绝不反向要求「必须有段距」。
+        _tp_mx = getattr(doc_profile, "tp_author_space_max_pt", None)
+        if _tp_mx is not None and float(_tp_mx) <= 0.5:
+            tpl_tp["title_page_zero_extra_spacing"] = True
         for _k in tpl_tp:
             resolution[_k] = "school"
 
@@ -954,6 +991,12 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         _val = getattr(doc_profile, _key, None)
         if _val is not None:
             tpl_abs[_key] = round(float(_val), 1)
+    # 摘要之后正文是否另起一页（v2.3.93）：只在真的定位到摘要时才成立
+    # （读不到摘要 = 无从判断正文首段在哪，绝不臆造）。
+    if getattr(doc_profile, "has_abstract", False):
+        _tx_np = getattr(doc_profile, "text_break_before", None)
+        if _tx_np is not None:
+            tpl_abs["text_new_page"] = bool(_tx_np)
     for _k in tpl_abs:
         resolution[_k] = "school"
 

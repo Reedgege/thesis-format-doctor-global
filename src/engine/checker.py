@@ -247,18 +247,39 @@ def title_page_spacing_plan(target, spec, prof) -> dict:
 
     返回::
 
-        {"unit_pt": 24.0, "tolerance_lines": 0.25,
+        {"unit_pt": 24.0, "tolerance_lines": 0.25, "baseline": True,
          "before": (66.0, 102.0) | None, "before_lines": (3.0, 4.0) | None,
          "after": (18.0, 30.0) | None,   "after_lines": 1.0 | None,
          "author_zero": True}
 
     两个键为 None 表示该规范不规定此项 —— 调用方一个字节都不要写/不要判。
+
+    🔴 v2.3.93（老板 2026-10-23「学校模板、手动输入、AI 导入是不是也有类似问题」）：
+    ①② 是 **APA 原文的措辞**（"three to four lines" / "one double-spaced blank line"），
+    不是普世规则，所以**只在规范基线**下成立。走学校模板 / 手填 / AI 时，
+    「标题距顶多少」由客户自己的 ``title_page_space_before_pt`` 表达、
+    「标题与作者之间多少」由 ``title_page_space_after_pt`` 表达，
+    这两项的 owner 是 ``title_page`` 维度（精确比对自己填的值），
+    本函数绝不再拿 APA 的 66–102 磅去判客户的 60 磅 —— 那等于用内置规范推翻客户模板。
+    ③（其余元素零额外段距）在非基线下改听 ``title_page_zero_extra_spacing``。
     """
-    plan = {"unit_pt": None, "tolerance_lines": 0.0,
+    plan = {"unit_pt": None, "tolerance_lines": 0.0, "baseline": False,
             "before": None, "before_lines": None,
             "after": None, "after_lines": None,
             "author_zero": False}
+    baseline = bool(spec_is_baseline(target))
+    plan["baseline"] = baseline
     tpf = getattr(spec, "title_page", None)
+    # ③ 其余元素零额外段距：基线听规范原话，其他通道听客户显式勾选。
+    # 🔴 必须在 `tpf is None` 早退**之前**取值 —— 学校模板 / 手填 / AI 通道下
+    # `resolve_spec()` 可能落到压根没有 title_page 的兜底规范，早退会把客户
+    # 明确勾了的「元素间不留额外段距」整项吞掉（v2.3.93 实测踩到）。
+    if baseline:
+        plan["author_zero"] = bool(getattr(tpf, "zero_extra_spacing", False)) \
+            if tpf is not None else False
+    else:
+        plan["author_zero"] = bool(
+            getattr(target, "title_page_zero_extra_spacing", False))
     if tpf is None:
         return plan
     page = getattr(target, "page", None) or {}
@@ -277,7 +298,10 @@ def title_page_spacing_plan(target, spec, prof) -> dict:
         tol = 0.0
     plan["unit_pt"] = unit
     plan["tolerance_lines"] = tol
-    plan["author_zero"] = bool(getattr(tpf, "zero_extra_spacing", False))
+
+    # ①② 只属于规范原文 → 非基线一律不判（客户自己的磅值由 title_page 维度负责）。
+    if not baseline:
+        return plan
 
     lo_lines = getattr(tpf, "title_space_before_lines", None)
     if lo_lines is not None:
@@ -1064,8 +1088,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     _has_tp = bool(getattr(prof, "title_page_detected", False))
 
     # ① 题名页独立成页
-    if getattr(_fm_spec, "title_page_new_page", None) is not None and _has_tp:
-        _fm_want = bool(_fm_spec.title_page_new_page)
+    # v2.3.93：客户显式要求（学校模板实测 / 手填 / AI 导入）优先于内置规范 ——
+    # 「模板说了算」在这里同样成立；只有当客户没说话且真选了内置规范时才听规范。
+    _tpn_exp = getattr(target, "title_page_new_page", None)
+    _tpn_want = (_tpn_exp if _tpn_exp is not None
+                 else (getattr(_fm_spec, "title_page_new_page", None)
+                       if _fm_base else None))
+    _tpn_origin = (target.resolution.get("title_page_new_page", "school")
+                   if _tpn_exp is not None else "spec")
+    if _tpn_want is not None and _has_tp:
+        _fm_want = bool(_tpn_want)
         _fm_cur = getattr(prof, "tp_next_break_before", None)
         if _fm_cur is None:
             findings.append(Finding(
@@ -1073,18 +1105,18 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 message="Title page on its own page",
                 expected="The title page occupies its own page",
                 actual="Could not read the paragraph that follows the title page",
-                source="spec",
+                source=_tpn_origin,
             ))
         elif bool(_fm_cur) != _fm_want:
             findings.append(Finding(
                 dimension="title_page_new_page",
-                severity="warn" if _fm_base else "info",
+                severity="warn",
                 message="Title page on its own page",
                 expected=("The title page occupies its own page (a page break follows it)"
                           if _fm_want else "No forced page break after the title page"),
                 actual=("A page break already follows the title page" if _fm_cur
                         else "The next section continues on the title page"),
-                source="spec",
+                source=_tpn_origin,
             ))
         else:
             findings.append(Finding(
@@ -1092,7 +1124,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 message="Title page on its own page",
                 expected="The title page occupies its own page",
                 actual="Matches",
-                source="spec",
+                source=_tpn_origin,
             ))
 
     # ② 标题垂直位置 + 标题后空行 + 其余元素零额外段距（合成一条结论，客户读一行就够）
@@ -1147,20 +1179,31 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             else:
                 _tpl_act.append("no extra paragraph spacing")
         _exp = "; ".join(_exp_bits) or "Matches"
+        # v2.3.93：非基线下走到这里的只可能是 ③（其余元素零额外段距），
+        # 而 ③ 在非基线下只有一个来源 —— 客户自己勾了「不留额外段距」。
+        # 客户明确要求 → 判 warn 并可修（与页码、摘要另起一页同一口径）。
+        _lay_origin = ("spec" if _fm_base
+                       else target.resolution.get("title_page_zero_extra_spacing",
+                                                  "school"))
         findings.append(Finding(
             dimension="title_page_layout",
-            severity=("warn" if _fm_base else "info") if _tpl_bad else "pass",
+            severity="warn" if _tpl_bad else "pass",
             message="Title page position and spacing",
             expected=_exp[:1].upper() + _exp[1:],
             actual=("Title page: " + ", ".join(_tpl_bad)) if _tpl_bad
             else (", ".join(_tpl_act) or "Matches"),
-            source="spec",
+            source=_lay_origin,
         ))
 
-    # ③ 摘要之后正文另起一页
-    if getattr(_fm_spec, "text_new_page", None) is not None \
-            and bool(getattr(prof, "has_abstract", False)):
-        _tn_want = bool(_fm_spec.text_new_page)
+    # ③ 摘要之后正文另起一页（v2.3.93：显式通道优先，同 ①）
+    _txn_exp = getattr(target, "text_new_page", None)
+    _tn_want = (_txn_exp if _txn_exp is not None
+                else (getattr(_fm_spec, "text_new_page", None)
+                      if _fm_base else None))
+    _tn_origin = (target.resolution.get("text_new_page", "school")
+                  if _txn_exp is not None else "spec")
+    if _tn_want is not None and bool(getattr(prof, "has_abstract", False)):
+        _tn_want = bool(_tn_want)
         _tn_cur = getattr(prof, "text_break_before", None)
         if _tn_cur is None:
             findings.append(Finding(
@@ -1169,18 +1212,18 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 expected="The body starts on a new page after the abstract",
                 actual=_abstract_not_located(
                     prof, " — cannot tell whether the body starts on a new page"),
-                source="spec",
+                source=_tn_origin,
             ))
         elif bool(_tn_cur) != _tn_want:
             findings.append(Finding(
                 dimension="text_new_page",
-                severity="warn" if _fm_base else "info",
+                severity="warn",
                 message="Text starts on a new page",
                 expected=("The body starts on a new page after the abstract"
                           if _tn_want else "The body may continue right after the abstract"),
                 actual=("A page break already follows the abstract" if _tn_cur
                         else "The body continues on the abstract page"),
-                source="spec",
+                source=_tn_origin,
             ))
         else:
             findings.append(Finding(
@@ -1188,13 +1231,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 message="Text starts on a new page",
                 expected="The body starts on a new page after the abstract",
                 actual="Matches",
-                source="spec",
+                source=_tn_origin,
             ))
 
     # ④ 题名页内容完整性（v2.3.92）—— **只提示，永不判红、永不代写**
     # 老板 2026-10-23 拍板「可以做提示」。APA 学生版题名页除版式外还要求课程号+课名、
     # 教师名、提交日期；这三项是**内容**，工具一个字都不会替客户写（文字 100% 锁死），
     # 只能列清楚「还差什么，请自己补」。规范没要求的绝不多加：专业版不查这三项。
+    # v2.3.93：这三项是 **APA 学生版这一份规范** 对题名页的清单，不是普世要求 ——
+    # 走学校模板 / 手填 / AI 时，客户有没有要求课程号/教师名/日期我们无从得知，
+    # 去提示「你缺课程号」等于拿 APA 的清单硬套别人的封面。故仍只在规范基线下提示。
     if _has_tp and _fm_base and getattr(_fm_spec, "title_page_kind", "") == "student":
         _miss = title_page_missing_elements(prof, _fm_spec)
         if _miss:
@@ -2253,32 +2299,42 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 修正器才动手 → 修正预览里也能看见。
     if _tp_vals:
         _fix_value["title_page"] = True
-    # v2.3.91：首页结构三件套 —— 规范基线即可修（与页码 / running head 同口径）。
+    # v2.3.91：首页结构三件套 —— 可修。v2.3.93：**三个通道齐平**，
+    # 客户显式要求（学校模板 / 手填 / AI）与选了内置规范同等对待，都能落地。
     # 全都不新增段落或文字，只写 pageBreakBefore 与段距。
-    if spec_is_baseline(target):
-        _fm_st = resolve_spec(target)
-        _fm_tpf = getattr(_fm_st, "title_page", None)
-        _fm_prof = prof
-        if getattr(_fm_prof, "title_page_detected", False):
-            # 只绑「读得出来且确实不符」的情形：读不到（None）时给的是 info
-            # 「无法判定」，此时绑一个什么都不做的 FixAction 只会让报告说「可自动修正」
-            # 却修不动 —— 宁可老老实实只提示。
-            _tpn_cur = getattr(_fm_prof, "tp_next_break_before", None)
-            _tpn_want = getattr(_fm_st, "title_page_new_page", None)
-            if _tpn_want is not None and _tpn_cur is not None \
-                    and bool(_tpn_cur) != bool(_tpn_want):
-                _fix_value["title_page_new_page"] = bool(_tpn_want)
-            if _fm_tpf is not None and (
-                    getattr(_fm_tpf, "title_space_before_lines", None) is not None
-                    or getattr(_fm_tpf, "title_space_after_lines", None) is not None
-                    or getattr(_fm_tpf, "zero_extra_spacing", False)):
-                _fix_value["title_page_layout"] = True
-        _txn_cur = getattr(_fm_prof, "text_break_before", None)
-        _txn_want = getattr(_fm_st, "text_new_page", None)
-        if bool(getattr(_fm_prof, "has_abstract", False)) \
-                and _txn_want is not None and _txn_cur is not None \
-                and bool(_txn_cur) != bool(_txn_want):
-            _fix_value["text_new_page"] = bool(_txn_want)
+    # 只绑「读得出来且确实不符」的情形：读不到（None）时给的是 info「无法判定」，
+    # 此时绑一个什么都不做的 FixAction 只会让报告说「可自动修正」却修不动。
+    _fm_st = resolve_spec(target)
+    _fm_tpf = getattr(_fm_st, "title_page", None)
+    _fm_prof = prof
+    if getattr(_fm_prof, "title_page_detected", False):
+        # ① 题名页独立成页：显式值优先，其次规范基线
+        _tpn_bind = getattr(target, "title_page_new_page", None)
+        if _tpn_bind is None and spec_is_baseline(target):
+            _tpn_bind = getattr(_fm_st, "title_page_new_page", None)
+        _tpn_cur = getattr(_fm_prof, "tp_next_break_before", None)
+        if _tpn_bind is not None and _tpn_cur is not None \
+                and bool(_tpn_cur) != bool(_tpn_bind):
+            _fix_value["title_page_new_page"] = bool(_tpn_bind)
+        # ② 题名页版式：规范基线听规范原话；非基线只在客户勾了
+        # 「元素间不留额外段距」时才动手（①② 的磅值由 title_page 维度各自负责）
+        _lay_bind = bool(
+            spec_is_baseline(target) and _fm_tpf is not None
+            and (getattr(_fm_tpf, "title_space_before_lines", None) is not None
+                 or getattr(_fm_tpf, "title_space_after_lines", None) is not None
+                 or getattr(_fm_tpf, "zero_extra_spacing", False)))
+        if not _lay_bind and getattr(target, "title_page_zero_extra_spacing", False):
+            _lay_bind = True
+        if _lay_bind:
+            _fix_value["title_page_layout"] = True
+    # ③ 正文另起一页
+    _txn_bind = getattr(target, "text_new_page", None)
+    if _txn_bind is None and spec_is_baseline(target):
+        _txn_bind = getattr(_fm_st, "text_new_page", None)
+    _txn_cur = getattr(_fm_prof, "text_break_before", None)
+    if _txn_bind is not None and bool(getattr(_fm_prof, "has_abstract", False)) \
+            and _txn_cur is not None and bool(_txn_cur) != bool(_txn_bind):
+        _fix_value["text_new_page"] = bool(_txn_bind)
     if bq:
         _fix_value["block_quote"] = 0.5
     # 页码位置：**只有客户/学校/AI 显式要求时才动手**（来源 spec 时只提示）。

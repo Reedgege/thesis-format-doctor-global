@@ -1016,6 +1016,9 @@ Q_LABELS_EN = {
     "title_page_author_centered": "Title page: author lines centered",
     "title_page_space_before_pt": "Title page: space before title",
     "title_page_space_after_pt": "Title page: space after title",
+    "title_page_new_page": "Title page on its own page",
+    "title_page_zero_extra_spacing": "Title page: no extra paragraph spacing",
+    "text_new_page": "Body starts on a new page",
     "heading_levels": "Heading levels",
     "reference_style": "Reference style",
     "reference_hanging_indent_in": "Reference hanging indent",
@@ -1084,6 +1087,13 @@ Q_HELP_EN = {
                                   "leave blank to skip",
     "title_page_space_after_pt": "Space below the title on the title page, in points; "
                                  "leave blank to skip",
+    "title_page_new_page": "Yes = the title page occupies its own page (APA student papers "
+                           "require this); No = it may run on; — = unspecified",
+    "title_page_zero_extra_spacing": "Yes = no extra paragraph spacing between the author, "
+                                     "affiliation, course, instructor and date lines (APA "
+                                     "student papers require this); — = unspecified",
+    "text_new_page": "Yes = the body starts on a new page after the abstract (APA requires "
+                     "this); No = it may continue right after the abstract; — = unspecified",
     "heading_levels": "0 = not enforced; APA usually has 5 levels, others follow the school",
     "reference_style": ("'My school's own' = apply only the entry rules you set here; "
                         "picking APA/MLA/IEEE checks the reference list only and never "

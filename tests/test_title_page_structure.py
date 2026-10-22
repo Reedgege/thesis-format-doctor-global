@@ -8,7 +8,9 @@
 
 三条共同契约（本文件逐条钉住）：
   * **纯版式** —— 只写 ``w:pageBreakBefore`` 与 ``w:spacing``，段落数与文字逐字不变；
-  * **规范基线才动手** —— 学校模板 / 手填 / AI 导入一律只提示（模板说了算）；
+  * **谁说话就听谁的**（v2.3.93）—— 客户显式要求（学校模板 / 手填 / AI）与
+    「在规范下拉里真选了内置规范」同等可判可修；**客户没提的，一个字都不说**，
+    绝不借兜底规范去念客户的封面；
   * **修完必须收敛** —— 复检不许再报同一条，二遍修正不许再改一个字节。
 """
 
@@ -84,12 +86,6 @@ def _make_paper(path, *, title_break=False, text_break=False, extra_spacing=True
             _p = doc.add_paragraph(_line)
             _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # APA 学生版题名页的可选补充行（课程 / 教师 / 日期）：给不给由调用方决定
-    for _line in (course, instructor, due_date):
-        if _line:
-            _p = doc.add_paragraph(_line)
-            _p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
     h = doc.add_paragraph("Abstract")
     h.style = doc.styles["Heading 1"]
     if title_break:
@@ -147,13 +143,64 @@ def test_title_page_new_page_warn_and_fixable_on_baseline(tmp_path):
     assert _sev(findings2, "title_page_new_page") == "pass"
 
 
-def test_title_page_new_page_stays_info_when_not_baseline(tmp_path):
-    """学校模板模式（非规范基线）即便引用了 APA，也只提示、不绑定修正。"""
+def test_title_page_new_page_silent_when_channel_says_nothing(tmp_path):
+    """学校模板 / 手填 / AI 都没提这件事 → **一个字都不说**（v2.3.93 收紧）。
+
+    v2.3.92 及以前这里会借 `resolve_spec()` 兜底取到的 APA 规范出一条 info，
+    等于「客户只选了参考文献按 APA，工具却按 APA 去念他的封面」——
+    与「模板说了算」相悖。客户没要求的事，工具不下结论。
+    """
     p = _make_paper(tmp_path / "a.docx", title_break=False)
     t = target_from_dict({"reference_style": "APA"}, "school")
     prof, findings = checker.run_check(p, t)
-    assert _sev(findings, "title_page_new_page") == "info"
-    assert all(getattr(f, "fix", None) is None for f in _dim(findings, "title_page_new_page"))
+    assert _dim(findings, "title_page_new_page") == []
+    # 更不能在客户没要求时偷偷插分页
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert "title_page_new_page" not in summary["applied"]
+
+
+def test_title_page_new_page_explicit_from_school_is_warn_and_fixed(tmp_path):
+    """学校模板明确要求「题名页独立成页」→ 判 warn、可修、修完收敛。
+
+    v2.3.93 之前三个显式通道根本表达不了这一项（`TargetProfile` 连字段都没有，
+    传进来会被 `_coerce` 静默丢弃），学校模板写了也带不出来。
+    """
+    p = _make_paper(tmp_path / "a.docx", title_break=False)
+    t = target_from_dict({"title_page_new_page": True}, "school")
+    assert t.title_page_new_page is True
+    prof, findings = checker.run_check(p, t)
+    assert prof.tp_next_break_before is False
+    assert _sev(findings, "title_page_new_page") == "warn"
+    _f = _dim(findings, "title_page_new_page")[0]
+    assert getattr(_f, "fix", None) is not None
+    assert _f.source == "school"          # 出处必须写客户模板，不能冒充规范
+
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert summary["applied"]["title_page_new_page"]["changed"] is True
+    prof2, findings2 = checker.run_check(str(out), t)
+    assert prof2.tp_next_break_before is True
+    assert _sev(findings2, "title_page_new_page") == "pass"
+
+
+def test_title_page_new_page_explicit_false_removes_the_break(tmp_path):
+    """客户明确说「允许接排」→ 反向也要能修（去掉分页），预览方向不能写反。"""
+    p = _make_paper(tmp_path / "a.docx", title_break=True)
+    t = target_from_dict({"title_page_new_page": False}, "ai_import")
+    prof, findings = checker.run_check(p, t)
+    assert prof.tp_next_break_before is True
+    assert _sev(findings, "title_page_new_page") == "warn"
+
+    prev = preview_fix(str(p), t, lang="en")
+    assert any("own page → same page" in x for x in prev)
+
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert summary["applied"]["title_page_new_page"]["changed"] is True
+    prof2, findings2 = checker.run_check(str(out), t)
+    assert prof2.tp_next_break_before is False
+    assert _sev(findings2, "title_page_new_page") == "pass"
 
 
 def test_title_page_already_on_own_page_is_pass(tmp_path):
@@ -274,12 +321,53 @@ def test_blank_paragraph_between_title_and_author_is_accepted(tmp_path):
     assert "after_pt" not in (summary["applied"].get("title_page_layout") or {})
 
 
-def test_title_page_layout_stays_info_when_not_baseline(tmp_path):
+def test_title_page_layout_silent_when_channel_says_nothing(tmp_path):
+    """客户没要求题名页版式 → 不下结论（v2.3.93：绝不拿 APA 的 72pt 去念客户的 0pt）。
+
+    反向证据：v2.3.92 这里会借兜底规范报「标题应距顶 3–4 行」，
+    而客户学校模板自己写的是 0 磅 —— 等于用内置规范推翻客户模板。
+    """
     p = _make_paper(tmp_path / "a.docx", title_space_before_pt=0.0)
     t = target_from_dict({"reference_style": "APA"}, "school")
     prof, findings = checker.run_check(p, t)
-    assert _sev(findings, "title_page_layout") == "info"
-    assert all(getattr(f, "fix", None) is None for f in _dim(findings, "title_page_layout"))
+    assert _dim(findings, "title_page_layout") == []
+
+
+def test_title_page_layout_explicit_zero_extra_spacing_is_warn_and_fixed(tmp_path):
+    """学校模板明确要求「元素间不留额外段距」→ warn + 可修 + 收敛。"""
+    p = _make_paper(tmp_path / "a.docx", extra_spacing=True)
+    t = target_from_dict({"title_page_zero_extra_spacing": True}, "school")
+    assert t.title_page_zero_extra_spacing is True
+    prof, findings = checker.run_check(p, t)
+    assert (prof.tp_author_space_max_pt or 0) > 0.5
+    assert _sev(findings, "title_page_layout") == "warn"
+    _f = _dim(findings, "title_page_layout")[0]
+    assert getattr(_f, "fix", None) is not None
+    assert _f.source == "school"
+
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert summary["applied"]["title_page_layout"]["changed"] is True
+    prof2, findings2 = checker.run_check(str(out), t)
+    assert (prof2.tp_author_space_max_pt or 0) <= 0.5
+    assert _sev(findings2, "title_page_layout") == "pass"
+
+
+def test_explicit_title_space_pt_is_not_judged_against_the_spec_range(tmp_path):
+    """客户模板写「标题距顶 60 磅」→ 就按 60 判，不许拿 APA 的 66–102 磅区间来报错。
+
+    这是 v2.3.93 修的**真回归**：60 磅落在 APA 区间外，v2.3.92 会在
+    `title_page_layout` 里报「expected 3-4 lines = 72-96 pt」，
+    而同一份文档的 `title_page` 维度刚判它「符合 60 磅」—— 自相矛盾。
+    """
+    p = _make_paper(tmp_path / "a.docx", title_space_before_pt=60.0)
+    t = target_from_dict({"title_page_space_before_pt": 60.0}, "school")
+    prof, findings = checker.run_check(p, t)
+    assert abs(float(prof.tp_title_space_before_pt) - 60.0) < 1.0
+    # 客户自己的 60 磅 → 通过
+    assert _sev(findings, "title_page") == "pass"
+    # 规范区间不许插嘴
+    assert _dim(findings, "title_page_layout") == []
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +389,35 @@ def test_text_new_page_fixable_on_baseline(tmp_path):
     assert _sev(findings2, "text_new_page") == "pass"
 
 
-def test_text_new_page_stays_info_when_not_baseline(tmp_path):
+def test_text_new_page_silent_when_channel_says_nothing(tmp_path):
+    """客户没要求「摘要后正文另起一页」→ 不下结论、更不偷偷插分页。"""
     p = _make_paper(tmp_path / "a.docx", text_break=False)
     t = target_from_dict({"reference_style": "APA"}, "school")
     prof, findings = checker.run_check(p, t)
-    assert _sev(findings, "text_new_page") == "info"
-    assert all(getattr(f, "fix", None) is None for f in _dim(findings, "text_new_page"))
+    assert _dim(findings, "text_new_page") == []
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert "text_new_page" not in summary["applied"]
+
+
+def test_text_new_page_explicit_is_warn_and_fixed(tmp_path):
+    """客户明确要求 → warn + 可修 + 收敛（此前三个显式通道无处表达这一项）。"""
+    p = _make_paper(tmp_path / "a.docx", text_break=False)
+    t = target_from_dict({"text_new_page": True}, "user")
+    assert t.text_new_page is True
+    prof, findings = checker.run_check(p, t)
+    assert prof.text_break_before is False
+    assert _sev(findings, "text_new_page") == "warn"
+    _f = _dim(findings, "text_new_page")[0]
+    assert getattr(_f, "fix", None) is not None
+    assert _f.source == "user"
+
+    out = tmp_path / "out.docx"
+    summary = fix_docx(p, str(out), t)
+    assert summary["applied"]["text_new_page"]["changed"] is True
+    prof2, findings2 = checker.run_check(str(out), t)
+    assert prof2.text_break_before is True
+    assert _sev(findings2, "text_new_page") == "pass"
 
 
 def test_text_new_page_absent_when_abstract_not_located(tmp_path):
@@ -521,3 +632,50 @@ def test_course_code_inside_paper_title_does_not_suppress_prompt(tmp_path):
     got = _dim(findings, "title_page_content")
     assert got and got[0].severity == "info"
     assert "course number and name" in got[0].actual
+
+
+# ---------------------------------------------------------------------------
+# ④ 三个通道齐平（v2.3.93）—— 学校模板必须能把它自己的要求带出来
+# ---------------------------------------------------------------------------
+# 老板 2026-10-23：「我们的学校模板，还有手动输入以及 AI 导入，是不是也存在一些
+# 类似的问题？」审计结论：首页结构三项**只有内置规范能表达**，
+# `TargetProfile` 连字段都没有 —— 学校模板写了也带不出来，手填/AI 传进来被
+# `_coerce` 静默丢弃（连个报错都没有）。以下用例钉住三路齐平。
+
+def test_school_template_carries_the_three_structure_fields(tmp_path):
+    """模板自己「题名页独立成页 + 元素间零段距 + 正文另起一页」→ 必须读得出来。"""
+    from src.engine.questionnaire import target_from_template_docx
+    tpl = _make_paper(tmp_path / "tpl.docx", title_break=True, text_break=True,
+                      extra_spacing=False, title_space_before_pt=72.0)
+    t = target_from_template_docx(read_docx(tpl), reference_style="APA")
+    assert t.source == "template"
+    assert t.title_page_new_page is True
+    assert t.text_new_page is True
+    assert t.title_page_zero_extra_spacing is True
+    for _k in ("title_page_new_page", "text_new_page",
+               "title_page_zero_extra_spacing"):
+        assert t.resolution.get(_k) == "school"
+
+
+def test_school_template_does_not_invent_zero_spacing_when_it_leaves_gaps(tmp_path):
+    """模板自己留着 12pt 段距 → 说明它不禁止，此时**不许**反过来要求「必须有段距」。"""
+    from src.engine.questionnaire import target_from_template_docx
+    tpl = _make_paper(tmp_path / "tpl.docx", extra_spacing=True)
+    t = target_from_template_docx(read_docx(tpl), reference_style="APA")
+    assert t.title_page_zero_extra_spacing is None
+
+
+def test_ai_and_user_channels_accept_the_three_fields(tmp_path):
+    """AI 导入 / 手填传这三个键 → 真的收进画像（不再静默丢弃），并一路走到结论。"""
+    p = _make_paper(tmp_path / "a.docx", title_break=False, text_break=False)
+    for src in ("user", "ai_import"):
+        t = target_from_dict({"title_page_new_page": True, "text_new_page": True,
+                              "title_page_zero_extra_spacing": True}, src)
+        assert t.title_page_new_page is True
+        assert t.text_new_page is True
+        assert t.title_page_zero_extra_spacing is True
+        prof, findings = checker.run_check(p, t)
+        assert _sev(findings, "title_page_new_page") == "warn"
+        assert _sev(findings, "text_new_page") == "warn"
+        # 来源标记必须是客户自己，不能冒充 spec
+        assert _dim(findings, "title_page_new_page")[0].source == src

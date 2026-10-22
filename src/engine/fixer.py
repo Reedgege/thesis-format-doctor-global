@@ -2567,9 +2567,11 @@ def _apply_title_page_layout(doc, target, prof, spec) -> dict:
         if info["zeroed"]:
             bits.append("extra paragraph spacing between the remaining title page "
                         "elements set to 0")
+        # 基线：说清是哪份规范；非基线：客户自己的要求（绝不假称是某份规范要的）
+        _src = ("per %s" % _spec_label(spec)) if plan.get("baseline") \
+            else "per the requirement you set"
         add_comment(doc, title_p,
-                    "Title page layout per %s: %s."
-                    % (_spec_label(spec), "; ".join(bits)))
+                    "Title page layout %s: %s." % (_src, "; ".join(bits)))
     return info
 
 
@@ -3141,8 +3143,12 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # 「是题名页单独占了一页」；反过来先跑摘要那边，客户读到的就只剩「摘要另起一页」，
     # 而真正被解决的问题（题名页跟摘要挤在同一页）在报告里反而消失了。
     if "title_page_new_page" in fix_dims:
-        _tpn_info = _apply_title_page_new_page(
-            doc, bool(getattr(spec, "title_page_new_page", True)))
+        # v2.3.93：客户显式值（学校模板 / 手填 / AI）优先于内置规范 —— 与 checker 同序，
+        # 否则「检查报的是客户模板要的 False，修却按 APA 的 True 插了个分页」。
+        _tpn_want = getattr(target, "title_page_new_page", None)
+        if _tpn_want is None:
+            _tpn_want = bool(getattr(spec, "title_page_new_page", True))
+        _tpn_info = _apply_title_page_new_page(doc, bool(_tpn_want))
         if _tpn_info.get("changed"):
             applied["title_page_new_page"] = _tpn_info
     if "title_page_layout" in fix_dims:
@@ -3150,8 +3156,10 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if _tpl_info.get("changed"):
             applied["title_page_layout"] = _tpl_info
     if "text_new_page" in fix_dims:
-        _txn_info = _apply_text_new_page(
-            doc, bool(getattr(spec, "text_new_page", True)))
+        _txn_want = getattr(target, "text_new_page", None)
+        if _txn_want is None:
+            _txn_want = bool(getattr(spec, "text_new_page", True))
+        _txn_info = _apply_text_new_page(doc, bool(_txn_want))
         if _txn_info.get("changed"):
             applied["text_new_page"] = _txn_info
 
@@ -3863,13 +3871,19 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
     # 题名页独立成页 / 标题垂直位置 + 零额外段距 / 正文另起一页。
     # 客户在点「修正」之前就该知道「会多出两个分页、标题下移 N 行、原文段距被清 0」，
     # 而不是修完发现页数变了才来问。
+    # v2.3.93：方向按**生效值**算 —— 客户勾了「不另起」时预览要说「去掉分页」，
+    # 不能一律假设「加」。硬编码成加，修完方向相反，等于预览说谎。
     if _gate("title_page_new_page"):
         _tpn_cur = getattr(prof, "tp_next_break_before", None)
-        if _tpn_cur is not None and not bool(_tpn_cur):
+        _tpn_eff = getattr(target, "title_page_new_page", None)
+        if _tpn_eff is None:
+            _tpn_eff = bool(getattr(resolve_spec(target), "title_page_new_page", True))
+        if _tpn_cur is not None and bool(_tpn_cur) != bool(_tpn_eff):
             lines.append("%s: %s" % (
                 _dim_label(L, "title_page_new_page"),
-                "与下节接排 → 独立成页" if L == "zh"
-                else "same page → own page"))
+                ("与下节接排 → 独立成页" if _tpn_eff else "独立成页 → 与下节接排")
+                if L == "zh" else
+                ("same page → own page" if _tpn_eff else "own page → same page")))
     if _gate("title_page_layout"):
         _tpl_bits = []
         # 数值与区间来自 title_page_spacing_plan()（checker 同一份计算），
@@ -3911,11 +3925,16 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
                 "；".join(_tpl_bits) if L == "zh" else "; ".join(_tpl_bits)))
     if _gate("text_new_page"):
         _txn_cur = getattr(prof, "text_break_before", None)
-        if _txn_cur is not None and not bool(_txn_cur):
+        _txn_eff = getattr(target, "text_new_page", None)
+        if _txn_eff is None:
+            _txn_eff = bool(getattr(resolve_spec(target), "text_new_page", True))
+        if _txn_cur is not None and bool(_txn_cur) != bool(_txn_eff):
             lines.append("%s: %s" % (
                 _dim_label(L, "text_new_page"),
-                "摘要后接排 → 另起一页" if L == "zh"
-                else "continues after abstract → new page"))
+                ("摘要后接排 → 另起一页" if _txn_eff else "另起一页 → 摘要后接排")
+                if L == "zh" else
+                ("continues after abstract → new page" if _txn_eff
+                 else "new page → continues after abstract")))
 
     if _gate("block_quote"):
         # 与 checker 的判定同一口径（含引号 + 长 + 左缩进不是 0.5″）
