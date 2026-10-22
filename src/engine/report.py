@@ -85,6 +85,11 @@ _ALIGN_LABEL = ALIGN_LABEL  # single source of truth lives in checker
 # 能力边界 / 已知限制（跨风格通用；报告固定区块，提示用户哪些做不了）。
 # 海外版全英文铁律：本区块面向客户，必须英文，不得出现中文。
 KNOWN_LIMITATIONS = [
+    "Paragraph structure: if the paper uses Shift+Enter for line breaks inside a "
+    "paragraph (very common in student drafts), each break is turned into a real "
+    "paragraph so headings and body text can be formatted separately. Not a single "
+    "character of your text is added, removed or reordered — but the paragraph count "
+    "will go up. Page breaks and column breaks are never touched.",
     "Heading levels 2–5 are only auto-detected when Word Heading styles are applied. "
     "If you formatted sub-headings with manual bold/larger font (no Heading style), "
     "the tool leaves them as-is and does not re-level them.",

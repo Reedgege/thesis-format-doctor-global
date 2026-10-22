@@ -156,6 +156,10 @@ class DocumentProfile:
     # 避免客户误以为「报告全绿 = 脚注也看过了」。计数跳过 id<=0 的分隔线条目。
     footnote_count: int = 0
     endnote_count: int = 0
+    # —— 软换行（Shift+Enter）拆段计数（v2.3.87）——
+    # 读数第一步就把正文级段落里的软换行拆成真实段落（见 split_body_soft_breaks），
+    # 这里记录「拆出了几个新段落」，供预览与批注告诉客户「结构动了哪、文字没动」。
+    soft_break_splits: int = 0
     heading_styles: list = field(default_factory=list) # 用到的标题样式名
     heading_levels_used: int = 0
     reference_text: str = ""                           # 参考文献段原始文本
@@ -720,6 +724,49 @@ def is_heading(para) -> bool:
     在一键修正中都不允许改动。
     """
     return _heading_level(para) is not None or is_pseudo_heading(para)
+
+
+# ——「章节标题行」判定（v2.3.87）——
+# 真实学生论文的章节标题常常是一行纯文本：无标题样式、不加粗、与正文同字号，
+# 只靠编号表明身份（"1. Introduction" / "2.1 Sample" / "一、引言"）。
+# `is_pseudo_heading` 认不出它们（它要求整段加粗且字号更大），于是这些行会被当成
+# 正文套上 0.5″ 首行缩进 —— 客户看到的就是「章节标题缩进了，正文反倒没缩进」。
+# 本判定只回答「这一行是不是标题形状」，刻意不判断字号/加粗：
+# 条件要求「编号开头 + 短 + 不以句读结尾」，普通正文段落不会同时满足。
+_SECTION_HEADING_RE = re.compile(
+    r"^\s*(?:"
+    r"\d+(?:\.\d+)*\.?\s+\S"                    # 1. Introduction / 2.1 Sample / 3.2.1 Detail
+    r"|[IVXLC]+\.\s+\S"                         # I. / IV.
+    r"|[A-Z]\.\s+\S"                            # A. / B.
+    r"|[一二三四五六七八九十]+[、.．]\s*\S"        # 一、引言 / 二.方法
+    r"|(?i:chapter|section|part)\s+(?:\d+|[IVXLC]+)\b"   # Chapter 3 / Part II
+    r")"
+)
+_SENTENCE_END = (".", "。", "?", "？", "!", "！", ";", "；", ",", "，", "：")
+
+
+def is_section_heading_line(para) -> bool:
+    """段落是否是「只有编号、没有加粗/大字号」的章节标题行（v2.3.87）。
+
+    用途很窄：只给**首行缩进**这一个维度做豁免 —— 标题行不该像正文那样缩进半英寸。
+    行距等「整篇属性」照常施加（APA §2.21 要求整篇双倍行距，标题也在内），
+    所以本函数不参与行距判定。
+
+    判定条件（三条全中才算，宁可漏判也不误伤正文）：
+      ① 编号开头（见 ``_SECTION_HEADING_RE``）；
+      ② 短（≤ ``_PSEUDO_HEADING_MAX_LEN`` 字）；
+      ③ 不以任何句读结尾（分号/逗号/冒号/问号/感叹号/句号都不行）。
+    普通正文段落几乎不可能三条全中：它会长、而且以句号结尾。
+    """
+    try:
+        text = (para.text or "").strip()
+    except Exception:
+        return False
+    if not text or len(text) > _PSEUDO_HEADING_MAX_LEN:
+        return False
+    if text.endswith(_SENTENCE_END):
+        return False
+    return bool(_SECTION_HEADING_RE.match(text))
 
 
 def heading_level(para) -> Optional[int]:
@@ -2106,6 +2153,14 @@ def _section_columns(sec) -> int:
 def _read_docx_impl(doc) -> DocumentProfile:
     prof = DocumentProfile()
 
+    # v2.3.87：一切采样之前，先把软换行（Shift+Enter）拆成真实段落。
+    # 位置必须**最早** —— 否则标题/正文/行距/参考文献的采样全都还在「粘块」视角上：
+    # 粘在一起的章节标题不会被认成标题（检查器漏检），整块还会被当正文吃 0.5″ 缩进。
+    try:
+        prof.soft_break_splits = split_body_soft_breaks(doc)
+    except Exception:
+        prof.soft_break_splits = 0
+
     # —— 页边距：遍历所有分节取众数；不一致则标记 ——
     per_side: dict = {s: [] for s in ("top", "bottom", "left", "right")}
     col_samples: list = []
@@ -2161,10 +2216,8 @@ def _read_docx_impl(doc) -> DocumentProfile:
     except Exception:
         pass
 
-    # v2.3.84：参考文献区的软换行先拆成**真实段落**再统计条目数。
-    # 真实学生论文常把整份文献表用 Shift+Enter 粘成一段，不拆就只认成 1 条，
-    # 悬挂缩进也没处落（实测样本：应有 12 条，旧版只认 1 条）。
-    # 只动参考文献区，正文段落一律不碰；文字一个字符不变（只增加段落标记）。
+    # 参考文献区的软换行拆分已提到 `_read_docx_impl` 第一行（v2.3.87 起全文档统一拆），
+    # 这里保留一次幂等调用兜底（无软换行时直接返回 0），防止将来有人单独调用本函数。
     split_reference_soft_breaks(doc)
     paras = list(doc.paragraphs)
 
@@ -2711,6 +2764,37 @@ def split_reference_soft_breaks(doc) -> int:
     targets = [paras[i] for i in ref_indices if i < len(paras)]
     n = 0
     for para in targets:
+        try:
+            n += split_paragraph_on_soft_breaks(para)
+        except Exception:
+            continue
+    return n
+
+
+def split_body_soft_breaks(doc) -> int:
+    """把**全文档**正文级段落里的软换行拆成真实段落。返回拆出的段落数。
+
+    v2.3.87。v2.3.84 只拆了参考文献区（当时保守），正文里「章节标题 + 正文」被
+    Shift+Enter 粘成一整块的问题被漏了下来。真实样本实测：87 个段落里 30 个含软换行，
+    其中 30 个第一行就是章节标题。后果有两层：
+
+      ① 粘块整体被当成一个正文段落 → 标题行跟着吃到 0.5″ 首行缩进
+         （客户一眼看出「章节标题缩进了、正文没缩进」）；
+      ② 检查器压根看不见这些标题（它们不是独立段落），标题维度整块漏检。
+
+    所以拆必须做在**读数最前面**（``_read_docx_impl`` 第一行），让检查器和修正器
+    看到同一份段落结构 —— 否则两边 paragraph 下标会错位。
+
+    安全性：只拆 ``<w:br/>``（无 type / ``textWrapping``）与 ``<w:cr>``；
+    ``<w:br w:type="page|column">`` 是分页/分栏符，属于排版语义，绝不当段边界
+    （拆了会把客户的分页符吃掉）。文字一个字符都不动，只增加段落标记。
+    """
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return 0
+    n = 0
+    for para in paras:
         try:
             n += split_paragraph_on_soft_breaks(para)
         except Exception:

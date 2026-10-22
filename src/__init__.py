@@ -1,3 +1,3 @@
 """PaperFormat Pro — offline, privacy-first desktop edition."""
 
-__version__ = "2.3.86"
+__version__ = "2.3.87"

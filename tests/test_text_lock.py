@@ -111,8 +111,13 @@ def test_each_entry_gets_hanging_indent_and_heading_does_not(tmp_path):
         assert e.paragraph_format.first_line_indent.inches == pytest.approx(-0.5, abs=0.01)
 
 
-def test_body_paragraphs_are_never_split(tmp_path):
-    """正文里的软换行不动（保守：只拆参考文献区）。"""
+def test_body_paragraphs_with_soft_breaks_are_split(tmp_path):
+    """v2.3.87 起正文软换行也拆（老板 2026-10-22 拍板「先拆粘连段」）。
+
+    旧契约（v2.3.84）：正文一律不动，只拆参考文献区。实测证明不够 ——
+    正文里「章节标题 + 正文」被 Shift+Enter 粘成一块时，标题行会跟着吃正文的
+    0.5″ 首行缩进，客户一眼看出错位。现在两者都拆，但**文字一个字符不许变**。
+    """
     from docx import Document
 
     d = Document()
@@ -127,9 +132,15 @@ def test_body_paragraphs_are_never_split(tmp_path):
     d.save(str(src))
 
     _fix(src, tmp_path / "out.docx", "APA-Student")
-    texts = [p.text for p in Document(str(tmp_path / "out.docx")).paragraphs]
-    assert any("First soft line.\nSecond soft line." in t for t in texts), \
-        "正文段被误拆了（只该拆参考文献区）"
+    paras = Document(str(tmp_path / "out.docx")).paragraphs
+    texts = [p.text for p in paras]
+    # 拆成了两个真段落
+    assert "First soft line." in texts
+    assert "Second soft line." in texts
+    # 但没有任何一段还带着软换行（软换行已被拆掉，不是复制一遍）
+    assert not any("\n" in t for t in texts if "soft line" in t), texts
+    # 🔴 铁律：文字逐行一致
+    assert _text_lines(src) == _text_lines(tmp_path / "out.docx")
 
 
 # ------------------------------------------------------------ 文字锁死

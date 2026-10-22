@@ -50,6 +50,10 @@ from .docx_reader import (
     _para_text_excl_fields, is_caption_paragraph,
     # v2.3.77：表格内段落 / 目录识别（与 checker 共用同一实现，单一真相源）
     iter_table_paragraphs, detect_toc, is_toc_heading,
+    # v2.3.87：正文粘连段拆分（与 read_docx 同一实现，保证两边的 paragraph 下标一致）
+    split_body_soft_breaks,
+    # v2.3.87：编号开头的纯文本标题行判定（不吃正文首行缩进）
+    is_section_heading_line,
 )
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec, generic_heading_formats,
@@ -2234,6 +2238,12 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
     name = _spec_label(spec)
     lines: list = []
 
+    # —— 结构：粘连段落拆分（v2.3.87，必须放在最前，它是其它各项的前提）——
+    if applied.get("paragraphs_split"):
+        lines.append(
+            f"Paragraph structure: {applied['paragraphs_split']} glued paragraph(s) split into "
+            f"separate paragraphs (Shift+Enter line breaks became real paragraph ends; "
+            f"no character of your text was changed)")
     # —— 页面 / 正文级（统一改动）——
     if applied.get("margins") is not None:
         after = f"{float(applied['margins']):.2f}\" on all four sides"
@@ -2378,6 +2388,16 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
 
     strip_our_comments(doc)  # 清掉本工具上一遍批注（幂等，防 Pit 4 旧气泡带下）
 
+    # v2.3.87：与 read_docx **同一步、同一实现**先把软换行拆成真实段落。
+    # 必须发生在下面 prof = read_docx(...) 与任何 paragraph 下标计算之前 ——
+    # 修正器与检查器必须看到同一份段落结构，否则下标错位（v2.3.86 的 doc_title_index
+    # 就吃过这种跨文档下标错位的风险）。
+    _split_count = 0
+    try:
+        _split_count = split_body_soft_breaks(doc)
+    except Exception:
+        _split_count = 0
+
     # 修前画像：用作批注的 before 值（profiling 失败不阻断修正，仅退化为无 before 值）
     try:
         prof = read_docx(input_path)
@@ -2514,10 +2534,25 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             indent_exempt_ps.add(_toc_head._p)
     except Exception:
         pass
+    # v2.3.87：编号开头的短标题行（"1. Introduction" / "一、引言"）不吃正文首行缩进。
+    # 这些行在真实学生论文里往往没有任何标题样式、不加粗、与正文同字号，
+    # is_pseudo_heading 认不出来 → 会被当正文缩进半英寸（客户一眼看出「标题缩进了」）。
+    # 只豁免**首行缩进**：行距/字体等整篇属性照常施加（APA §2.21 整篇双倍行距含标题）。
+    for _p in list(body_only):
+        try:
+            if is_section_heading_line(_p):
+                indent_exempt_ps.add(_p._p)
+        except Exception:
+            continue
     indent_targets = [p for p in body_only if p._p not in indent_exempt_ps]
 
     summary: dict = {}
     applied: dict = {}
+    # v2.3.87：粘连段拆分是**结构性**改动，不受 findings 门控（文档里有 Shift+Enter
+    # 粘出来的假段落就必须拆，否则标题/正文档次根本无从落地）。这里只登记结果，
+    # 供预览与批注告诉客户「拆了几处、文字一个字符没动」。
+    if _split_count:
+        applied["paragraphs_split"] = _split_count
 
     page = target.page or {}
     if page:
@@ -2885,6 +2920,11 @@ _TL_PREVIEW_EXP = {
     "en": "three lines only (top / under header / bottom)",
     "zh": "只留顶线/表头线/底线",
 }
+# 粘连段落拆分预览文案（v2.3.87）：{n} 是拆出的新段落数（不是行数）。
+_SPLIT_PREVIEW = {
+    "en": "Glued paragraphs split: {n} (Shift+Enter line breaks become real paragraphs)",
+    "zh": "拆分粘连段落：{n} 处（Shift+Enter 软换行拆成真正的段落）",
+}
 _NOTES_TMPL = {
     "en": "Note: text inside tables ({n} paragraph(s)) is not modified; only body "
           "paragraph formatting is fixed this run.",
@@ -3005,6 +3045,13 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None) -> l
     """
     L = _lang_of(lang)
     lines: list = []
+    # —— 粘连段落拆分（结构性，v2.3.87）——
+    # 不属于任何 findings 维度，也不受门控：文档里有 Shift+Enter 粘出来的假段落，
+    # fix_docx 就一定会拆。预览必须如实先说这一步 —— 否则客户看到「标题/正文各自
+    # 变了样」却不知道为什么段落数变多了。
+    _n_split = getattr(prof, "soft_break_splits", 0) or 0
+    if _n_split:
+        lines.append(_SPLIT_PREVIEW[L].format(n=_n_split))
     page = target.page or {}
     # fix_dims：checker 绑定了 FixAction 的维度集合；None 表示不门控（兼容旧调用）。
     fix_dims = (
