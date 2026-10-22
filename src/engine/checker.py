@@ -229,6 +229,20 @@ def _page_number_severity(origin: str, target) -> str:
     return sev
 
 
+def _abstract_not_located(prof, suffix: str = "") -> str:
+    """「摘要段定位不到」的客户可读解释（v2.3.91）。
+
+    旧文案一律写 "No Abstract section detected"，但真实学生论文里最常见的情形是
+    **摘要标题没套标题样式**（实测 student_paper_unformatted_20pages.docx：全文 0 个
+    样式标题，连 "Abstract" 都是 Normal）——文档里明明有摘要，报告却说「没检测到」，
+    客户只会以为工具坏了。这里按「有没有摘要字样」分两种说法，把原因说清楚。
+    """
+    if getattr(prof, "has_abstract", False):
+        return ("The Abstract heading carries no heading style, so the abstract "
+                "section could not be located" + suffix)
+    return "No Abstract section detected" + suffix
+
+
 # ---------------------------------------------------------------------------
 # 参考文献检查：数据驱动（依据 ReferenceRule.checks 分发）
 # 每个子检查返回 (severity, message)。
@@ -933,6 +947,128 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 source=_tp_origin,
             ))
 
+    # —— 首页结构（v2.3.91）——
+    # 题名页独立成页 / 标题垂直位置 + 题名页零额外段距 / 摘要后正文另起一页。
+    # 老板 2026-10-22 拿 v2.3.90 产物核对后拍板「三件一起做，清掉」——
+    # 当时题目贴在顶边距第一行、题名页与摘要挤在同一页、还留着原文的 12/18pt 段距。
+    # 全部只写 pageBreakBefore 与段距，**不新增段落或文字**（文字 100% 锁死不受影响）。
+    # 与页码 / running head 同一口径：只有规范基线（客户真在规范下拉里选了内置规范）
+    # 才判 warn 并绑定修正；学校模板 / 手填 / AI 导入一律只提示，模板说了算。
+    _fm_spec = resolve_spec(target)
+    _fm_base = spec_is_baseline(target)
+    _fm_tp = getattr(_fm_spec, "title_page", None)
+    _has_tp = bool(getattr(prof, "title_page_detected", False))
+
+    # ① 题名页独立成页
+    if getattr(_fm_spec, "title_page_new_page", None) is not None and _has_tp:
+        _fm_want = bool(_fm_spec.title_page_new_page)
+        _fm_cur = getattr(prof, "tp_next_break_before", None)
+        if _fm_cur is None:
+            findings.append(Finding(
+                dimension="title_page_new_page", severity="info",
+                message="Title page on its own page",
+                expected="The title page occupies its own page",
+                actual="Could not read the paragraph that follows the title page",
+                source="spec",
+            ))
+        elif bool(_fm_cur) != _fm_want:
+            findings.append(Finding(
+                dimension="title_page_new_page",
+                severity="warn" if _fm_base else "info",
+                message="Title page on its own page",
+                expected=("The title page occupies its own page (a page break follows it)"
+                          if _fm_want else "No forced page break after the title page"),
+                actual=("A page break already follows the title page" if _fm_cur
+                        else "The next section continues on the title page"),
+                source="spec",
+            ))
+        else:
+            findings.append(Finding(
+                dimension="title_page_new_page", severity="pass",
+                message="Title page on its own page",
+                expected="The title page occupies its own page",
+                actual="Matches",
+                source="spec",
+            ))
+
+    # ② 标题垂直位置 + 题名页零额外段距（合成一条结论，客户读一行就够）
+    _fm_lines = getattr(_fm_tp, "title_space_before_lines", None) if _fm_tp else None
+    _fm_zero = bool(getattr(_fm_tp, "zero_extra_spacing", False)) if _fm_tp else False
+    if (_fm_lines is not None or _fm_zero) and _has_tp:
+        _pg = target.page or {}
+        _fs = _pg.get("font_size_pt") or getattr(prof, "font_size_pt", None) or 12.0
+        _ls = _pg.get("line_spacing") or getattr(prof, "line_spacing", None) or 1.0
+        _tpl_bad, _tpl_act = [], []
+        _want_pt = None
+        if _fm_lines is not None:
+            _want_pt = round(float(_fm_lines) * float(_fs) * float(_ls), 1)
+            _got_sb = getattr(prof, "tp_title_space_before_pt", None)
+            if _got_sb is None:
+                _tpl_act.append("could not read the title's space before")
+            elif abs(float(_got_sb) - _want_pt) > 1.0:
+                _tpl_bad.append(
+                    "title sits %.1f pt below the top margin (expected %.1f pt = %g lines)"
+                    % (float(_got_sb), _want_pt, float(_fm_lines)))
+            else:
+                _tpl_act.append("title %.1f pt below the top margin" % float(_got_sb))
+        if _fm_zero:
+            _extras = [v for v in (getattr(prof, "tp_title_space_after_pt", None),
+                                   getattr(prof, "tp_author_space_max_pt", None))
+                       if v is not None]
+            _mx = max(_extras) if _extras else None
+            if _mx is None:
+                _tpl_act.append("could not read the extra paragraph spacing")
+            elif _mx > 0.5:
+                _tpl_bad.append(
+                    "extra paragraph spacing %.1f pt on the title page (expected 0)" % _mx)
+            else:
+                _tpl_act.append("no extra paragraph spacing")
+        findings.append(Finding(
+            dimension="title_page_layout",
+            severity=("warn" if _fm_base else "info") if _tpl_bad else "pass",
+            message="Title page position and spacing",
+            expected=("Title %g lines below the top margin, no extra paragraph spacing"
+                      % float(_fm_lines)) if _fm_lines is not None
+            else "No extra paragraph spacing on the title page",
+            actual=("Title page: " + ", ".join(_tpl_bad)) if _tpl_bad
+            else (", ".join(_tpl_act) or "Matches"),
+            source="spec",
+        ))
+
+    # ③ 摘要之后正文另起一页
+    if getattr(_fm_spec, "text_new_page", None) is not None \
+            and bool(getattr(prof, "has_abstract", False)):
+        _tn_want = bool(_fm_spec.text_new_page)
+        _tn_cur = getattr(prof, "text_break_before", None)
+        if _tn_cur is None:
+            findings.append(Finding(
+                dimension="text_new_page", severity="info",
+                message="Text starts on a new page",
+                expected="The body starts on a new page after the abstract",
+                actual=_abstract_not_located(
+                    prof, " — cannot tell whether the body starts on a new page"),
+                source="spec",
+            ))
+        elif bool(_tn_cur) != _tn_want:
+            findings.append(Finding(
+                dimension="text_new_page",
+                severity="warn" if _fm_base else "info",
+                message="Text starts on a new page",
+                expected=("The body starts on a new page after the abstract"
+                          if _tn_want else "The body may continue right after the abstract"),
+                actual=("A page break already follows the abstract" if _tn_cur
+                        else "The body continues on the abstract page"),
+                source="spec",
+            ))
+        else:
+            findings.append(Finding(
+                dimension="text_new_page", severity="pass",
+                message="Text starts on a new page",
+                expected="The body starts on a new page after the abstract",
+                actual="Matches",
+                source="spec",
+            ))
+
     # —— 参考文献（始终硬判，引用归规范）——
     ref_style = target.reference_style or "Other"
     # 用 spec_key 取完整规范：学生/专业共用 style_key="APA"，但 tier 标记
@@ -1349,7 +1485,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     expected="Abstract text is flush left (no first-line indent)"
                     if abs(float(_abs_fli)) < 1e-3 else
                     f"Abstract text first-line indent = {_abs_fli:g}″",
-                    actual="No Abstract section detected (nothing to change)",
+                    actual=_abstract_not_located(prof, " (nothing to change)"),
                     source=_abs_fli_origin,
                 ))
             elif abs(float(_cur_fli) - float(_abs_fli)) > 0.01:
@@ -1376,7 +1512,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     message="Abstract on new page",
                     expected="Abstract begins on a new page"
                     if _abs_np else "Abstract does not start on a new page",
-                    actual="No Abstract section detected",
+                    actual=_abstract_not_located(prof),
                     source=_abs_np_origin,
                 ))
             elif bool(_cur_np) != bool(_abs_np):
@@ -1413,7 +1549,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             findings.append(Finding(
                 dimension=_dim, severity="info", message=_label,
                 expected="%g pt" % float(_w),
-                actual="No Abstract section detected",
+                actual=_abstract_not_located(prof),
                 source=_o,
             ))
             continue
@@ -1970,6 +2106,30 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 修正器才动手 → 修正预览里也能看见。
     if _tp_vals:
         _fix_value["title_page"] = True
+    # v2.3.91：首页结构三件套 —— 规范基线即可修（与页码 / running head 同口径）。
+    # 全都不新增段落或文字，只写 pageBreakBefore 与段距。
+    if spec_is_baseline(target):
+        _fm_st = resolve_spec(target)
+        _fm_tpf = getattr(_fm_st, "title_page", None)
+        _fm_prof = prof
+        if getattr(_fm_prof, "title_page_detected", False):
+            # 只绑「读得出来且确实不符」的情形：读不到（None）时给的是 info
+            # 「无法判定」，此时绑一个什么都不做的 FixAction 只会让报告说「可自动修正」
+            # 却修不动 —— 宁可老老实实只提示。
+            _tpn_cur = getattr(_fm_prof, "tp_next_break_before", None)
+            _tpn_want = getattr(_fm_st, "title_page_new_page", None)
+            if _tpn_want is not None and _tpn_cur is not None \
+                    and bool(_tpn_cur) != bool(_tpn_want):
+                _fix_value["title_page_new_page"] = bool(_tpn_want)
+            if _fm_tpf is not None and (getattr(_fm_tpf, "title_space_before_lines", None) is not None
+                                        or getattr(_fm_tpf, "zero_extra_spacing", False)):
+                _fix_value["title_page_layout"] = True
+        _txn_cur = getattr(_fm_prof, "text_break_before", None)
+        _txn_want = getattr(_fm_st, "text_new_page", None)
+        if bool(getattr(_fm_prof, "has_abstract", False)) \
+                and _txn_want is not None and _txn_cur is not None \
+                and bool(_txn_cur) != bool(_txn_want):
+            _fix_value["text_new_page"] = bool(_txn_want)
     if bq:
         _fix_value["block_quote"] = 0.5
     # 页码位置：**只有客户/学校/AI 显式要求时才动手**（来源 spec 时只提示）。
@@ -1997,9 +2157,12 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             and origin_of_source(target.resolution.get("abstract_first_line_indent_in")) \
             in ("user", "school", "ai_import"):
         _fix_value["abstract_indent"] = float(target.abstract_first_line_indent_in)
-    if target.abstract_new_page is not None \
-            and origin_of_source(target.resolution.get("abstract_new_page")) \
-            in ("user", "school", "ai_import"):
+    # v2.3.91：规范基线（客户真在规范下拉里选了内置规范）时，摘要另起一页也可修。
+    # 与页码同口径 —— APA 7 §2.9 对两档都要求「摘要自成一页」，这不该被
+    # 「页面维度降级 info」吞掉；学校模板 / 手填 / AI 导入不受影响。
+    if target.abstract_new_page is not None and (
+            origin_of_source(target.resolution.get("abstract_new_page"))
+            in ("user", "school", "ai_import") or spec_is_baseline(target)):
         _fix_value["abstract_new_page"] = bool(target.abstract_new_page)
     # 图表 caption 字号/行距可修：**只有客户/学校/AI 显式要求时才动手**（spec 只提示）。
     # caption 位置只提示（不绑 fix）。

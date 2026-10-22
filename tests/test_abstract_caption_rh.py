@@ -132,16 +132,38 @@ def test_fix_abstract_new_page(tmp_path):
     assert prof2.abstract_new_page is True
 
 
-def test_abstract_spec_source_only_hints(tmp_path):
-    """APA 专业版带 abstract_new_page=True，但 spec 来源只提示、不自动改。"""
+def test_abstract_new_page_is_fixable_on_spec_baseline(tmp_path):
+    """规范基线（客户真在规范下拉里选了内置规范）时，摘要另起一页可修。
+
+    v2.3.91 契约升级（与 page_number / running_head 同口径）：APA 7 §2.9 要求摘要自成
+    一页，客户既然明确选了 APA，这就是硬要求，不该停在「提示」上。旧断言
+    「spec 来源一律只提示」在 v2.3.90 已被页码打破，这里是同一条链的补全。
+    """
     p = _doc_with_abstract(tmp_path / "a.docx", new_page=False)
     t = target_from_spec("APA-Professional")
     prof, findings = checker.run_check(p, t)
-    # spec 来源不绑 fix
+    abs_findings = [f for f in findings if f.dimension == "abstract_new_page"]
+    assert abs_findings
+    assert any(getattr(f, "fix", None) is not None for f in abs_findings), \
+        "规范基线下的摘要另起一页应当可修"
+    # 真修一遍 → 复检必须收敛
+    out = tmp_path / "out.docx"
+    fix_docx(p, str(out), t)
+    assert read_docx(str(out)).abstract_new_page is True
+
+
+def test_abstract_new_page_stays_prompt_only_when_not_baseline(tmp_path):
+    """非基线（学校模板 / 手填 / AI 导入）即便引用了 APA，也只提示不动手。
+
+    模板说了算：客户的学校可能明确要求「摘要与正文接排」，工具不许替它拍板。
+    """
+    p = _doc_with_abstract(tmp_path / "a.docx", new_page=False)
+    t = target_from_dict({"reference_style": "APA"}, "school")
+    prof, findings = checker.run_check(p, t)
     abs_findings = [f for f in findings if f.dimension == "abstract_new_page"]
     assert abs_findings
     assert all(getattr(f, "fix", None) is None for f in abs_findings), \
-        "spec 来源的摘要另起一页不应自动改"
+        "非规范基线的摘要另起一页只应提示"
 
 
 # ---------------------------------------------------------------------------

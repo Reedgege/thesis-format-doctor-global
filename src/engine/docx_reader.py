@@ -230,6 +230,13 @@ class DocumentProfile:
     # v2.3.76：标题页标题段的段前 / 段后（磅）。无标题页或读不到 → None。
     tp_title_space_before_pt: Optional[float] = None
     tp_title_space_after_pt: Optional[float] = None
+    # —— v2.3.91：首页结构（题名页独立成页 / 垂直位置 / 额外段距）——
+    # 老板 2026-10-22 核对 v2.3.90 产物后拍板「三件一起做，清掉」：
+    # 题名页必须独立成页、标题在顶边距下 3–4 行、题名页整页不留额外段距。
+    # 此前只有 title_page（居中/加粗/作者居中），垂直位置与分页完全没人管。
+    tp_next_break_before: Optional[bool] = None   # 题名页块之后那段是否另起一页；无题名页=None
+    tp_author_space_max_pt: Optional[float] = None  # 作者/单位行段前段后的最大值（磅）；应为 0
+    text_break_before: Optional[bool] = None      # 摘要之后正文首段是否另起一页；无摘要=None
     # 每级标题格式样本（学校模板驱动：层级 → 代表性样本）。仅记录可从 docx 读出的属性；
     # number_prefix 为编号形态的最佳猜测（读不到为 None）。
     heading_formats: dict = field(default_factory=dict)         # level(int) -> HeadingFormatSample
@@ -2160,6 +2167,31 @@ def _sample_title_page(doc, prof: "DocumentProfile") -> None:
     prof.tp_title_space_before_pt = sb
     prof.tp_title_space_after_pt = sa
 
+    # —— v2.3.91 首页结构 ——
+    # ① 作者/单位行的段前段后（APA 要求整页双倍行距、不留额外段距 → 应为 0）。
+    _mx: Optional[float] = None
+    _last_tp_idx = tp["title"]
+    for ai in tp["authors"]:
+        try:
+            ap = doc.paragraphs[ai]
+        except Exception:
+            continue
+        _last_tp_idx = max(_last_tp_idx, ai)
+        _b, _a = _spacing_pair_of_para(ap)
+        for _v in (_b, _a):
+            if _v is None:
+                continue
+            _mx = _v if _mx is None else max(_mx, _v)
+    prof.tp_author_space_max_pt = _mx
+    # ② 题名页块之后的段落是否另起一页（复用参考文献同一口径：段前分页 或 上一段末尾分页符）。
+    try:
+        _nxt = doc.paragraphs[_last_tp_idx + 1] if _last_tp_idx + 1 < len(doc.paragraphs) else None
+        if _nxt is not None:
+            prof.tp_next_break_before = _reference_starts_new_page(
+                doc.paragraphs[_last_tp_idx], _nxt)
+    except Exception:
+        prof.tp_next_break_before = None
+
 
 def _section_paper_size(sec) -> Optional[str]:
     """读单个分节的纸张大小：``sectPr/w:pgSz/@w:w`` 与 ``@w:h``（unit = twip）。"""
@@ -2667,11 +2699,19 @@ def _read_docx_impl(doc) -> DocumentProfile:
             _prev_abs = paras[_abs_head - 1] if _abs_head > 0 else None
             prof.abstract_new_page = _reference_starts_new_page(
                 _prev_abs, paras[_abs_head])
+            # v2.3.91：摘要之后**正文首段**是否另起一页（APA：正文从摘要后新一页开始）。
+            # 摘要正文可能跨多段，取摘要区最后一段为前一段。
+            _abs_last = max(_abs_body)
+            _after = paras[_abs_last + 1] if _abs_last + 1 < len(paras) else None
+            if _after is not None:
+                prof.text_break_before = _reference_starts_new_page(
+                    paras[_abs_last], _after)
     except Exception:
         prof.abstract_first_line_indent_in = None
         prof.abstract_new_page = None
         prof.abstract_space_before_pt = None
         prof.abstract_space_after_pt = None
+        prof.text_break_before = None
 
     # —— 图表 caption 采样（v2.3.67）——
     try:

@@ -2407,6 +2407,185 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
     return info
 
 
+# ---------------------------------------------------------------------------
+# 首页结构（v2.3.91）：题名页独立成页 / 标题垂直位置 + 零额外段距 / 正文另起一页
+# ---------------------------------------------------------------------------
+# 老板 2026-10-22 拿 v2.3.90 的产物逐页核对后拍板「三件一起做，清掉」：
+#   ① 题目贴在顶边距第一行（APA 要求位于页边距下 3–4 行）；
+#   ② 题名页与摘要挤在同一页（题名页 / 摘要 / 正文三者应各自成页）；
+#   ③ 原文残留的 12pt / 18pt 段距没清（APA 题名页整页双倍行距、不留额外段距）。
+# 三者**纯版式**：只写 w:pageBreakBefore 与 w:spacing，绝不新增段落、绝不改一个字
+# —— 与 policy.TEXT_IS_LOCKED（文字 100% 锁死）完全不冲突，这也是为什么「把标题
+# 塞进文本框挪位置」那种做法被否掉。
+
+
+def _tp_block_last_index(doc) -> Optional[int]:
+    """题名页块（标题 + 作者/单位行）的最后一个段落下标；无题名页返回 None。
+
+    下标口径必须与 reader 的采样**逐字一致**（``_sample_title_page`` 用
+    ``max(title, *authors)``），否则会出现「修正器在 A 段分页、检查器在 B 段核对」
+    的漂移，客户点完修正再检查仍然红。
+    """
+    try:
+        tp = _detect_title_page(doc)
+    except Exception:
+        tp = None
+    if not tp:
+        return None
+    idx = tp.get("title")
+    for ai in (tp.get("authors") or ()):
+        idx = ai if idx is None else max(idx, int(ai))
+    return idx
+
+
+def _set_page_break_before(para, want: bool) -> bool:
+    """写 / 清段前分页（``w:pageBreakBefore``）。幂等：本来就合规返回 False。
+
+    ⚠️ 刻意不碰上一段末尾的 ``w:br type="page"`` —— 那是客户自己插的分页符，
+    删它就是改客户文档结构（文字锁也覆盖 w:br）。两种写法在 Word 里效果相同，
+    而 pageBreakBefore 可随时单独清掉，回退成本最低。
+    """
+    try:
+        cur = bool(para.paragraph_format.page_break_before)
+    except Exception:
+        cur = False
+    if cur == bool(want):
+        return False
+    try:
+        para.paragraph_format.page_break_before = bool(want)
+        return True
+    except Exception:
+        return False
+
+
+def _apply_title_page_new_page(doc, new_page: bool) -> dict:
+    """题名页独立成页：在题名页块**之后**那一段加段前分页。
+
+    返回 ``{changed, new_page, anchor}``；``anchor`` = 被写分页的段落下标（便于测试取证）。
+    """
+    info = {"changed": False, "new_page": bool(new_page), "anchor": None}
+    last = _tp_block_last_index(doc)
+    if last is None:
+        return info
+    nxt = last + 1
+    if nxt >= len(doc.paragraphs):
+        return info                       # 题名页就是全文最后一段，无从分页
+    para = doc.paragraphs[nxt]
+    if _set_page_break_before(para, new_page):
+        info["changed"] = True
+        info["anchor"] = nxt
+        add_comment(
+            doc, para,
+            "Title page kept on its own page: a page break starts at this paragraph."
+            if new_page else
+            "Page break after the title page removed: the next section may continue "
+            "on the title page.")
+    return info
+
+
+def _tp_lines_to_points(target, prof, lines: float) -> float:
+    """把「页边距下 N 行」换算成磅：``lines × 字号 × 行距倍数``。
+
+    Word 里的「行」是相对当前行高的，写 ``w:beforeLines`` 会在不同字号下漂移，
+    所以这里算出绝对磅值写 ``space_before``（``_write_one_spacing`` 还会顺手清掉
+    残留的 ``w:beforeLines`` —— 行单位优先级更高，不清等于没改）。
+
+    ⚠️ 公式必须与 checker 的 ``_want_pt`` **一模一样**（同一 page 取值、同一回退），
+    否则修正写 72pt、检查算 74pt，客户点完修正立刻又被报红。
+    """
+    page = target.page or {}
+    try:
+        fs = float(page.get("font_size_pt") or getattr(prof, "font_size_pt", None) or 12.0)
+    except (TypeError, ValueError):
+        fs = 12.0
+    try:
+        ls = float(page.get("line_spacing") or getattr(prof, "line_spacing", None) or 1.0)
+    except (TypeError, ValueError):
+        ls = 1.0
+    return round(float(lines) * fs * ls, 1)
+
+
+def _apply_title_page_layout(doc, target, prof, spec) -> dict:
+    """标题垂直位置 + 题名页零额外段距（APA §2.17 / 2.21 的版式部分）。
+
+    ① 垂直位置：标题 ``space_before`` = N 行换算成的磅值；
+    ② 零额外段距：标题段后 + 每一行作者/单位行的段前段后一律清 0。
+
+    只写段落属性，**不插空段落、不动文字** —— 插空行会改变段落下标，而段落下标是
+    reader / checker / fixer 三方共用的唯一真相源，动它等于把整条链的坐标轴挪了。
+    幂等：全部已合规时返回 ``changed=False``，一个字节都不写。
+    """
+    info = {"changed": False, "want_pt": None, "lines": None, "zeroed": False}
+    tp = _detect_title_page(doc)
+    if not tp:
+        return info
+    tpf = getattr(spec, "title_page", None)
+    lines = getattr(tpf, "title_space_before_lines", None) if tpf else None
+    zero = bool(getattr(tpf, "zero_extra_spacing", False)) if tpf else False
+    if lines is None and not zero:
+        return info                       # 规范没声明 → 一个字节都不写
+    title_p = doc.paragraphs[tp["title"]]
+    changed = False
+    if lines is not None:
+        want_pt = _tp_lines_to_points(target, prof, lines)
+        info["lines"] = float(lines)
+        info["want_pt"] = want_pt
+        if _write_one_spacing(title_p, "space_before", want_pt):
+            changed = True
+    if zero:
+        # 标题段后：APA 题名页上标题与作者之间只靠双倍行距分开，不留额外段距。
+        if _write_one_spacing(title_p, "space_after", 0.0):
+            changed = True
+        for ai in tp["authors"]:
+            try:
+                ap = doc.paragraphs[ai]
+            except Exception:
+                continue
+            if _write_one_spacing(ap, "space_before", 0.0):
+                changed = True
+            if _write_one_spacing(ap, "space_after", 0.0):
+                changed = True
+        info["zeroed"] = True
+    if changed:
+        info["changed"] = True
+        bits = []
+        if info["want_pt"] is not None:
+            bits.append("title %g lines (%g pt) below the top margin"
+                        % (info["lines"], info["want_pt"]))
+        if info["zeroed"]:
+            bits.append("extra paragraph spacing on the title page set to 0")
+        add_comment(doc, title_p,
+                    "Title page layout per %s: %s."
+                    % (_spec_label(spec), "; ".join(bits)))
+    return info
+
+
+def _apply_text_new_page(doc, new_page: bool) -> dict:
+    """摘要之后正文另起一页：在摘要正文最后一段的**下一段**加段前分页。
+
+    下标口径与 reader 的 ``text_break_before`` 采样逐字一致
+    （同为 ``max(摘要正文下标) + 1``），否则修完复检读不到自己刚写的那一段。
+    """
+    info = {"changed": False, "new_page": bool(new_page), "anchor": None}
+    _head, body = _abstract_section(doc)
+    if not body:
+        return info
+    nxt = max(body) + 1
+    if nxt >= len(doc.paragraphs):
+        return info
+    para = doc.paragraphs[nxt]
+    if _set_page_break_before(para, new_page):
+        info["changed"] = True
+        info["anchor"] = nxt
+        add_comment(
+            doc, para,
+            "Body text starts on a new page after the abstract."
+            if new_page else
+            "Page break after the abstract removed: the body may continue on the "
+            "abstract page.")
+    return info
+
+
 def _spec_label(spec) -> str:
     """规范显示名（纯英文）：用 spec.key 而非 spec.name，避免规范名里的本地化
     后缀（如「美国心理学会」或「自定义…」）泄漏进用户可见的批注。"""
@@ -2506,6 +2685,32 @@ def _build_summary_text(target, applied, spec, ref_info, prof, head_info=None) -
             lines.append(
                 f"Page number: {', '.join(_bits) or 'position set'} "
                 f"({_al}-aligned in the {_loc})")
+
+    # —— 首页结构（v2.3.91）：三件都是「会改变页数/页内版式」的动作 ——
+    # 客户必须知道页数为什么变了、标题为什么下移，而不是靠猜。
+    # 三件全都只写 pageBreakBefore 与段距，**没有增删任何段落或字符**。
+    if applied.get("title_page_new_page"):
+        lines.append(
+            "Title page: a page break was set after the title page block, so the title "
+            "page now occupies its own page (no paragraph or character was added or "
+            "removed).")
+    if applied.get("title_page_layout"):
+        _tl = applied["title_page_layout"]
+        _tl_bits = []
+        if isinstance(_tl, dict) and _tl.get("want_pt") is not None:
+            _tl_bits.append(
+                f"the title now sits {_tl.get('lines'):g} lines "
+                f"({float(_tl['want_pt']):g} pt) below the top margin")
+        if isinstance(_tl, dict) and _tl.get("zeroed"):
+            _tl_bits.append(
+                "the extra paragraph spacing on the title page was cleared to 0 pt")
+        lines.append(
+            "Title page layout: " + ("; ".join(_tl_bits) or "position and spacing set")
+            + ". The title page is double-spaced with no extra paragraph spacing, and no "
+              "extra empty paragraph was inserted to move the title down.")
+    if applied.get("text_new_page"):
+        lines.append(
+            "Body text: the first paragraph after the abstract now starts on a new page.")
 
     # —— 页面 / 正文级（统一改动）——
     if applied.get("margins") is not None:
@@ -2907,13 +3112,40 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if _pn_info:
             applied["page_number"] = _pn_info
 
+    # —— 首页结构（v2.3.91）——
+    # 题名页独立成页 / 标题垂直位置 + 零额外段距 / 正文另起一页。
+    # 与页码、running head 同口径：只有 checker 在**规范基线**下绑了 FixAction 才动手；
+    # 学校模板 / 手填 / AI 导入一律只提示（模板说了算，绝不替客户拍板版式）。
+    # 三者都不新增段落、不改文字，只写 pageBreakBefore 与段距。
+    #
+    # ⚠️ 必须排在 abstract_new_page **之前**：题名页块后面那段通常正是摘要标题，两处
+    # 分页会落在同一段上。谁先写谁认领 —— 先让「题名页独立成页」认领，批注才说得清
+    # 「是题名页单独占了一页」；反过来先跑摘要那边，客户读到的就只剩「摘要另起一页」，
+    # 而真正被解决的问题（题名页跟摘要挤在同一页）在报告里反而消失了。
+    if "title_page_new_page" in fix_dims:
+        _tpn_info = _apply_title_page_new_page(
+            doc, bool(getattr(spec, "title_page_new_page", True)))
+        if _tpn_info.get("changed"):
+            applied["title_page_new_page"] = _tpn_info
+    if "title_page_layout" in fix_dims:
+        _tpl_info = _apply_title_page_layout(doc, target, prof, spec)
+        if _tpl_info.get("changed"):
+            applied["title_page_layout"] = _tpl_info
+    if "text_new_page" in fix_dims:
+        _txn_info = _apply_text_new_page(
+            doc, bool(getattr(spec, "text_new_page", True)))
+        if _txn_info.get("changed"):
+            applied["text_new_page"] = _txn_info
+
     # 摘要页特化（v2.3.67）：只有客户/学校/AI 显式要求时 checker 才绑 FixAction。
     if "abstract_indent" in fix_dims and target.abstract_first_line_indent_in is not None:
         if _apply_abstract_indent(doc, target.abstract_first_line_indent_in):
             applied["abstract_first_line_indent_in"] = target.abstract_first_line_indent_in
+    # v2.3.91：规范基线下 abstract_new_page 也可修（APA 7 §2.9 摘要自成一页）。
     if "abstract_new_page" in fix_dims and target.abstract_new_page is not None:
         if _apply_abstract_new_page(doc, target.abstract_new_page):
             applied["abstract_new_page"] = target.abstract_new_page
+
     # 摘要正文段前/段后（v2.3.76）：只有检查结论要求时才动手，逐维度独立门控。
     _abs_sb = getattr(target, "abstract_space_before_pt", None) \
         if "abstract_space_before" in fix_dims else None
@@ -3109,6 +3341,9 @@ _DIM_LABELS = {
         "toc_heading_space_before": "Contents heading space before",
         "toc_heading_space_after": "Contents heading space after",
         "title_page": "Title page", "block_quote": "Block quotation",
+        "title_page_new_page": "Title page on its own page",
+        "title_page_layout": "Title page position and spacing",
+        "text_new_page": "Body starts on a new page",
         "ref_hanging": "Reference hanging indent", "ref_numbering": "Reference numbering",
         "heading_lvl": "Level %s heading",
         "ref_font": "Reference entry font", "ref_size": "Reference entry font size",
@@ -3145,6 +3380,9 @@ _DIM_LABELS = {
         "toc_heading_space_before": "目录标题段前间距",
         "toc_heading_space_after": "目录标题段后间距",
         "title_page": "标题页", "block_quote": "块引用",
+        "title_page_new_page": "题名页独立成页",
+        "title_page_layout": "题名页标题位置与段距",
+        "text_new_page": "正文另起一页",
         "ref_hanging": "参考文献悬挂缩进", "ref_numbering": "参考文献编号",
         "heading_lvl": "第 %s 级标题",
         "ref_font": "参考文献条目字体", "ref_size": "参考文献条目字号",
@@ -3603,6 +3841,46 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
             sep = "：" if L == "zh" else ": "
             lines.append("%s%s%s" % (_dim_label(L, "title_page"), sep,
                                      "，".join(_tp_bits) if L == "zh" else ", ".join(_tp_bits)))
+    # —— 首页结构（v2.3.91）：三行独立预览，逐项与 fixer 实际施加一致 ——
+    # 题名页独立成页 / 标题垂直位置 + 零额外段距 / 正文另起一页。
+    # 客户在点「修正」之前就该知道「会多出两个分页、标题下移 N 行、原文段距被清 0」，
+    # 而不是修完发现页数变了才来问。
+    if _gate("title_page_new_page"):
+        _tpn_cur = getattr(prof, "tp_next_break_before", None)
+        if _tpn_cur is not None and not bool(_tpn_cur):
+            lines.append("%s: %s" % (
+                _dim_label(L, "title_page_new_page"),
+                "与下节接排 → 独立成页" if L == "zh"
+                else "same page → own page"))
+    if _gate("title_page_layout"):
+        _tpl_bits = []
+        _sp_st = resolve_spec(target)
+        _sp_tpf = getattr(_sp_st, "title_page", None)
+        _tpl_lines = getattr(_sp_tpf, "title_space_before_lines", None) if _sp_tpf else None
+        if _tpl_lines is not None:
+            # 预览只报「改成什么」（当前值合不合规由 checker 判定），与标题页段距那组一致。
+            _tpl_want = _tp_lines_to_points(target, prof, _tpl_lines)
+            _tpl_bits.append(
+                ("标题下移 %g 行（%.1f pt）" % (float(_tpl_lines), _tpl_want))
+                if L == "zh" else
+                ("title %g lines (%.1f pt) below the top margin"
+                 % (float(_tpl_lines), _tpl_want)))
+        if getattr(_sp_tpf, "zero_extra_spacing", False):
+            _tpl_bits.append("题名页额外段距清 0" if L == "zh"
+                             else "extra paragraph spacing cleared")
+        if _tpl_bits:
+            sep = "：" if L == "zh" else ": "
+            lines.append("%s%s%s" % (
+                _dim_label(L, "title_page_layout"), sep,
+                "；".join(_tpl_bits) if L == "zh" else "; ".join(_tpl_bits)))
+    if _gate("text_new_page"):
+        _txn_cur = getattr(prof, "text_break_before", None)
+        if _txn_cur is not None and not bool(_txn_cur):
+            lines.append("%s: %s" % (
+                _dim_label(L, "text_new_page"),
+                "摘要后接排 → 另起一页" if L == "zh"
+                else "continues after abstract → new page"))
+
     if _gate("block_quote"):
         # 与 checker 的判定同一口径（含引号 + 长 + 左缩进不是 0.5″）
         _bq = [c for c in (getattr(prof, "block_quote_candidates", None) or [])

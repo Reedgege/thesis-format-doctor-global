@@ -128,6 +128,16 @@ class TitlePageFormat:
     title_centered: Optional[bool] = None
     title_bold: Optional[bool] = None
     author_centered: Optional[bool] = None
+    # —— v2.3.91：垂直位置与额外段距 ——
+    # 老板 2026-10-22 核对 v2.3.90 产物时发现「标题贴在顶边距第一行、题名页还有 12/18pt
+    # 额外段距」，拍板「三件一起做，清掉」。
+    title_space_before_lines: Optional[float] = None
+    # ↑ 标题距顶边距空几行（APA 7 §2.6 Student/Professional 都是 "three to four lines
+    #   down from the top margin" → 取 3）。按「行」而不是磅，是因为行高随正文字号与
+    #   行距变化：磅 = 行数 × 字号 × 行距倍数，写死磅数换个字号就错位。
+    zero_extra_spacing: Optional[bool] = None
+    # ↑ 题名页整页不留额外段前/段后（APA：整页双倍行距，段距为 0）。
+    #   True = 标题段后与作者/单位行的段前段后一律清零；None = 不动。
 
 
 @dataclass
@@ -185,6 +195,11 @@ class StyleSpec:
     # None = 该风格不规定（由学校模板 / 问卷 / AI 决定），不臆造。
     abstract_first_line_indent_in: Optional[float] = None   # 摘要正文首行缩进（英寸）；None=不规定
     abstract_new_page: Optional[bool] = None                 # 摘要是否另起一页；None=不规定
+    # —— 首页结构（v2.3.91）——
+    # 老板 2026-10-22「三件一起做，清掉」。全都只写 page_break_before / 段距，
+    # **不新增任何段落或文字**，因此不影响「文字 100% 锁死」。
+    title_page_new_page: Optional[bool] = None   # 题名页独立成页（题名页块之后强制分页）；None=不规定
+    text_new_page: Optional[bool] = None         # 摘要之后正文另起一页；None=不规定
     # —— 图表 caption（v2.3.67）——
     # 图表标题的字号/行距可修（识别 Caption 样式段落）；表题/图题的「上方还是下方」位置
     # 只能提示（python-docx 无高层 API 可靠判定图片 caption 位置，图片内嵌在段落 drawing 里）。
@@ -505,6 +520,10 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
                reference_alpha_sort_hint: bool = True,
                abstract_first_line_indent_in: Optional[float] = 0.0,
                abstract_new_page: Optional[bool] = None,
+               # v2.3.91：题名页独立成页 / 标题垂直位置 / 清额外段距（三件套同一开关）。
+               # MLA、IEEE 保持 None —— 它们没有「题名页」这个概念（MLA 首页块连排、
+               # IEEE 会议论文题名就在第一页顶部），绝不给它们凭空插分页。
+               title_page_new_page: Optional[bool] = True,
                caption_position_table: Optional[str] = "top",
                caption_position_figure: Optional[str] = "bottom") -> StyleSpec:
     """构造一个 APA 7th 规范档（学生/专业共享同一套正文/标题/参考文献规则，仅前置材料不同）。
@@ -535,7 +554,11 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         heading_levels=5,
         heading_formats=APA_HEADING,
         paper_size="Letter",     # APA 7th §2.1：8.5 × 11 in（北美 Letter）
-        title_page=TitlePageFormat(True, True, True),
+        # v2.3.91：题名页三件套 —— 标题在顶边距下 3 行（APA 7 §2.6「three to four lines
+        # down from the top margin」，取下限 3）+ 整页不留额外段距 + 题名页独立成页。
+        title_page=TitlePageFormat(True, True, True,
+                                   title_space_before_lines=3 if title_page_new_page else None,
+                                   zero_extra_spacing=True if title_page_new_page else None),
         running_head=running_head,
         expect_abstract=expect_abstract,
         expect_author_note=expect_author_note,
@@ -549,6 +572,10 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         reference_alpha_sort_hint=reference_alpha_sort_hint,
         abstract_first_line_indent_in=abstract_first_line_indent_in,
         abstract_new_page=abstract_new_page,
+        # v2.3.91：题名页独立成页 + 摘要后正文另起一页（APA 7 §2.5/§2.9）。
+        # 全部只写 pageBreakBefore，不新增段落或文字。
+        title_page_new_page=title_page_new_page,
+        text_new_page=True if title_page_new_page else None,
         caption_position_table=caption_position_table,
         caption_position_figure=caption_position_figure,
         # APA 7th §7.10：表格只用横线，**不许有竖线**（就要求是顶线/表头下线/底线）。
@@ -567,6 +594,8 @@ _APA_STUDENT = _apa_spec(
     running_head=False, expect_abstract=False, expect_author_note=False,
     title_page_kind="student",
     running_head_max_chars=None,
+    # v2.3.91：学生版若写了摘要，摘要同样单独一页（APA 7 §2.9 对两档一致）。
+    abstract_new_page=True,
     notes="Student edition: the title page is Title (bold, centered) + Name + Department + "
           "Course No.:Course Name + Instructor + Submission date; no running head, author note, "
           "or abstract is required (unless your instructor asks). Body and reference rules are "
