@@ -246,6 +246,15 @@ class DocumentProfile:
     #   我们绝不代客户编造，只能提示。判定必须在标题之外的文本里做：论文大标题本身
     #   就常含 "COVID-19" 这类「字母+数字」，混在一起查会把标题误当成课程号。
     text_break_before: Optional[bool] = None      # 摘要之后正文首段是否另起一页；无摘要=None
+    # 摘要**标题**（"Abstract" 这一行）本身的格式（v2.3.97）：
+    # 对齐 / 加粗 / 斜体。None = 读不到或没有摘要标题。
+    abstract_heading_alignment: Optional[str] = None   # "left" / "center" / "right" / "justify"
+    abstract_heading_bold: Optional[bool] = None
+    abstract_heading_italic: Optional[bool] = None
+    # 关键词行（"Keywords: ..."）的格式（v2.3.97）：标签斜体 + 整行首行缩进。
+    # None = 文档里没有关键词行（很多论文确实没有）。
+    keywords_label_italic: Optional[bool] = None
+    keywords_indent_in: Optional[float] = None
     # 每级标题格式样本（学校模板驱动：层级 → 代表性样本）。仅记录可从 docx 读出的属性；
     # number_prefix 为编号形态的最佳猜测（读不到为 None）。
     heading_formats: dict = field(default_factory=dict)         # level(int) -> HeadingFormatSample
@@ -792,6 +801,186 @@ def heading_level(para) -> Optional[int]:
     判定链路：样式名 → 段落级 outlineLvl → 样式级 outlineLvl，兼容自定义标题样式。
     """
     return _heading_level(para)
+
+
+# ---------------------------------------------------------------------------
+# 编号结构行 → 标题层级（v2.3.97）
+#
+# 老板 2026-10-23 实测指出两处，都在这条链上：
+#   ① APA Level 2 = **Flush Left, Bold, Title Case**（Table 2.3, p.48）→ 要加粗；
+#   ② 真实论文里 "1. Introduction" / "2. Literature Review" 这类小节行既没加粗、
+#      也压根没被认成标题（v2.3.87 只让它「豁免首行缩进」，格式一个字节没动），
+#      于是报告不提、修正不改 —— 而「各层级标题的修正」正是格式修正的主干。
+#
+# 🔴 控制原则：**宁可漏判，绝不误伤正文**。四道闸门全过才认：
+#   ① 先过 `is_section_heading_line`（编号开头 + 够短 + 不以任何句读结尾）；
+#   ② 同一层级上的编号必须构成**从 1 开始、严格递增、至少两项**的序列 ——
+#      正文里那种 "1. First step / 2. Second step" 的列表偶尔也短、也带编号，
+#      但很少同时做到「从 1 连续、互不重复、彼此都是整行编号」；
+#   ③ 层级**自顶向下**成立：第 1 层的编号序列不成立时，更深层一律不认
+#      （不跳级认人 —— 没有顶层序列就说明这不是章节编号体系）；
+#   ④ 认出的层级 = 已有锚点层级 + 编号深度（无锚点则 = 编号深度），上限 5 级。
+#      ④ 是给「文档里已有 `Chapter 1/2/3` 加粗大章」这种结构用的：
+#      此时 "1. Introduction" 必须排在它**下面**一级，不能跟大章抢 L1。
+# ---------------------------------------------------------------------------
+
+_ORD_CN = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_ROMAN_VAL = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
+
+
+def _roman_to_int(s: str) -> Optional[int]:
+    """罗马数字转整数（只支持 I/V/X/L/C 这套章节常用档，非法返回 None）。"""
+    s = (s or "").upper()
+    if not s or any(ch not in _ROMAN_VAL for ch in s):
+        return None
+    total, prev = 0, 0
+    for ch in reversed(s):
+        val = _ROMAN_VAL[ch]
+        total = total - val if val < prev else total + val
+        prev = max(prev, val)
+    return total or None
+
+
+def _cn_to_int(s: str) -> Optional[int]:
+    """中文数字转整数（覆盖「一」到「九十九」这类章节编号，够用即可）。"""
+    if not s:
+        return None
+    if s == "十":
+        return 10
+    if "十" in s:
+        head, _, tail = s.partition("十")
+        tens = _ORD_CN.get(head, 1) if head else 1
+        ones = _ORD_CN.get(tail, 0) if tail else 0
+        return tens * 10 + ones
+    return _ORD_CN.get(s)
+
+
+def parse_section_number(text: str) -> Optional[tuple]:
+    """章节编号 → 数字元组；解析不出返回 None。
+
+    "1. Introduction" → (1,)      "2.1 Sample" → (2, 1)     "3.2.1 Detail" → (3, 2, 1)
+    "Chapter 3 ..."  → (3,)       "IV. Method" → (4,)      "A. Framework" → (1,)
+    "一、引言"        → (1,)
+
+    元组长度即**编号深度**：长度 1 = 顶层小节，长度 2 = 它的子节 …
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    m = re.match(r"^(\d+(?:\.\d+)*)\.?\s+\S", t)
+    if m:
+        return tuple(int(x) for x in m.group(1).split("."))
+    m = re.match(r"(?i)^(?:chapter|section|part)\s+(\d+)\b", t)
+    if m:
+        return (int(m.group(1)),)
+    m = re.match(r"(?i)^(?:chapter|section|part)\s+([IVXLC]+)\b", t)
+    if m:
+        v = _roman_to_int(m.group(1))
+        return (v,) if v else None
+    m = re.match(r"^([IVXLC]+)\.\s+\S", t)
+    if m:
+        v = _roman_to_int(m.group(1))
+        return (v,) if v else None
+    m = re.match(r"^([A-Z])\.\s+\S", t)
+    if m:
+        return (ord(m.group(1)) - 64,)
+    m = re.match(r"^([一二三四五六七八九十]+)[、.．]", t)
+    if m:
+        v = _cn_to_int(m.group(1))
+        return (v,) if v else None
+    return None
+
+
+def _norm_matter_title(text: str) -> str:
+    """归一化标题文字（去空格、小写、去尾部冒号），用于比对前置/后置材料标题。"""
+    t = (text or "").strip().lower().rstrip(":：")
+    return t.replace(" ", "")
+
+
+# 前置 / 后置**材料**的标题：它们是「文档部件标题」，不属于章节层级里的某一级。
+# 🔴 v2.3.97 实测链条：`Abstract` 段因「整段加粗 + 字号居中档」被伪标题兜底采样认成
+# **二级章节标题**，随后被套上 APA Level 2 的「左对齐 + 加粗」—— 而 APA §2.9 要的是
+# 「**居中** + 加粗」。老板 2026-10-23 打开产物一眼看出「摘要标题没居中」，根子在这里。
+# 它们各归各管：摘要标题 → abstract_heading 维度；参考文献标题 → reference_heading 维度。
+_MATTER_TITLES = {
+    "abstract", "摘要", "abstractpage",
+    "references", "reference", "bibliography", "workscited", "参考文献",
+    "acknowledgments", "acknowledgements", "acknowledgment", "acknowledgement", "致谢",
+    "appendix", "appendices", "附录",
+    "keywords", "关键词",
+    "tableofcontents", "contents", "目录",
+}
+
+
+def structural_heading_map(paras, min_pt: Optional[float] = None,
+                           exclude_ps: Optional[set] = None) -> dict:
+    """文档里所有可认出层级的标题段 → {w:p 元素: level}（v2.3.97）。
+
+    ⚠️ **单一真相源**：reader 的每级格式采样与 fixer 的层级指派共用本函数。
+    以前只有 `pseudo_heading_level_map`（整段加粗 + 字号分层），于是「不加粗的编号
+    小节行」两头落空 —— 采样看不见它们（L2 要求无从比对），修正也不碰它们。
+
+    组成：`pseudo_heading_level_map` 的全部结果 + 通过四道闸门的编号结构行。
+    闸门细节见本函数上方的注释；本函数**只负责认，不负责改**。
+    """
+    paras = list(paras)
+    exclude_ps = exclude_ps or set()
+    out = dict(pseudo_heading_level_map(paras, min_pt=min_pt, exclude_ps=exclude_ps))
+
+    # 前置 / 后置材料标题（Abstract / References / 致谢 / 附录 …）**不进章节层级**：
+    # 它们一旦占掉某一级，既会把真正的章节标题挤到更深一级（`1. Introduction` 被认成
+    # L3、套上 APA Level 3 的「加粗+斜体」），又会被套成错的格式（摘要标题被套成
+    # Level 2 的左对齐）。见 _MATTER_TITLES 的说明。
+    _text_by_p = {para._p: (para.text or "") for para in paras}
+    out = {p: lv for p, lv in out.items()
+           if _norm_matter_title(_text_by_p.get(p, "")) not in _MATTER_TITLES}
+
+    # 已有锚点的最高层级：编号小节要排在它下面，而不是跟它抢同一级。
+    base = max(out.values()) if out else 0
+
+    cands: list = []          # [(index, para, nums)]
+    for i, para in enumerate(paras):
+        if para._p in exclude_ps or para._p in out:
+            continue
+        if not is_section_heading_line(para):
+            continue
+        nums = parse_section_number(para.text or "")
+        if nums is None:
+            continue
+        cands.append((i, para, nums))
+    if not cands:
+        return out
+
+    by_depth: dict = {}
+    for row in cands:
+        by_depth.setdefault(len(row[2]), []).append(row)
+
+    # 闸门 ②③：顶层（深度 1）必须构成**可信的编号序列**，且至少两项。
+    #   合法形态 = 每一项「比上一项大 1」**或**「重新从 1 开始」——
+    #   后者是真实论文的常态：多数学校「每章小节各自从 1 编号」（Ch1→1., Ch2→1.），
+    #   整篇按「第 1 章 1. 2. 3. / 第 2 章 1. 2.」走。要求全局严格递增会把这类
+    #   文档整批漏掉（实测：老板这份 20 页论文每 6 章循环一次，严格递增直接判空）。
+    #   反过来，正文里的编号列表一旦跳号（1. 2. 5.）就不认 —— 宁可漏，不误伤。
+    top = by_depth.get(1, [])
+    seq = [n[0] for _, _, n in top]
+    if len(top) < 2 or seq[0] != 1:
+        return out
+    for a, b in zip(seq, seq[1:]):
+        if b != a + 1 and b != 1:
+            return out
+    for _i, para, _n in top:
+        out[para._p] = min(5, base + 1)
+
+    # 更深层的编号：其首段编号必须落在顶层的章号里（不跳级认人）
+    top_prefixes = set(seq)
+    for depth in sorted(d for d in by_depth if d > 1):
+        rows = [r for r in by_depth[depth] if r[2][0] in top_prefixes]
+        if not rows:
+            continue
+        for _i, para, _n in rows:
+            out[para._p] = min(5, base + depth)
+    return out
 
 
 def pseudo_heading_level_map(paras, min_pt: Optional[float] = None,
@@ -2556,8 +2745,17 @@ def _read_docx_impl(doc) -> DocumentProfile:
     heading_styles: list = []
     heading_levels: set = set()
 
-    def _sample_paragraph(para):
-        """把一段文字的字体/字号纳入采样（run → 段落样式 → 文档默认）。"""
+    def _sample_paragraph(para, pair_by_family: bool = True):
+        """把一段文字的字体/字号纳入采样（run → 段落样式 → 文档默认）。
+
+        ``pair_by_family``：是否同时记「字体 → 字号」配对。表格段落传 False ——
+        正文（含表格）的字体/字号众数照旧统计，但**配对表只统计正文段**：
+        配对表是 `font_size_by_font` 维度的唯一依据，而这个维度只改正文段
+        （`_apply_size_by_font_family(no_heading, ...)` 从不碰表格）。
+        表格若混进来，一篇表格文字 10pt 的论文里 TNR 的众数会被 10 顶掉 →
+        检查说「应为 12pt」、修正只改正文、复检仍读 10 → **一条永远点不掉的红杠**
+        （v2.3.97 实测：真实论文 40 个表格 run 压过 34 个正文 run）。
+        """
         for run in para.runs:
             if not run.text.strip():
                 continue
@@ -2577,7 +2775,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 except Exception:
                     pass
             # 字体 → 字号配对计数（混用字体时每种字体各取自己的众数字号）
-            if fn and fs is not None:
+            if pair_by_family and fn and fs is not None:
                 try:
                     family_size_counter.setdefault(fn, Counter())[
                         round(float(fs.pt), 1)] += 1
@@ -2608,7 +2806,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if not para.text.strip():
             continue
         table_count += 1
-        _sample_paragraph(para)
+        _sample_paragraph(para, pair_by_family=False)
         sp = _line_spacing_of_para(para)
         if sp is not None:
             spacing_samples.append(sp)
@@ -2678,7 +2876,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
         _dt = doc_title_index(doc)
         if _dt is not None:
             _skip_ps.add(paras[_dt]._p)
-        _pseudo = pseudo_heading_level_map(paras, exclude_ps=_skip_ps)
+        _pseudo = structural_heading_map(paras, exclude_ps=_skip_ps)
         _first_of_level: dict = {}
         for para in paras:
             lvl = _pseudo.get(para._p)
@@ -2821,6 +3019,32 @@ def _read_docx_impl(doc) -> DocumentProfile:
             _prev_abs = paras[_abs_head - 1] if _abs_head > 0 else None
             prof.abstract_new_page = _reference_starts_new_page(
                 _prev_abs, paras[_abs_head])
+            # v2.3.97：摘要**标题**自身的格式（对齐 / 加粗 / 斜体）。
+            # 采集时必须三级回退取值（段落 → 样式链 → 文档默认），否则「样式里写着居中、
+            # 段上没有直接格式」的文档会读成左对齐，检查器随即报一条修不掉的错。
+            _ah = paras[_abs_head]
+            _ah_al = _pf_attr(_ah, doc_pf, "alignment")
+            prof.abstract_heading_alignment = (
+                _ALIGN_MAP.get(_ah_al) if _ah_al is not None else None)
+            _ah_runs = [r for r in _ah.runs if (r.text or "").strip()]
+            if _ah_runs:
+                _b = [getattr(r.font, "bold", None) for r in _ah_runs]
+                prof.abstract_heading_bold = (
+                    True if any(v is True for v in _b)
+                    else (False if all(v is False for v in _b) else None))
+                _i = [getattr(r.font, "italic", None) for r in _ah_runs]
+                prof.abstract_heading_italic = (
+                    True if any(v is True for v in _i)
+                    else (False if all(v is False for v in _i) else None))
+            # v2.3.97：关键词行（"Keywords: ..."）的标签斜体 + 整行首行缩进（APA §2.10）。
+            _kw_idx = next((j for j in _abs_body if is_keywords_line(paras[j])), None)
+            if _kw_idx is not None:
+                _kwp = paras[_kw_idx]
+                _kw_runs = [r for r in _kwp.runs if (r.text or "").strip()]
+                if _kw_runs:
+                    prof.keywords_label_italic = getattr(_kw_runs[0].font, "italic", None)
+                _kw_fli = _inch(_pf_attr(_kwp, doc_pf, "first_line_indent"))
+                prof.keywords_indent_in = 0.0 if _kw_fli is None else _kw_fli
             # v2.3.91：摘要之后**正文首段**是否另起一页（APA：正文从摘要后新一页开始）。
             # 摘要正文可能跨多段，取摘要区最后一段为前一段。
             _abs_last = max(_abs_body)
@@ -2834,6 +3058,11 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.abstract_space_before_pt = None
         prof.abstract_space_after_pt = None
         prof.text_break_before = None
+        prof.abstract_heading_alignment = None
+        prof.abstract_heading_bold = None
+        prof.abstract_heading_italic = None
+        prof.keywords_label_italic = None
+        prof.keywords_indent_in = None
 
     # —— 图表 caption 采样（v2.3.67）——
     try:

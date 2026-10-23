@@ -299,6 +299,44 @@ fields:
     note: >-
       true = the body begins on a new page after the Abstract; false = it may continue right
       after the abstract. Omit when unspecified.
+  - key: abstract_heading_alignment
+    label: Abstract heading alignment
+    unit: ""
+    example: center
+    allowed: [left, center]
+    note: >-
+      Alignment of the "Abstract" label itself. APA 7 §2.9 centres it; many engineering
+      templates flush it left. Omit when the requirement says nothing about it.
+  - key: abstract_heading_bold
+    label: Abstract heading bold
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      Whether the "Abstract" label is bold. APA requires bold. Omit when unspecified.
+  - key: abstract_heading_italic
+    label: Abstract heading italic
+    unit: ""
+    example: false
+    allowed: [true, false]
+    note: >-
+      Whether the "Abstract" label is italic. Some IEEE templates italicise it. Omit when
+      unspecified.
+  - key: keywords_label_italic
+    label: Keywords label italic
+    unit: ""
+    example: true
+    allowed: [true, false]
+    note: >-
+      Whether only the word "Keywords:" is italic while the terms stay upright. APA requires
+      italic for the label. Omit when unspecified.
+  - key: keywords_indent_in
+    label: Keywords line indent
+    unit: in
+    example: 0.5
+    allowed: number
+    note: >-
+      First-line indent of the whole "Keywords: ..." line. APA uses 0.5. Omit when unspecified.
   - key: abstract_space_before_pt
     label: Abstract - space before each paragraph
     unit: pt

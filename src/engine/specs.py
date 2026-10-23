@@ -207,6 +207,25 @@ class StyleSpec:
     # None = 该风格不规定（由学校模板 / 问卷 / AI 决定），不臆造。
     abstract_first_line_indent_in: Optional[float] = None   # 摘要正文首行缩进（英寸）；None=不规定
     abstract_new_page: Optional[bool] = None                 # 摘要是否另起一页；None=不规定
+    # —— 摘要**标题**（「Abstract」这一行本身）的格式（v2.3.97）——
+    # 老板 2026-10-23 打开 APA 产物一眼看出「摘要标题没居中」：此前工具就没有这个维度，
+    # 而且 `Abstract` 段因为「整段加粗 + 居中字号档」被伪标题兜底采样认成**二级章节标题**，
+    # 顺手被套上 APA Level 2 的「左对齐 + 加粗」—— 与 §2.9 完全相反。
+    # 各家口径差别很大，所以一律规范驱动，绝不给所有规范套同一套：
+    #   · APA 7 §2.9：标签 "Abstract" **居中 + 加粗**（学生版/专业版一致）
+    #   · MLA 9：默认不要求摘要（手冊只说 "Abstract (if required)"），无统一格式 → None
+    #   · IEEE：各会议/期刊模板差异过大（"Abstract—" 常与正文 run-in 同行、有的居中
+    #     有的左对齐、有的斜体加粗）→ None，由模板/客户决定，不替它拍板
+    # None = 该风格不规定（由学校模板 / 问卷 / AI 决定），不检查也不改动。
+    abstract_heading_alignment: Optional[str] = None         # "left" / "center" / None
+    abstract_heading_bold: Optional[bool] = None             # 摘要标题是否加粗
+    abstract_heading_italic: Optional[bool] = None           # 摘要标题是否斜体
+    # 关键词行标签（"Keywords:" 里的那个词）是否斜体（v2.3.97）。
+    # APA 7 §2.10：标签写斜体、整行缩进 0.5″、后跟 3–5 个小写关键词、逗号分隔、末尾不加句号。
+    # 其中**斜体与缩进是格式**（可查可改）；小写/逗号/句号是**内容**（只提示不改）。
+    # MLA 9 默认不要求摘要与关键词；IEEE 的关键词行通常是 "Keywords—" 且不斜体 → 两者 None。
+    keywords_label_italic: Optional[bool] = None
+    keywords_indent_in: Optional[float] = None               # 关键词行首行缩进（英寸）
     # —— 首页结构（v2.3.91）——
     # 老板 2026-10-22「三件一起做，清掉」。全都只写 page_break_before / 段距，
     # **不新增任何段落或文字**，因此不影响「文字 100% 锁死」。
@@ -254,6 +273,11 @@ class StyleSpec:
         "reference_alpha_sort_hint": self.reference_alpha_sort_hint,
         "abstract_first_line_indent_in": self.abstract_first_line_indent_in,
         "abstract_new_page": self.abstract_new_page,
+        "abstract_heading_alignment": self.abstract_heading_alignment,
+        "abstract_heading_bold": self.abstract_heading_bold,
+        "abstract_heading_italic": self.abstract_heading_italic,
+        "keywords_label_italic": self.keywords_label_italic,
+        "keywords_indent_in": self.keywords_indent_in,
         "caption_font_size_pt": self.caption_font_size_pt,
         "caption_line_spacing": self.caption_line_spacing,
         "caption_position_table": self.caption_position_table,
@@ -532,6 +556,15 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
                reference_alpha_sort_hint: bool = True,
                abstract_first_line_indent_in: Optional[float] = 0.0,
                abstract_new_page: Optional[bool] = None,
+               # v2.3.97：摘要**标题**本身的格式。APA 7 §2.9 两档一致 ——
+               # 标签 "Abstract" 居中 + 加粗（官方 Checklist: "centred at the top of the
+               # page" + "is bold"）。学生版/专业版共享本函数的默认值。
+               abstract_heading_alignment: Optional[str] = "center",
+               abstract_heading_bold: Optional[bool] = True,
+               abstract_heading_italic: Optional[bool] = False,
+               # v2.3.97：关键词行标签斜体（APA §2.10："Keywords:" 斜体 + 整行缩进 0.5″）
+               keywords_label_italic: Optional[bool] = True,
+               keywords_indent_in: Optional[float] = 0.5,
                # v2.3.91：题名页独立成页 / 标题垂直位置 / 清额外段距（三件套同一开关）。
                # MLA、IEEE 保持 None —— 它们没有「题名页」这个概念（MLA 首页块连排、
                # IEEE 会议论文题名就在第一页顶部），绝不给它们凭空插分页。
@@ -594,6 +627,11 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         # 全部只写 pageBreakBefore，不新增段落或文字。
         title_page_new_page=title_page_new_page,
         text_new_page=True if title_page_new_page else None,
+        abstract_heading_alignment=abstract_heading_alignment,
+        abstract_heading_bold=abstract_heading_bold,
+        abstract_heading_italic=abstract_heading_italic,
+        keywords_label_italic=keywords_label_italic,
+        keywords_indent_in=keywords_indent_in,
         caption_position_table=caption_position_table,
         caption_position_figure=caption_position_figure,
         # APA 7th §7.10：表格只用横线，**不许有竖线**（就要求是顶线/表头下线/底线）。

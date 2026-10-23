@@ -27,6 +27,7 @@ PaperFormat Pro —— 海外版「一键修正」核心。
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 from typing import Optional
@@ -45,8 +46,10 @@ from .policy import TEXT_IS_LOCKED
 from .docx_reader import (
     DocxReadError, heading_level, is_heading, is_pseudo_heading, read_docx,
     reference_paragraph_indices, find_reference_section, find_abstract_section,
-    abstract_body_style_indices,
-    pseudo_heading_level_map, PAPER_SIZES, describe_paper_size, detect_title_page,
+    abstract_body_style_indices, is_keywords_line,
+    pseudo_heading_level_map, structural_heading_map,
+    _norm_matter_title, _MATTER_TITLES,
+    PAPER_SIZES, describe_paper_size, detect_title_page,
     doc_title_index,
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
     detect_static_page_number, _para_has_page_field, _run_font_name,
@@ -2225,13 +2228,27 @@ def _assign_heading_levels(doc, target: TargetProfile, exclude_ps: set | None = 
         else:
             pseudo_paras.append(para)
     if pseudo_paras:
-        # 伪标题按字号档分层——与 docx_reader 的采样共用同一函数（单一真相源），
-        # 否则「检查所依据的分层」与「修正所施加的分层」会各算一套。
-        lvl_map = pseudo_heading_level_map(pseudo_paras, exclude_ps=exclude_ps)
+        # 层级按「加粗伪标题的字号档 + 编号小节行」推断 —— 与 docx_reader 的采样共用
+        # 同一函数（单一真相源），否则「检查所依据的分层」与「修正所施加的分层」
+        # 会各算一套。v2.3.97 起把「不加粗的编号小节行」（1. Introduction）也纳入，
+        # 否则 L2 的加粗要求既没人比、也没人改。
+        lvl_map = structural_heading_map(pseudo_paras, exclude_ps=exclude_ps)
         for p in pseudo_paras:
             lvl = lvl_map.get(p._p)
             if lvl is not None:
                 out[p._p] = (lvl, True)
+        # v2.3.97：前置/后置**材料**标题（References / 致谢 / 附录 / 目录…）
+        # 不进层级仲裁 —— 它们一旦占掉某一级，会把真正的章节整体推深一级。
+        # 但**格式仍要套**（IEEE 要求 "REFERENCES" 全大写加粗、APA 要求居中加粗），
+        # 只是不参与编号（_NON_NUMBERED_HEADINGS 另管）。按 L1 套是安全的：
+        # 材料标题在文档结构里就是顶格的一级，读者预期也如此。
+        # Abstract / Keywords 除外 —— 它们的格式归 abstract_heading / keywords 维度独享。
+        _txt_by_p = {p._p: (p.text or "") for p in pseudo_paras}
+        for p in pseudo_paras:
+            if p._p in out:
+                continue
+            if _norm_matter_title(_txt_by_p.get(p._p, "")) in _FORMATTABLE_MATTER_TITLES:
+                out[p._p] = (1, True)
     return out
 
 
@@ -2240,6 +2257,13 @@ _NON_NUMBERED_HEADINGS = {
     "references", "reference", "bibliography", "works cited",
     "acknowledgments", "acknowledgements", "acknowledgment", "acknowledgement",
     "appendix", "appendices", "abstract", "keywords",
+}
+
+# 材料标题里**归本流程套格式**的那部分（v2.3.97）：从 reader 的 _MATTER_TITLES 里
+# 扣掉摘要标题与关键词行 —— 那两处由 abstract_heading / keywords 维度独享，
+# 两边都动就是「一段两个主人」，实测会把摘要标题的居中又刷回 Level 2 的左对齐。
+_FORMATTABLE_MATTER_TITLES = _MATTER_TITLES - {
+    "abstract", "摘要", "abstractpage", "keywords", "关键词",
 }
 
 
@@ -2641,6 +2665,172 @@ def _apply_text_new_page(doc, new_page: bool) -> dict:
             "Page break after the abstract removed: the body may continue on the "
             "abstract page.")
     return info
+
+
+def _apply_abstract_heading(doc, alignment=None, bold=None, italic=None) -> bool:
+    """摘要**标题**（"Abstract" 这一行）的对齐 / 加粗 / 斜体（v2.3.97）。
+
+    只动这一段的**格式**，一个字都不写（文字 100% 锁死）。三项各自独立：
+    None = 这一项不动（客户/规范没规定就别碰），这是「控制好」的关键 ——
+    MLA、IEEE 都没规定摘要标题格式，不能跟着 APA 一起居中。
+    """
+    _head, _body = _abstract_section(doc)
+    if _head is None or _head >= len(doc.paragraphs):
+        return False
+    para = doc.paragraphs[_head]
+    changed = False
+    if alignment:
+        want = _ALIGN_ENUM.get(alignment)
+        if want is not None:
+            try:
+                if para.paragraph_format.alignment != want:
+                    para.paragraph_format.alignment = want
+                    changed = True
+            except Exception:
+                pass
+    runs = [r for r in para.runs if (r.text or "").strip()]
+    for run in runs:
+        try:
+            if bold is not None and run.font.bold is not bold:
+                run.font.bold = bold
+                changed = True
+            if italic is not None and run.font.italic is not italic:
+                run.font.italic = italic
+                changed = True
+        except Exception:
+            continue
+    return changed
+
+
+_KEYWORDS_LABEL_RE = re.compile(r"^\s*(?:key\s*words?|关键词)\s*[:：]", re.IGNORECASE)
+
+
+def _split_run(para, run, offset: int):
+    """把 run 在 offset 处一分为二，返回后半段（新 run）。**文字原样搬运，一字不改。**
+
+    python-docx 没有公开的 run 拆分 API：先 `add_run` 造一个新 run（此时它被追加到
+    段尾），把原 run 的 rPr 深拷贝进去，再用 `addnext` 挪到原 run 后面 ——
+    两个 run 的字符拼接结果与原来逐字相同，只是格式可以分开设了。
+    """
+    text = run.text or ""
+    if offset <= 0 or offset >= len(text):
+        return None
+    # 含软换行/制表符的 run 用 text setter 往返可能变形 → 不在这里赌，交给上层降级
+    if run._r.find(qn("w:br")) is not None or run._r.find(qn("w:tab")) is not None:
+        return None
+    rpr = run._r.find(qn("w:rPr"))
+    tail_run = para.add_run(text[offset:])
+    if rpr is not None:
+        _new_r = tail_run._r
+        _own = _new_r.find(qn("w:rPr"))
+        if _own is not None:
+            _new_r.remove(_own)
+        _new_r.insert(0, copy.deepcopy(rpr))
+    run.text = text[:offset]
+    run._r.addnext(tail_run._r)
+    return tail_run
+
+
+def _set_keywords_label_italic(para, want: bool) -> bool:
+    """只给 Keywords 行的**标签部分**（"Keywords:"）加/去斜体，词条保持原样。
+
+    APA 7 §2.10：标签斜体、词条不斜体。真实文档里标签与词条通常粘在同一个 run 里
+    （手打时不会特意分开）→ 在标签末尾把 run 一切为二，只给前半段设斜体。
+    拆不动（run 里含 w:br/w:tab）时**降级**为整行设斜体：文字仍然一字不动，
+    但宁可词条也斜体，也不能让客户点了「修正」却什么都没变。
+    """
+    text = para.text or ""
+    m = _KEYWORDS_LABEL_RE.match(text)
+    if not m or m.end() <= 0:
+        return False
+    end = m.end()
+    changed = False
+    pos = 0
+    for run in list(para.runs):
+        rt = run.text or ""
+        start, stop = pos, pos + len(rt)
+        pos = stop
+        if not rt:
+            continue
+        if start >= end:
+            break                      # 已经完全越过标签 → 后面是词条，不碰
+        if stop <= end:
+            try:                       # 整段落在标签里
+                if run.font.italic is not want:
+                    run.font.italic = want
+                    changed = True
+            except Exception:
+                pass
+            continue
+        # 跨界（start < end < stop）：切开，只给标签那半设斜体
+        tail = _split_run(para, run, end - start)
+        try:
+            if run.font.italic is not want:
+                run.font.italic = want
+                changed = True
+        except Exception:
+            pass
+        if tail is None:
+            # 拆不动 → 降级为整行设斜体（文字仍一字不动，但不能什么都不改）
+            for _r in para.runs:
+                try:
+                    if _r.font.italic is not want:
+                        _r.font.italic = want
+                        changed = True
+                except Exception:
+                    pass
+        break
+    return changed
+
+
+def _apply_keywords_format(doc, label_italic=None, indent_in=None) -> bool:
+    """Keywords 行（"Keywords: ..."）的格式（v2.3.97）。
+
+    APA 7 §2.10：标签斜体 + 整行像正文首行那样缩进 0.5″。
+    只动这一段的格式与 run 切分，一个字都不写、不删（文字 100% 锁死）。
+    两项各自独立，None = 这一项不动 —— MLA / IEEE 两条都不规定，就不许碰。
+    """
+    _head, body_idx = _abstract_section(doc)
+    if _head is None or not body_idx:
+        return False
+    doc_paras = list(doc.paragraphs)
+    _kw_idx = next((j for j in body_idx
+                    if 0 <= j < len(doc_paras) and is_keywords_line(doc_paras[j])),
+                   None)
+    if _kw_idx is None:
+        return False
+    para = doc_paras[_kw_idx]
+    changed = False
+    if indent_in is not None:
+        try:
+            want = float(indent_in)
+            pf = para.paragraph_format
+            cur = pf.first_line_indent
+            if cur is None or abs(float(cur.inches) - want) > 1e-3:
+                pf.first_line_indent = Inches(want)
+                changed = True
+        except Exception:
+            pass
+    if label_italic is not None:
+        try:
+            if _set_keywords_label_italic(para, bool(label_italic)):
+                changed = True
+        except Exception:
+            pass
+    if changed:
+        bits = []
+        if label_italic is not None:
+            bits.append("label " + ("italic" if label_italic else "not italic"))
+        if indent_in is not None:
+            try:
+                bits.append("first-line indent %g in" % float(indent_in))
+            except (TypeError, ValueError):
+                pass
+        try:
+            add_comment(doc, para, "Keywords line formatted: " + ", ".join(bits) + ".")
+        except Exception:
+            pass
+    return changed
 
 
 def _spec_label(spec) -> str:
@@ -3056,6 +3246,15 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if isinstance(_ci, int) and 0 <= _ci < len(doc.paragraphs):
             quote_ps.add(doc.paragraphs[_ci]._p)
     indent_exempt_ps = tp_ps | abstract_ps | quote_ps
+    # v2.3.97：摘要**标题**段也不吃正文首行缩进。它由 abstract_heading 维度独占管对齐，
+    # 若再吃 0.5″ 首行缩进，APA 的居中标题会变成「缩进 0.5″ 的居中标题」（实测产物
+    # 'Abstract' align=CENTER 却 fli=0.5）。
+    try:
+        _abs_head_i, _ = _abstract_section(doc)
+        if _abs_head_i is not None and 0 <= _abs_head_i < len(doc.paragraphs):
+            indent_exempt_ps.add(doc.paragraphs[_abs_head_i]._p)
+    except Exception:
+        pass
     # v2.3.77：目录标题段由「toc_heading_space_*」独占，正文段前/段后与首行缩进不能再刷它
     # —— 否则两个流程每遍轮流改同一属性，造成「没变却恒报已改」的顺序脆弱。
     try:
@@ -3213,6 +3412,32 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     if "abstract_new_page" in fix_dims and target.abstract_new_page is not None:
         if _apply_abstract_new_page(doc, target.abstract_new_page):
             applied["abstract_new_page"] = target.abstract_new_page
+    # 摘要标题自身的格式（v2.3.97）：显式要求优先，规范基线补位；三项各自独立。
+    if "abstract_heading" in fix_dims:
+        _ah_al = getattr(target, "abstract_heading_alignment", None)
+        _ah_b = getattr(target, "abstract_heading_bold", None)
+        _ah_i = getattr(target, "abstract_heading_italic", None)
+        if spec_is_baseline(target):
+            if _ah_al is None:
+                _ah_al = getattr(spec, "abstract_heading_alignment", None)
+            if _ah_b is None:
+                _ah_b = getattr(spec, "abstract_heading_bold", None)
+            if _ah_i is None:
+                _ah_i = getattr(spec, "abstract_heading_italic", None)
+        if _apply_abstract_heading(doc, _ah_al, _ah_b, _ah_i):
+            applied["abstract_heading"] = {"alignment": _ah_al, "bold": _ah_b,
+                                           "italic": _ah_i}
+    # Keywords 行格式（v2.3.97）：同样显式优先、规范基线补位；两项各自独立。
+    if "keywords" in fix_dims:
+        _kw_i = getattr(target, "keywords_label_italic", None)
+        _kw_n = getattr(target, "keywords_indent_in", None)
+        if spec_is_baseline(target):
+            if _kw_i is None:
+                _kw_i = getattr(spec, "keywords_label_italic", None)
+            if _kw_n is None:
+                _kw_n = getattr(spec, "keywords_indent_in", None)
+        if _apply_keywords_format(doc, _kw_i, _kw_n):
+            applied["keywords"] = {"label_italic": _kw_i, "indent_in": _kw_n}
 
     # 摘要正文段前/段后（v2.3.76）：只有检查结论要求时才动手，逐维度独立门控。
     _abs_sb = getattr(target, "abstract_space_before_pt", None) \
@@ -3400,6 +3625,8 @@ _DIM_LABELS = {
         "abstract_new_page": "Abstract on new page",
         "abstract_space_before": "Abstract space before",
         "abstract_space_after": "Abstract space after",
+        "abstract_heading": "Abstract heading",
+        "keywords": "Keywords line",
         "caption_size": "Caption font size",
         "caption_spacing": "Caption line spacing",
         "caption_space_before": "Caption space before",
@@ -3439,6 +3666,8 @@ _DIM_LABELS = {
         "abstract_new_page": "摘要另起一页",
         "abstract_space_before": "摘要段前间距",
         "abstract_space_after": "摘要段后间距",
+        "abstract_heading": "摘要标题格式",
+        "keywords": "关键词行格式",
         "caption_size": "图表标题字号",
         "caption_spacing": "图表标题行距",
         "caption_space_before": "图表标题段前间距",

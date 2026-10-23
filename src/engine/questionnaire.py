@@ -253,6 +253,25 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "text_new_page", "label": "正文另起一页", "group": "page", "type": "tri",
      "default": "", "unit": "",
      "help": "是=摘要之后正文另起一页（APA 要求）；否=明确允许摘要后接排；—=不规定"},
+    # v2.3.97：摘要**标题**自身的格式。以前只有「摘要正文」的维度，标题这一行没人管
+    # （APA 产物里它被当成二级章节标题套了左对齐）。三家口径差别大，故独立三问。
+    {"key": "abstract_heading_alignment", "label": "摘要标题对齐", "group": "page",
+     "type": "choice", "options": ["left", "center"], "default": "", "unit": "",
+     "help": "center=居中（APA §2.9）；left=左对齐（多数工科模板）；—=不规定"},
+    {"key": "abstract_heading_bold", "label": "摘要标题加粗", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=「Abstract」这一行加粗（APA 要求）；否=明确不加粗；—=不规定"},
+    {"key": "abstract_heading_italic", "label": "摘要标题斜体", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=「Abstract」这一行斜体（部分 IEEE 模板）；否=明确不斜体；—=不规定"},
+    # v2.3.97：关键词行（"Keywords: ..."）。APA §2.10 要标签斜体 + 整行缩进 0.5″；
+    # 学校模板同样会写「关键词：小四、空两格」，所以三路输入都必须能表达这两项。
+    {"key": "keywords_label_italic", "label": "关键词标签斜体", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=只把「Keywords:」这个标签设成斜体，词条不斜体（APA 要求）；否=明确不斜体；—=不规定"},
+    {"key": "keywords_indent_in", "label": "关键词行缩进", "group": "page", "type": "float",
+     "default": "", "unit": "英寸", "range": (0.0, 2.0),
+     "help": "关键词行整行的首行缩进；APA=0.5（留空=不规定）"},
     # v2.3.76：摘要正文段的段前/段后（摘要上方与下方各留多少，学校模板常写死）。
     {"key": "abstract_space_before_pt", "label": "摘要正文段前", "group": "page", "type": "float",
      "default": "", "unit": "磅", "range": (0.0, 200.0),
@@ -370,6 +389,17 @@ class TargetProfile:
     abstract_new_page: Optional[bool] = None
     # v2.3.93：摘要之后正文是否另起一页（同上，从「只有内置规范能表达」放开）。
     text_new_page: Optional[bool] = None
+    # v2.3.97：摘要**标题**（"Abstract" 这一行）自身的格式。老板 2026-10-23 打开 APA 产物
+    # 一眼看出「摘要标题没居中」—— 此前完全没有这个维度，`Abstract` 还被伪标题兜底采样
+    # 认成二级章节标题、套上 Level 2 的左对齐。三家口径差别大，故规范驱动、绝不一刀切：
+    # APA 7 §2.9 = 居中 + 加粗；MLA 9 默认不要求摘要；IEEE 各模板差异过大。
+    abstract_heading_alignment: Optional[str] = None
+    abstract_heading_bold: Optional[bool] = None
+    abstract_heading_italic: Optional[bool] = None
+    # v2.3.97：关键词行（"Keywords: ..."）的标签斜体 + 整行首行缩进。
+    # APA §2.10：标签斜体、整行缩进 0.5″；关键词小写/逗号分隔/末尾无句号属**内容**，只提示。
+    keywords_label_italic: Optional[bool] = None
+    keywords_indent_in: Optional[float] = None
     # v2.3.76：摘要正文段的段前/段后（磅）。None = 不规定（不检查、不改动）。
     abstract_space_before_pt: Optional[float] = None
     abstract_space_after_pt: Optional[float] = None
@@ -449,7 +479,12 @@ class TargetProfile:
                      # v2.3.76：摘要正文段的段前 / 段后
                      "abstract_space_before_pt", "abstract_space_after_pt",
                      # v2.3.93：摘要之后正文另起一页
-                     "text_new_page")
+                     "text_new_page",
+                     # v2.3.97：摘要标题本身的对齐 / 加粗 / 斜体
+                     "abstract_heading_alignment", "abstract_heading_bold",
+                     "abstract_heading_italic",
+                     # v2.3.97：关键词行标签斜体 / 整行缩进
+                     "keywords_label_italic", "keywords_indent_in")
 
     # 表格内段落（v2.3.77；不进 PAGE_KEYS：只作用于表格单元格段落）
     TABLE_KEYS = ("table_space_before_pt", "table_space_after_pt")
@@ -518,6 +553,11 @@ def target_from_spec(key: str) -> TargetProfile:
         resolution["abstract_first_line_indent_in"] = "spec"
     if spec.abstract_new_page is not None:
         resolution["abstract_new_page"] = "spec"
+    for _k in ("abstract_heading_alignment", "abstract_heading_bold",
+               "abstract_heading_italic", "keywords_label_italic",
+               "keywords_indent_in"):
+        if getattr(spec, _k, None) is not None:
+            resolution[_k] = "spec"
     if spec.caption_font_size_pt is not None:
         resolution["caption_font_size_pt"] = "spec"
     if spec.caption_line_spacing is not None:
@@ -556,6 +596,11 @@ def target_from_spec(key: str) -> TargetProfile:
         page_number_position=spec.page_number_position,
         abstract_first_line_indent_in=spec.abstract_first_line_indent_in,
         abstract_new_page=spec.abstract_new_page,
+        abstract_heading_alignment=spec.abstract_heading_alignment,
+        abstract_heading_bold=spec.abstract_heading_bold,
+        abstract_heading_italic=spec.abstract_heading_italic,
+        keywords_label_italic=getattr(spec, "keywords_label_italic", None),
+        keywords_indent_in=getattr(spec, "keywords_indent_in", None),
         caption_font_size_pt=spec.caption_font_size_pt,
         caption_line_spacing=spec.caption_line_spacing,
         caption_position_table=spec.caption_position_table,
@@ -997,6 +1042,23 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         _tx_np = getattr(doc_profile, "text_break_before", None)
         if _tx_np is not None:
             tpl_abs["text_new_page"] = bool(_tx_np)
+    # 摘要标题格式（v2.3.97）：模板里 "Abstract" 这一行长什么样，就是它要求的样子。
+    # 三项各自独立 —— 模板只写了居中、没写加粗，就只带出「居中」，绝不替它补加粗。
+    _ah_al = getattr(doc_profile, "abstract_heading_alignment", None)
+    if _ah_al is not None:
+        tpl_abs["abstract_heading_alignment"] = _ah_al
+    for _k, _attr in (("abstract_heading_bold", "abstract_heading_bold"),
+                      ("abstract_heading_italic", "abstract_heading_italic")):
+        _v = getattr(doc_profile, _attr, None)
+        if _v is not None:
+            tpl_abs[_k] = bool(_v)
+    # 关键词行（v2.3.97）：模板里有关键词行才带出，没有就不规定。
+    _kw_it = getattr(doc_profile, "keywords_label_italic", None)
+    if _kw_it is not None:
+        tpl_abs["keywords_label_italic"] = bool(_kw_it)
+    _kw_in = getattr(doc_profile, "keywords_indent_in", None)
+    if _kw_in is not None:
+        tpl_abs["keywords_indent_in"] = round(float(_kw_in), 3)
     for _k in tpl_abs:
         resolution[_k] = "school"
 
@@ -1451,6 +1513,55 @@ def apply_page_overrides(target: "TargetProfile", edits: dict) -> None:
                 continue
             setattr(target, key, _tv)
             target.resolution[key] = "user"
+            continue
+        # 摘要标题格式（v2.3.97）：对齐是 choice、加粗/斜体是三态，都走「—」=清空。
+        if key == "abstract_heading_alignment":
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if target.abstract_heading_alignment is not None:
+                    target.abstract_heading_alignment = None
+                    target.resolution.pop("abstract_heading_alignment", None)
+                continue
+            _al = raw.lower()
+            if _al not in ("left", "center"):
+                continue
+            if target.abstract_heading_alignment == _al:
+                continue
+            target.abstract_heading_alignment = _al
+            target.resolution["abstract_heading_alignment"] = "user"
+            continue
+        if key in ("abstract_heading_bold", "abstract_heading_italic",
+                   "keywords_label_italic"):
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if getattr(target, key, None) is not None:
+                    setattr(target, key, None)
+                    target.resolution.pop(key, None)
+                continue
+            _tv = raw.lower() in ("1", "true", "yes", "y")
+            _fv2 = raw.lower() in ("0", "false", "no", "n")
+            if not (_tv or _fv2):
+                continue
+            if getattr(target, key, None) is _tv:
+                continue
+            setattr(target, key, _tv)
+            target.resolution[key] = "user"
+            continue
+        if key == "keywords_indent_in":
+            raw = (raw or "").strip()
+            if raw in ("", "—", "-", "none", "None"):
+                if target.keywords_indent_in is not None:
+                    target.keywords_indent_in = None
+                    target.resolution.pop("keywords_indent_in", None)
+                continue
+            try:
+                fv = float(raw)
+            except (ValueError, TypeError):
+                continue
+            if fv == target.keywords_indent_in:
+                continue
+            target.keywords_indent_in = fv
+            target.resolution["keywords_indent_in"] = "user"
             continue
         # 图表 caption（v2.3.67）：字号/行距是 float、位置是 choice，都走「—」=清空。
         if key in ("caption_font_size_pt", "caption_line_spacing"):

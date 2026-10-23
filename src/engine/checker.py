@@ -358,17 +358,124 @@ def title_page_missing_elements(prof, spec) -> list:
     return missing
 
 
+_ALIGN_WORD = {"left": "left-aligned", "center": "centered",
+               "right": "right-aligned", "justify": "justified"}
+
+
+def _describe_abstract_heading(align, bold, italic) -> str:
+    """摘要标题期望值 → 客户可读描述（"centered, bold"）。只写规定了的那几项。"""
+    bits = []
+    if align:
+        bits.append(_ALIGN_WORD.get(align, align))
+    if bold is not None:
+        bits.append("bold" if bold else "not bold")
+    if italic is not None:
+        bits.append("italic" if italic else "not italic")
+    return ", ".join(bits) or "—"
+
+
+def _describe_abstract_heading_actual(prof, want: dict):
+    """摘要标题实测值 → (客户可读描述, 是否有不符)。
+
+    「没显式设置」不算读不到，更不等于没责任：Word 里 run 上没写 w:b / w:i 就是
+    不生效（除样式层恰好设了）。故按方向判 —— 规范要求「是」时算不符（该加没加），
+    要求「否」时算通过（默认就是否）。这样不会平白多报一条红杠，也放过了真问题。
+    """
+    bits, bad = [], False
+    got_al = getattr(prof, "abstract_heading_alignment", None)
+    w_al = want.get("abstract_heading_alignment")
+    if w_al:
+        if got_al is None:
+            bits.append("alignment not set")
+            if w_al != "left":          # Word 缺省就是左对齐
+                bad = True
+        else:
+            bits.append(_ALIGN_WORD.get(got_al, got_al))
+            if got_al != w_al:
+                bad = True
+    for key, word in (("abstract_heading_bold", "bold"),
+                      ("abstract_heading_italic", "italic")):
+        w = want.get(key)
+        if w is None:
+            continue
+        g = getattr(prof, key, None)
+        if g is None:
+            bits.append("%s not set" % word)
+            if bool(w):
+                bad = True
+            continue
+        bits.append(word if g else "not " + word)
+        if bool(g) != bool(w):
+            bad = True
+    return (", ".join(bits) or "—"), bad
+
+
+def _describe_keywords(italic, indent) -> str:
+    """Keywords 行期望值 → 客户可读描述。只写规定了的那几项（没规定的不写）。"""
+    bits = []
+    if italic is not None:
+        bits.append("label italic" if italic else "label not italic")
+    if indent is not None:
+        try:
+            _n = float(indent)
+        except (TypeError, ValueError):
+            _n = None
+        if _n is not None:
+            bits.append("flush left" if _n <= 0.01 else "indented %g in" % _n)
+    return ", ".join(bits) or "—"
+
+
+def _describe_keywords_actual(prof, want: dict):
+    """Keywords 行实测值 → (客户可读描述, 是否有不符)。
+
+    读不到不算不符（没法判就不冤枉客户），但要在描述里说出来。
+    """
+    bits, bad = [], False
+    w_i = want.get("keywords_label_italic")
+    if w_i is not None:
+        g = getattr(prof, "keywords_label_italic", None)
+        if g is None:
+            # 与摘要标题同一口径：要求「是」才算不符（默认就是不斜体）
+            bits.append("label italic not set")
+            if bool(w_i):
+                bad = True
+        else:
+            bits.append("label italic" if g else "label not italic")
+            if bool(g) != bool(w_i):
+                bad = True
+    w_n = want.get("keywords_indent_in")
+    if w_n is not None:
+        g = getattr(prof, "keywords_indent_in", None)
+        try:
+            gn = None if g is None else float(g)
+            wn = float(w_n)
+        except (TypeError, ValueError):
+            gn = wn = None
+        if gn is None:
+            bits.append("indent unreadable")
+        else:
+            bits.append("flush left" if gn <= 0.01 else "indented %g in" % gn)
+            if abs(gn - wn) > INDENT_TOL_WARN:
+                bad = True
+    return (", ".join(bits) or "—"), bad
+
+
 def _abstract_not_located(prof, suffix: str = "") -> str:
-    """「摘要段定位不到」的客户可读解释（v2.3.91）。
+    """「摘要段定位不到」的客户可读解释（v2.3.91 起；v2.3.96 改因）。
 
     旧文案一律写 "No Abstract section detected"，但真实学生论文里最常见的情形是
     **摘要标题没套标题样式**（实测 student_paper_unformatted_20pages.docx：全文 0 个
     样式标题，连 "Abstract" 都是 Normal）——文档里明明有摘要，报告却说「没检测到」，
-    客户只会以为工具坏了。这里按「有没有摘要字样」分两种说法，把原因说清楚。
+    客户只会以为工具坏了。故按「有没有摘要字样」分两种说法。
+
+    🔴 v2.3.96：没套标题样式**已经不是定位不到的原因**了 —— `find_abstract_section`
+    补了严格限定的文字回退（整行匹配 Abstract + 必须有 Keywords 行作右边界）。
+    所以现在的真因是「找不到 Keywords 行、摘要块的右边界不可知」，
+    文案必须照着这个说：否则客户会跑去给 Abstract 套标题样式，套了也不管用。
     """
     if getattr(prof, "has_abstract", False):
-        return ("The Abstract heading carries no heading style, so the abstract "
-                "section could not be located" + suffix)
+        return ("Abstract text is there, but no 'Keywords:' line marks where the "
+                "abstract ends, so the section cannot be located" + suffix)
     return "No Abstract section detected" + suffix
 
 
@@ -768,10 +875,13 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             sev = _downgrade("warn", origin, is_page_or_heading=True,
                              dim="heading", spec_key=target.spec_key)
         elif prof.heading_levels_used == 0:
-            # 无 Heading 样式，但靠「整段加粗 + 字号档」认出 N 级手排标题。
+            # 无 Heading 样式，但靠「整段加粗 + 字号档」和「章节编号结构」认出了 N 级手排标题。
             # 层级属推断口径，必须如实告知，不能装作读到了标题样式。
-            msg = ("No Heading styles; %d level%s recognised from manual bold headings "
-                   "(levels are inferred from font size)"
+            # v2.3.97：不再只靠字号 —— 不加粗的编号小节行（"1. Introduction"）现在也会
+            # 按编号序列认进层级，所以文案要把「编号」也说出来，否则客户会以为
+            # 他的小节标题是凭字号猜的。
+            msg = ("No Heading styles; %d level%s recognised from manual bold headings and "
+                   "section numbering (levels are inferred)"
                    % (len(_pseudo_lvls), "" if len(_pseudo_lvls) == 1 else "s"))
             # 🔴 v2.3.95：这是**提醒**不是**违规**。标题已经认出来了、每级格式也按规范
             # 落了盘，唯一的不确定是「层级是按字号推的」。工具又造不出标题样式（那是
@@ -1684,10 +1794,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 目标显式给出（spec/school/user/ai）才判；None = 不规定 → 不碰。
     _abs_fli = target.abstract_first_line_indent_in
     _abs_np = target.abstract_new_page
-    # 目标没显式给摘要字段、但规范带了（如 APA 专业版 abstract_new_page=True）→ 用规范值
-    if _abs_fli is None:
+    # 目标没显式给摘要字段、但规范带了（如 APA 专业版 abstract_new_page=True）→ 用规范值。
+    # 🔴 v2.3.96：这层兜底**只在规范基线下**成立（客户真在规范下拉里选了内置规范）。
+    # 学校模板 / 手填 / AI 导入三个通道里，客户只说了「参考文献体例用 APA」就足以让
+    # resolve_spec 取回整套 APA —— 摘要顶格、摘要另起一页随之被判，可它们的来源是 spec
+    # （非基线不绑 FixAction）→ 客户看到一条红杠、点了修正却不消失，纯属冤枉。
+    # v2.3.96 之前这条被「摘要定位不到 → 只给 info」掩盖着，摘要能定位后立刻暴露。
+    # 与 page_number / title_page_new_page 同口径：谁说话就听谁的，没提就闭嘴。
+    if _abs_fli is None and spec_is_baseline(target):
         _abs_fli = apa_spec.abstract_first_line_indent_in
-    if _abs_np is None:
+    if _abs_np is None and spec_is_baseline(target):
         _abs_np = apa_spec.abstract_new_page
     if _abs_fli is not None or _abs_np is not None:
         # 直接用 prof 已采样值（不重复读文件）；摘要段是否存在由采样值是否 None 判断
@@ -1781,7 +1897,105 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             expected="%g pt" % float(_w), actual=_act, source=_o,
         ))
 
-    # —— Running head 显式维度（v2.3.67）——
+    # —— 摘要**标题**自身的格式（v2.3.97）——
+    # 老板 2026-10-23 打开 APA 产物一眼看出「摘要标题没居中」。此前压根没有这个维度，
+    # 而 `Abstract` 段还被伪标题兜底采样认成二级章节标题、套上 Level 2 的左对齐 ——
+    # 与 APA §2.9「标签居中 + 加粗」正好相反。
+    # 规范驱动，三家口径差别很大：APA = 居中加粗；MLA = 不要求摘要；IEEE = 各模板不一。
+    _ah_want: dict = {}
+    for _k in ("abstract_heading_alignment", "abstract_heading_bold",
+               "abstract_heading_italic"):
+        _v = getattr(target, _k, None)
+        if _v is None and _fm_base:
+            _v = getattr(_fm_spec, _k, None)
+        _ah_want[_k] = _v
+    if any(v is not None for v in _ah_want.values()):
+        _ah_origin = (target.resolution.get("abstract_heading_alignment", "school")
+                      if getattr(target, "abstract_heading_alignment", None) is not None
+                      else "spec")
+        _ah_got_al = getattr(prof, "abstract_heading_alignment", None)
+        if _ah_got_al is None:
+            # 没有摘要标题 → 不判缺失（很多论文根本没有摘要页）
+            findings.append(Finding(
+                dimension="abstract_heading", severity="info",
+                message="Abstract heading",
+                expected=_describe_abstract_heading(
+                    _ah_want["abstract_heading_alignment"],
+                    _ah_want["abstract_heading_bold"],
+                    _ah_want["abstract_heading_italic"]),
+                actual=_abstract_not_located(prof, " (nothing to change)"),
+                source=_ah_origin,
+            ))
+        else:
+            _eh = _describe_abstract_heading(
+                _ah_want["abstract_heading_alignment"],
+                _ah_want["abstract_heading_bold"],
+                _ah_want["abstract_heading_italic"])
+            _gh, _ah_bad = _describe_abstract_heading_actual(prof, _ah_want)
+            if _ah_bad:
+                # 直接在发现时挂 FixAction（与 v2.3.95 的参考文献反向编号同一写法）：
+                # 摘要标题的对齐/加粗属于**格式**、不碰一个字，规范基线或有显式要求就该修。
+                _f = Finding(
+                    dimension="abstract_heading", severity="warn",
+                    message="Abstract heading",
+                    expected=_eh, actual=_gh, source=_ah_origin,
+                )
+                _f.fix = FixAction(dimension="abstract_heading", value=True)
+                findings.append(_f)
+            else:
+                findings.append(Finding(
+                    dimension="abstract_heading", severity="pass",
+                    message="Abstract heading",
+                    expected=_eh, actual=_gh, source=_ah_origin,
+                ))
+
+    # —— Keywords 行自身的格式（v2.3.97）——
+    # APA 7 §2.10：标签 "Keywords:" 斜体、整行像正文首行那样缩进 0.5″、词条本身不斜体。
+    # 规范驱动：MLA 根本不要求摘要、IEEE 各模板自定 → 两者该两项均为 None，一个字都不说。
+    _kw_want: dict = {}
+    for _k in ("keywords_label_italic", "keywords_indent_in"):
+        _v = getattr(target, _k, None)
+        if _v is None and _fm_base:
+            _v = getattr(_fm_spec, _k, None)
+        _kw_want[_k] = _v
+    if any(v is not None for v in _kw_want.values()):
+        _kw_origin = (target.resolution.get("keywords_indent_in", "school")
+                      if getattr(target, "keywords_indent_in", None) is not None
+                      else "spec")
+        _kw_has = (getattr(prof, "keywords_indent_in", None) is not None
+                   or getattr(prof, "keywords_label_italic", None) is not None)
+        _ek = _describe_keywords(_kw_want["keywords_label_italic"],
+                                 _kw_want["keywords_indent_in"])
+        if not _kw_has:
+            # 没有 Keywords 行 → 不判缺失（我们不改写文字、更不能替客户编关键词）。
+            # 但要分清「文档里就没有」与「摘要定位不到」——后者客户需要知道去补什么。
+            _kw_why = ("Abstract found, but it has no 'Keywords:' line"
+                       if getattr(prof, "has_abstract", False)
+                       else _abstract_not_located(prof))
+            findings.append(Finding(
+                dimension="keywords", severity="info",
+                message="Keywords line",
+                expected=_ek, actual=_kw_why + " (nothing to change)",
+                source=_kw_origin,
+            ))
+        else:
+            _gk, _kw_bad = _describe_keywords_actual(prof, _kw_want)
+            if _kw_bad:
+                _f = Finding(
+                    dimension="keywords", severity="warn",
+                    message="Keywords line",
+                    expected=_ek, actual=_gk, source=_kw_origin,
+                )
+                _f.fix = FixAction(dimension="keywords", value=True)
+                findings.append(_f)
+            else:
+                findings.append(Finding(
+                    dimension="keywords", severity="pass",
+                    message="Keywords line",
+                    expected=_ek, actual=_gk, source=_kw_origin,
+                ))
+
+
     # 客户/学校/AI 显式声明「要 running head」或「页码含作者姓氏」时硬判；
     # 否则回落到已有 spec 驱动的 info 提示（APA 专业版 / MLA）。文本内容（短标题/姓氏）
     # 涉及「改内容」且无法可靠自动生成 → 只提示客户手动补；页码位置由 page_number 维度可修。

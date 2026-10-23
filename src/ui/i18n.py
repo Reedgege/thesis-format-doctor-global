@@ -1059,6 +1059,11 @@ Q_LABELS_EN = {
     "abstract_new_page": "Abstract on a new page",
     "abstract_space_before_pt": "Abstract: space before paragraph",
     "abstract_space_after_pt": "Abstract: space after paragraph",
+    "abstract_heading_alignment": "Abstract heading alignment",
+    "abstract_heading_bold": "Abstract heading bold",
+    "abstract_heading_italic": "Abstract heading italic",
+    "keywords_label_italic": "Keywords label italic",
+    "keywords_indent_in": "Keywords line indent",
     "running_head_required": "Running head required",
     "page_number_include_author_name": "Page number includes author name",
     "caption_font_size_pt": "Caption font size",
@@ -1137,6 +1142,11 @@ Q_HELP_EN = {
     "abstract_new_page": "Yes = page break before the Abstract heading (APA Professional); No = not required; — = unspecified",
     "abstract_space_before_pt": "Space above each Abstract paragraph, in points; APA adds none (0). Leave blank to skip",
     "abstract_space_after_pt": "Space below each Abstract paragraph, in points; APA adds none (0). Leave blank to skip",
+    "abstract_heading_alignment": "Alignment of the word 'Abstract' itself: center = APA style; left = most engineering templates. — = unspecified",
+    "abstract_heading_bold": "Yes = the 'Abstract' line is bold (APA requires this); No = explicitly not bold; — = unspecified",
+    "abstract_heading_italic": "Yes = the 'Abstract' line is italic (some IEEE templates); No = explicitly not italic; — = unspecified",
+    "keywords_label_italic": "Yes = only the word 'Keywords:' is italic and the terms stay upright (APA requires this); No = explicitly not italic; — = unspecified",
+    "keywords_indent_in": "First-line indent of the whole Keywords line; APA uses 0.5 in. Leave blank to skip",
     "running_head_required": "Yes = a running head in the header (short title or last name). Leave as — to skip",
     "page_number_include_author_name": "Yes = the page number is preceded by the author's last name (MLA's 'Smith 1'). — = unspecified",
     "caption_font_size_pt": "Figure/table caption font size; leave blank to follow the body text",
@@ -1176,6 +1186,9 @@ Q_OPTION_LABELS: dict = {
                                "en": "My school's own (custom)"},
     # v2.3.85：表格线的选项值（引擎值是 three_line，界面上说人话）
     "table_lines.three_line": {"zh": "学术三线表", "en": "Three-line (academic)"},
+    # v2.3.97：摘要标题对齐（引擎值是 left/center）
+    "abstract_heading_alignment.left": {"zh": "左对齐", "en": "Left-aligned"},
+    "abstract_heading_alignment.center": {"zh": "居中", "en": "Centered"},
 }
 
 

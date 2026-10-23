@@ -152,18 +152,34 @@ def test_abstract_new_page_is_fixable_on_spec_baseline(tmp_path):
     assert read_docx(str(out)).abstract_new_page is True
 
 
-def test_abstract_new_page_stays_prompt_only_when_not_baseline(tmp_path):
-    """非基线（学校模板 / 手填 / AI 导入）即便引用了 APA，也只提示不动手。
+def test_abstract_new_page_is_silent_when_non_baseline_channel_says_nothing(tmp_path):
+    """非基线通道只说了「参考文献体例 APA」→ 摘要页压根不许判（v2.3.96 契约升级）。
 
-    模板说了算：客户的学校可能明确要求「摘要与正文接排」，工具不许替它拍板。
+    v2.3.67 的旧契约是「非基线只提示（info）」，本意是「模板说了算，工具不替它拍板」。
+    v2.3.93 老板立下「谁说话就听谁的，客户没提就闭嘴」之后，这条旧契约两头不讨好：
+      · 客户只勾了 reference_style（参考文献体例），工具却拿 APA 的话去判他的摘要页；
+      · 而且实测它不是 info 而是 **warn + 不可修**（来源 spec，非基线不绑 FixAction）——
+        客户看到一条红杠、点了修正却不消失，比「只提示」更糟（v2.3.96 摘要能定位后暴露）。
+    现在与 page_number / title_page_new_page 同口径：没提就一个结论都不给。
+    学校模板/手填/AI **真提了**摘要页 → 照旧判、照旧修（见 test_abstract_text_fallback.py）。
     """
     p = _doc_with_abstract(tmp_path / "a.docx", new_page=False)
     t = target_from_dict({"reference_style": "APA"}, "school")
     prof, findings = checker.run_check(p, t)
     abs_findings = [f for f in findings if f.dimension == "abstract_new_page"]
-    assert abs_findings
-    assert all(getattr(f, "fix", None) is None for f in abs_findings), \
-        "非规范基线的摘要另起一页只应提示"
+    assert not abs_findings, "通道没提摘要另起一页，就不许给结论"
+
+
+def test_abstract_new_page_still_judged_when_channel_states_it(tmp_path):
+    """反向兜底：非基线通道**明确说了**，就照判照修（不许把「闭嘴」做成「一律失聪」）。"""
+    p = _doc_with_abstract(tmp_path / "a.docx", new_page=False)
+    t = target_from_dict({"abstract_new_page": True}, "school")
+    prof, findings = checker.run_check(p, t)
+    abs_findings = [f for f in findings if f.dimension == "abstract_new_page"]
+    assert abs_findings and abs_findings[0].severity == "warn"
+    out = tmp_path / "out.docx"
+    fix_docx(p, str(out), t)
+    assert read_docx(str(out)).abstract_new_page is True
 
 
 # ---------------------------------------------------------------------------

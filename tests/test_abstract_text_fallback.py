@@ -293,3 +293,75 @@ def test_no_abstract_means_no_text_new_page_finding(tmp_path):
     t = target_from_spec("APA-Student")
     _prof, findings = checker.run_check(p, t)
     assert _sev(findings, "text_new_page") is None
+
+
+# ---------------------------------------------------------------------------
+# 三通道同步（v2.3.96 补）：显式通道不许被 spec 顶掉，也不许反过来失聪
+# ---------------------------------------------------------------------------
+
+def test_non_baseline_channel_does_not_judge_abstract_page(tmp_path):
+    """🔴 只有「参考文献体例用 APA」的手填/AI 通道，不许被判摘要页两条。
+
+    真因：`resolve_spec` 会按 reference_style 取回整套 APA，`abstract_first_line_indent_in`
+    / `abstract_new_page` 随之被兜底判红；可它们的来源是 spec（非基线不绑 FixAction）→
+    客户看到一条红杠、点了修正却不消失。v2.3.96 之前被「摘要定位不到 → info」掩盖着，
+    摘要能定位后立刻暴露。
+    """
+    p = _make_paper(tmp_path / "a.docx", indent=0.5)
+    for chan in ("user", "ai_import", "school"):
+        t = target_from_dict({"reference_style": "APA"}, chan)
+        _prof, findings = checker.run_check(p, t)
+        assert _sev(findings, "abstract_new_page") is None, chan
+        assert _sev(findings, "abstract_indent") is None, chan
+
+
+def test_baseline_still_judges_the_abstract_page(tmp_path):
+    """反向：客户真在规范下拉里选了 APA → 摘要页两条照判（不许把守卫做成一律闭嘴）。"""
+    p = _make_paper(tmp_path / "a.docx", indent=0.5)
+    t = target_from_spec("APA-Student")
+    _prof, findings = checker.run_check(p, t)
+    assert _sev(findings, "abstract_new_page") == "warn"
+    assert _sev(findings, "abstract_indent") == "warn"
+
+
+def test_school_template_channel_carries_the_body_new_page_fact(tmp_path):
+    """学校模板里摘要是手排的，模板事实（正文另起一页 / 接排）必须能带出来。
+
+    v2.3.93 就加了这个字段，但读取端当时读不到 `text_break_before`（摘要定位失败），
+    于是学校模板通道永远拿不到值 —— v2.3.96 让摘要定位成功后它才真正生效。
+    """
+    from src.engine.questionnaire import target_from_template_docx
+
+    for body_new_page in (True, False):
+        doc = Document()
+        doc.add_paragraph("Template Title")
+        doc.add_paragraph("Author Name")
+        doc.add_paragraph("Abstract")
+        doc.add_paragraph("Template abstract body text.")
+        k = doc.add_paragraph("Keywords: alpha, beta")
+        k.paragraph_format.first_line_indent = Inches(0.5)
+        h = doc.add_paragraph("1. Introduction")
+        if body_new_page:
+            h.paragraph_format.page_break_before = True
+        doc.add_paragraph("Body of the template.")
+        p = str(tmp_path / ("tpl_%s.docx" % body_new_page))
+        doc.save(p)
+
+        t = target_from_template_docx(read_docx(p), reference_style="APA")
+        assert t.text_new_page is body_new_page, body_new_page
+        assert t.resolution.get("text_new_page") == "school"
+
+
+def test_not_located_wording_points_at_the_real_cause(tmp_path):
+    """定位不到时，文案必须指「缺 Keywords 行」——不是「标题没套样式」（那条路已通）。
+
+    否则客户会跑去给 Abstract 套标题样式，套了也不管用。
+    """
+    p = _make_paper(tmp_path / "a.docx", keywords=None)
+    t = target_from_spec("APA-Student")
+    _prof, findings = checker.run_check(p, t)
+    f = _finding(findings, "text_new_page")
+    assert f is not None and f.severity == "info"
+    assert "Keywords:" in (f.actual or "")
+    assert "no heading style" not in (f.actual or "")
+
