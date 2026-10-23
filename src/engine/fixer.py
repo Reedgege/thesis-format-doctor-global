@@ -45,6 +45,7 @@ from .policy import TEXT_IS_LOCKED
 from .docx_reader import (
     DocxReadError, heading_level, is_heading, is_pseudo_heading, read_docx,
     reference_paragraph_indices, find_reference_section, find_abstract_section,
+    abstract_body_style_indices,
     pseudo_heading_level_map, PAPER_SIZES, describe_paper_size, detect_title_page,
     doc_title_index,
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
@@ -173,25 +174,19 @@ def _select_paragraphs(doc, ref_set: set, include_reference: bool = True,
 
 
 def _abstract_body_indices(doc) -> set:
-    """摘要正文段索引：从 'Abstract'/'摘要' 标题之后，到下一个「真实标题」之前。
+    """摘要**正文**段索引（已剔除 Keywords 行）：供「正文首行缩进」豁免集合用。
 
-    摘要正文首行必须顶格（不缩进），与正文首行缩进 0.5″ 相反，故需从首行缩进目标中剔除。
-    仅认「样式级标题」（heading_level 非 None）作为摘要标题与结束边界，避免把加粗正文误判为边界。
+    摘要正文首行必须顶格（不缩进），与正文 0.5″ 相反，故必须从首行缩进目标里剔除。
+
+    v2.3.96：改为复用 reader 的单一真相源。此前这里是一份**独立实现**、仍只认样式级标题；
+    真实论文的 "Abstract" 是 Normal 手排 → 豁免集合恒为空 → 「正文首行缩进 0.5″」流程
+    会把摘要正文一起刷成 0.5″，而检查器（走单一真相源）随即报「摘要首行缩进应为 0″」——
+    修完立刻又不合规，客户点一次没用。
+
+    Keywords 行**故意**留在豁免之外：它属于摘要页，但 APA 要求它缩进 0.5″，
+    正文缩进口径对它恰好是对的。
     """
-    idxs: set = set()
-    paras = doc.paragraphs
-    in_abs = False
-    for i, para in enumerate(paras):
-        if not in_abs:
-            if (para.text or "").strip().lower() in ("abstract", "摘要") and heading_level(para) is not None:
-                in_abs = True
-                continue
-        else:
-            if heading_level(para) is not None:
-                break
-            if (para.text or "").strip():
-                idxs.add(i)
-    return idxs
+    return set(_abstract_body_style_indices(doc))
 
 
 def _abstract_section(doc) -> tuple[Optional[int], list]:
@@ -203,17 +198,31 @@ def _abstract_section(doc) -> tuple[Optional[int], list]:
     return find_abstract_section(list(doc.paragraphs))
 
 
+def _abstract_body_style_indices(doc) -> list:
+    """摘要**正文**段下标（已剔除 Keywords 行），用于样式口径的采样/施加。
+
+    v2.3.96：摘要块里含 "Keywords: ..." 行，它属于摘要页但样式口径与摘要正文相反
+    （APA：正文顶格、Keywords 行缩进 0.5″）。改摘要缩进/段距时必须跳过它，
+    否则会把客户的关键词行一起刷成顶格 —— 那是把合规改成不合规。
+    """
+    doc_paras = list(doc.paragraphs)
+    _head, body_idx = find_abstract_section(doc_paras)
+    if not body_idx:
+        return []
+    return abstract_body_style_indices(doc_paras, body_idx)
+
+
 def _apply_abstract_indent(doc, indent_in: float) -> bool:
     """设置摘要正文段的首行缩进（APA 摘要顶格 = 0）。
 
-    只动摘要正文段（标题之后、下一标题之前的段落），不碰摘要标题与其它正文。
+    只动摘要正文段（标题之后、下一标题之前），不碰摘要标题、Keywords 行与其它正文。
     摘要正文段本来就在正文首行缩进的豁免集合里，这里再正向设置目标缩进值。
     """
     try:
         want = float(indent_in)
     except (ValueError, TypeError):
         return False
-    _head, body_idx = _abstract_section(doc)
+    body_idx = _abstract_body_style_indices(doc)
     if not body_idx:
         return False
     changed = False
@@ -344,8 +353,8 @@ def _write_para_spacing(paras: list, before_pt, after_pt) -> bool:
 
 
 def _abstract_body_paragraphs(doc) -> list:
-    """摘要正文段（标题之后、下一标题之前），与 checker 的识别同一条真相源。"""
-    _head, body_idx = _abstract_section(doc)
+    """摘要正文段（标题之后、下一标题之前，已剔除 Keywords 行），与 checker 同一条真相源。"""
+    body_idx = _abstract_body_style_indices(doc)
     if not body_idx:
         return []
     return [doc.paragraphs[j] for j in body_idx if 0 <= j < len(doc.paragraphs)]

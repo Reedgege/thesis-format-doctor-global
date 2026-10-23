@@ -1692,6 +1692,44 @@ def _scan_front_matter(paras) -> tuple[bool, bool]:
     return has_abs, has_auth
 
 
+# —— 摘要页关键词行（v2.3.96）——
+# APA 摘要页的 "Keywords: ..." 行属于摘要页块（分页锚点必须落在它**之后**），
+# 但它的**样式口径与摘要正文相反**：摘要正文顶格、Keywords 行缩进 0.5″。
+# 所以：定位摘要块时它算在内，采样/施加「摘要首行缩进」时必须排除它，
+# 否则取众数会把 Keywords 行一起刷成顶格（真实论文里踩到过）。
+_KEYWORDS_LINE_RE = re.compile(
+    r"^\s*(?:key\s*words?|关键词)\s*[:：]", re.IGNORECASE)
+_KEYWORDS_LINE_MAX_CHARS = 400       # 关键词行可能很长，但绝不是整段正文
+
+
+def is_keywords_line(para) -> bool:
+    """该段是否是摘要页的关键词行（"Keywords: ..." / "Key words: ..." / "关键词：..."）。
+
+    只认行首标签 + 冒号，不做子串匹配（正文里提到 "keywords" 的句子不算）。
+    """
+    if para is None:
+        return False
+    text = (para.text or "").strip()
+    if not text or len(text) > _KEYWORDS_LINE_MAX_CHARS:
+        return False
+    return bool(_KEYWORDS_LINE_RE.match(text))
+
+
+# —— 摘要标题文字回退的严格边界（v2.3.96）——
+# 真实学生论文里 "Abstract" 极常见是 Normal 手排、压根没套标题样式；只认样式级标题
+# 就会一律「摘要定位不到」，连带「摘要另起一页 / 正文另起一页 / 摘要顶格」三件事
+# 全都只能提示、永远改不了。故补一条**严格限定**的文字回退：
+#   · 只在前 15 段内找（摘要标题不可能出现在正文深处）；
+#   · 整行匹配（去空格、小写后**完全等于** abstract，不做子串匹配）；
+#   · 长度上限 40 字符（长句即便以 Abstract 开头也不认）；
+#   · **必须**在后继段落里找到 Keywords 行作为摘要块的右边界。
+# 最后一条是安全底线：没有右边界的「摘要」无法确定正文从哪一段开始，
+# 而正文另起一页是**往某一段写分页**，写错就是把客户版式改坏 → 宁可不修。
+_ABS_FALLBACK_WINDOW = 15            # 只在前 15 段内找摘要标题
+_ABS_FALLBACK_MAX_CHARS = 40         # 摘要标题行长度上限
+_ABS_KEYWORDS_LOOKAHEAD = 12         # 从标题往后最多看 12 段找 Keywords 行
+
+
 def find_abstract_section(paras) -> tuple[Optional[int], list[int]]:
     """定位摘要段：返回 (摘要标题段下标, 摘要正文段下标列表)。
 
@@ -1699,12 +1737,20 @@ def find_abstract_section(paras) -> tuple[Optional[int], list[int]]:
     避免「检查判这一段、修正改另一段」的漂移（与 find_reference_section 同理）。
 
     识别规则（保守，仅认正面信号）：
-    - 摘要标题 = 样式级标题（heading_level 非 None）且文本（去空格、小写）等于
+    - ① 摘要标题 = 样式级标题（heading_level 非 None）且文本（去空格、小写）等于
       "abstract" / "摘要" / "abstract page"（APA 常见 "Abstract" 一级标题）。
-    - 摘要正文 = 标题之后、下一个样式级标题之前的所有非空段。
-    - 找不到样式级标题的 "Abstract" 时返回 (None, [])，绝不把加粗正文误判成摘要标题。
+      摘要正文 = 标题之后、下一个样式级标题之前的所有非空段。
+    - ② v2.3.96 文字回退：① 找不到时，才在前 15 段内找**整行等于** "Abstract"
+      且没套标题样式的段，并**必须**在其后找到 Keywords 行作为右边界；
+      摘要正文 = 标题之后、Keywords 行（含）之前的所有非空段。
+    - ①② 都找不到时返回 (None, [])，绝不把加粗正文误判成摘要标题。
+
+    返回的 body **包含** Keywords 行（分页锚点取 ``max(body) + 1``，必须落在它之后）；
+    需要「摘要正文」的样式口径时请用 :func:`abstract_body_style_indices` 去掉关键词行。
     """
     paras = list(paras)
+
+    # ① 样式级标题（首选；行为与 v2.3.67 起完全一致）
     for i, para in enumerate(paras):
         text = (para.text or "").strip()
         low = text.lower().replace(" ", "")
@@ -1717,7 +1763,45 @@ def find_abstract_section(paras) -> tuple[Optional[int], list[int]]:
                 if (pj.text or "").strip():
                     body.append(j)
             return i, body
+
+    # ② 文字回退（严格限定，见上方常量注释）
+    for i, para in enumerate(paras[:_ABS_FALLBACK_WINDOW]):
+        text = (para.text or "").strip()
+        if not text or len(text) > _ABS_FALLBACK_MAX_CHARS:
+            continue
+        if heading_level(para) is not None:
+            continue                     # ① 已覆盖，这里只处理没套样式的
+        if text.lower().replace(" ", "") not in ("abstract", "摘要", "abstractpage"):
+            continue
+        body = []
+        real_body = 0                    # Keywords 行之前真正的摘要正文段数
+        _end = min(len(paras), i + 1 + _ABS_KEYWORDS_LOOKAHEAD)
+        for j in range(i + 1, _end):
+            pj = paras[j]
+            if heading_level(pj) is not None:
+                break                    # 撞到下一个样式标题 → 右边界不可知，放弃
+            if not (pj.text or "").strip():
+                continue
+            body.append(j)
+            if is_keywords_line(pj):
+                # 找到右边界。摘要正文为空（标题后直接跟 Keywords）→ 不可信，放弃
+                return (i, body) if real_body else (None, [])
+            real_body += 1
+        # 这一段候选没找到 Keywords 行 → 右边界不可知，继续看后面还有没有候选
     return None, []
+
+
+def abstract_body_style_indices(paras, body) -> list[int]:
+    """从摘要块下标里剔掉 Keywords 行，只留真正的摘要正文段（供样式口径的采样/施加用）。
+
+    APA：摘要正文顶格、Keywords 行缩进 0.5″。两者口径相反，混在一起取众数/一起改
+    都会错，故采样（reader）与修正（fixer）统一走本函数。
+    若剔除后什么都不剩（异常文档），退回原列表，宁可少判也不凭空丢段。
+    """
+    paras = list(paras)
+    kept = [j for j in body
+            if 0 <= j < len(paras) and not is_keywords_line(paras[j])]
+    return kept or list(body)
 
 
 # 图表 caption 识别（v2.3.67）：Word 内置 "Caption" 样式 + 文本前缀启发式双保险。
@@ -2712,9 +2796,12 @@ def _read_docx_impl(doc) -> DocumentProfile:
     try:
         _abs_head, _abs_body = find_abstract_section(paras)
         if _abs_head is not None and _abs_body:
+            # v2.3.96：样式口径的采样**排除 Keywords 行**（摘要正文顶格、Keywords 行
+            # 缩进 0.5″，混在一起取众数会互相污染）；分页锚点仍用完整 body。
+            _abs_style = abstract_body_style_indices(paras, _abs_body)
             # 首行缩进：取摘要正文段的众数（与正文缩进口径一致，三级回退）
             _abs_indents: Counter = Counter()
-            for _j in _abs_body:
+            for _j in _abs_style:
                 _fli = _inch(_pf_attr(paras[_j], doc_pf, "first_line_indent"))
                 _abs_indents[0.0 if _fli is None else _fli] += 1
             if _abs_indents:
@@ -2722,7 +2809,7 @@ def _read_docx_impl(doc) -> DocumentProfile:
             # v2.3.76：摘要正文段的段前 / 段后（磅），取众数；读不到按 0 磅计入
             _abs_sb: Counter = Counter()
             _abs_sa: Counter = Counter()
-            for _j in _abs_body:
+            for _j in _abs_style:
                 _b, _a = _spacing_pair_of_para(paras[_j])
                 _abs_sb[0.0 if _b is None else _b] += 1
                 _abs_sa[0.0 if _a is None else _a] += 1
