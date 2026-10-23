@@ -1326,6 +1326,47 @@ def _row_tc_prs(row):
     return out
 
 
+def caption_block_top(seq, j: int, doc) -> int:
+    """表格**上方**紧邻段 ``j`` → 承载「表格与文字之间那一条空隙」的段落下标。
+
+    表题常常是**两段**：「Table 1」+ 斜体标题（APA 标准写法），而按文本只能识别前者。
+    若把 24pt 加在紧邻那段（= 标题行）的 space_after 上，等于把表题推离自己的表格 ——
+    比不改更难看。故：
+      · ``j`` 本身是表题 → 上溯到**连续表题块**的最上一段；
+      · ``j`` 不是表题，但 ``j-1`` 是表题、且 ``j`` 短（≤120 字，像标题不像正文句）
+        → 认为 ``j`` 是表题续行，把整块算进来；
+      · 否则原样返回 ``j``（普通正文，空隙就是它的 space_after）。
+    reader 的 ``table_gap_samples`` 与 fixer 的 ``_apply_table_gap`` **必须共用**本函数，
+    否则「检查说 24pt、实际改在别处」。
+    """
+    def _cap(k: int) -> bool:
+        if k < 0 or k >= len(seq) or seq[k].tag != qn("w:p"):
+            return False
+        try:
+            from docx.text.paragraph import Paragraph
+            return is_caption_paragraph(Paragraph(seq[k], doc))
+        except Exception:
+            return False
+
+    k = j
+    if _cap(k):
+        while _cap(k - 1):
+            k -= 1
+        return k
+    # 续行：紧邻段短、且它上面那段是表题
+    if _cap(k - 1):
+        try:
+            from docx.text.paragraph import Paragraph
+            txt = (Paragraph(seq[j], doc).text or "").strip()
+        except Exception:
+            txt = ""
+        if txt and len(txt) <= 120:
+            k -= 1
+            while _cap(k - 1):
+                k -= 1
+    return k
+
+
 def table_gap_samples(doc) -> tuple:
     """每张表与前后**紧邻文字**之间的空隙（磅）→ (样本列表, 紧邻段落的 w:p 集合)。
 
@@ -1356,26 +1397,35 @@ def table_gap_samples(doc) -> tuple:
         return samples, adjacent
 
     def _neighbour(j: int, side: str):
+        """返回 (空隙磅值, 是否真空行, 承载间隙的那个 w:p)。"""
         if j < 0 or j >= len(seq) or seq[j].tag != qn("w:p"):
-            return None, False
+            return None, False, None
         para = Paragraph(seq[j], doc)
         if not (para.text or "").strip():
-            return None, True          # 已有真空行
+            return None, True, None          # 已有真空行
+        # 🔴 表格**上方**紧邻的是表题（APA 表题紧贴表格）→ 那一条额外行距必须落在
+        # **表题块之上**（正文与表题之间），不是表题与表格之间；否则等于把表题推离
+        # 自己的表格。故上溯到表题块最上一段，读它的 space_before。
+        if side == "after":
+            k = caption_block_top(seq, j, doc)
+            if k != j or is_caption_paragraph(para):
+                _sb, _ = _spacing_pair_of_para(Paragraph(seq[k], doc))
+                return float(0.0 if _sb is None else _sb), False, seq[k]
         sb, sa = _spacing_pair_of_para(para)
         val = sa if side == "after" else sb
-        return float(0.0 if val is None else val), False
+        return float(0.0 if val is None else val), False, seq[j]
 
     n = 0
     for i, child in enumerate(seq):
         if child.tag != qn("w:tbl"):
             continue
         n += 1
-        gap_b, blank_b = _neighbour(i - 1, "after")
-        gap_a, blank_a = _neighbour(i + 1, "before")
-        if gap_b is not None:
-            adjacent.add(seq[i - 1])
-        if gap_a is not None:
-            adjacent.add(seq[i + 1])
+        gap_b, blank_b, holder_b = _neighbour(i - 1, "after")
+        gap_a, blank_a, holder_a = _neighbour(i + 1, "before")
+        if holder_b is not None:
+            adjacent.add(holder_b)
+        if holder_a is not None:
+            adjacent.add(holder_a)
         samples.append({
             "index": n,
             "before_pt": gap_b, "before_blank": blank_b,

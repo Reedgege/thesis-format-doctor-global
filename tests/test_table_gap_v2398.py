@@ -146,6 +146,49 @@ def test_fix_does_not_touch_a_single_character(tmp_path):
     assert src_text == out_text
 
 
+def test_gap_lands_above_the_caption_not_between_caption_and_table(tmp_path):
+    """表格上方是表题时，那一条额外行距要落在**表题之上**。
+
+    APA 的表号与表题紧贴表格（表题在表上方、不留额外空行），「与任何文字之间额外
+    空一条双倍行距」说的是**表题块与正文**之间。若把 24pt 加在表题段的 space_after
+    上，等于硬生生把表题推离自己的表格 —— 那比不改更难看。
+    """
+    doc = Document()
+    doc.add_paragraph("Digital Transformation and Firm Performance")
+    doc.add_paragraph(_BODY)
+    cap = doc.add_paragraph("Table 1")
+    for r in cap.runs:
+        r.italic = True
+    title = doc.add_paragraph("Descriptive Statistics by Province")
+    for r in title.runs:
+        r.italic = True
+    doc.add_table(rows=2, cols=2)
+    doc.add_paragraph(_BODY)
+    src = str(tmp_path / "cap.docx")
+    doc.save(src)
+
+    tgt = target_from_spec("APA-Student")
+    out = str(tmp_path / "cap_out.docx")
+    fix_docx(src, out, tgt)
+
+    d2 = Document(out)
+    paras = list(d2.paragraphs)
+    cap_out = next(p for p in paras if (p.text or "").strip() == "Table 1")
+    title_out = next(p for p in paras
+                     if (p.text or "").strip().startswith("Descriptive Statistics"))
+    # 表题块内部不动（表号与表题之间、表题与表格之间都不加）
+    assert cap_out.paragraph_format.space_after in (None, Pt(0))
+    assert title_out.paragraph_format.space_after in (None, Pt(0))
+    # 空隙落在表号那一段的段前
+    assert float(cap_out.paragraph_format.space_before.pt) == pytest.approx(24.0, abs=0.5)
+
+    # 复检收敛，且第二遍零动作
+    _p, findings = run_check(out, tgt)
+    assert _problems(findings, "table_gap") == []
+    res2 = fix_docx(out, str(tmp_path / "cap_out2.docx"), tgt)
+    assert "table_gap_pt" not in res2.get("applied", {})
+
+
 def test_gap_survives_a_heading_right_below_the_table(tmp_path):
     """🔴 表格下方紧邻的是标题时，24pt 不能被「标题不加额外段前」清掉。
 

@@ -48,7 +48,7 @@ from .docx_reader import (
     reference_paragraph_indices, find_reference_section, find_abstract_section,
     abstract_body_style_indices, is_keywords_line,
     pseudo_heading_level_map, structural_heading_map,
-    _norm_matter_title, _MATTER_TITLES,
+    _norm_matter_title, _MATTER_TITLES, caption_block_top,
     # v2.3.98：表格与前后文字的间距（读段前/段后，认「行」单位）
     _spacing_pair_of_para,
     PAPER_SIZES, describe_paper_size, detect_title_page,
@@ -385,11 +385,22 @@ def _apply_table_gap(doc, gap_pt: float):
                 para = Paragraph(seq[j], doc)
                 if not (para.text or "").strip():
                     continue                    # 已有真空行
+                # 🔴 表格**上方**紧邻的是表题 → 那一条额外行距落在**表题块之上**，
+                # 不是表题与表格之间（否则等于把表题推离自己的表格）。
+                # 与 reader 的 table_gap_samples 共用 caption_block_top，两边必须一致，
+                # 否则「检查说 24pt、实际改在别处」。
+                _attr = side
+                if side == "space_after" and (
+                        is_caption_paragraph(para)
+                        or caption_block_top(seq, j, doc) != j):
+                    j = caption_block_top(seq, j, doc)
+                    para = Paragraph(seq[j], doc)
+                    _attr = "space_before"
                 _b, _a = _spacing_pair_of_para(para)
-                cur = _a if side == "space_after" else _b
+                cur = _a if _attr == "space_after" else _b
                 if cur is not None and float(cur) >= want - 1e-6:
                     continue                    # 已经够宽，别动客户已有的更大留白
-                if _write_one_spacing(para, side, want):
+                if _write_one_spacing(para, _attr, want):
                     touched += 1
             except Exception:
                 continue
