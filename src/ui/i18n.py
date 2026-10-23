@@ -1029,6 +1029,7 @@ Q_LABELS_EN = {
     "columns": "Columns",
     "table_space_before_pt": "Table cell space before",
     "table_space_after_pt": "Table cell space after",
+    "table_gap_pt": "Spacing between tables and the text",
     "toc_heading_space_before_pt": "Contents heading space before",
     "toc_heading_space_after_pt": "Contents heading space after",
     "toc_entry_space_before_pt": "Contents entry space before (check only)",
@@ -1094,6 +1095,9 @@ Q_HELP_EN = {
                              "(no blank line inside a table). Leave blank to skip",
     "table_space_after_pt": "Space below each paragraph inside table cells; 0 is common. "
                             "Leave blank to skip",
+    "table_gap_pt": "Space kept between a table and the text above/below it. APA wants an "
+                    "extra double-spaced line (24 pt for 12 pt text) so tables never touch "
+                    "the surrounding paragraphs. Leave blank to skip",
     "toc_heading_space_before_pt": "Space above the 'Contents' heading paragraph, in points. "
                                    "Leave blank to skip",
     "toc_heading_space_after_pt": "Space below the 'Contents' heading paragraph, in points. "

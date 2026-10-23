@@ -247,6 +247,14 @@ class StyleSpec:
     # MLA 的表格惯例，三家都是「无竖线、只用横线分区」= 三线表。
     # 与栏数同为**版式结构维度**：选中某规范即为其显式版式意图，checker 不把它降级成 info。
     table_lines: Optional[str] = None
+    # —— 表格与前后文字的间距（v2.3.98）——
+    # APA 7（Publication Manual 7th, Tables and Figures）原文：「If embedded, place the
+    # table or figure at either the top or the bottom of the page **with an extra
+    # double-spaced line between the table or the figure and any text**.」
+    # 即表格是「段前段后不加额外空」（§2.21）这条规则的**例外**：它必须与任何文字之间
+    # 额外空一条双倍行距。APA 正文 12pt + 双倍行距 → 一行 = 12 × 2 = 24pt。
+    # None = 该风格不规定（MLA 靠整篇双倍行距、IEEE 各模板自定 6–12pt → 都不写死）。
+    table_gap_pt: Optional[float] = None
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -283,6 +291,7 @@ class StyleSpec:
         "caption_position_table": self.caption_position_table,
         "caption_position_figure": self.caption_position_figure,
         "table_lines": self.table_lines,
+        "table_gap_pt": self.table_gap_pt,
         "notes": self.notes,
         }
 
@@ -570,7 +579,10 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
                # IEEE 会议论文题名就在第一页顶部），绝不给它们凭空插分页。
                title_page_new_page: Optional[bool] = True,
                caption_position_table: Optional[str] = "top",
-               caption_position_figure: Optional[str] = "bottom") -> StyleSpec:
+               caption_position_figure: Optional[str] = "bottom",
+               # v2.3.98：表格与前后文字之间「额外一条双倍行距」= 12pt × 2 = 24pt。
+               # MLA / IEEE 不写死（MLA 靠整篇双倍行距；IEEE 各模板 6–12pt 不一）。
+               table_gap_pt: Optional[float] = 24.0) -> StyleSpec:
     """构造一个 APA 7th 规范档（学生/专业共享同一套正文/标题/参考文献规则，仅前置材料不同）。
 
     新增的 APA 专属维度（页码位置 / 参考文献另起一页 / 字体允许清单 / 页眉≤50字符 /
@@ -636,6 +648,7 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         caption_position_figure=caption_position_figure,
         # APA 7th §7.10：表格只用横线，**不许有竖线**（就要求是顶线/表头下线/底线）。
         table_lines="three_line",
+        table_gap_pt=table_gap_pt,
         notes=notes,
     )
 

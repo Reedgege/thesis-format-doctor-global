@@ -135,6 +135,9 @@ class DocumentProfile:
     # 学校硬要求里很常见的一条，此前完全读不到（表格只被采样了字体/字号/行距）。
     table_space_before_pt: Optional[float] = None
     table_space_after_pt: Optional[float] = None
+    # v2.3.98：每张表与**前后文字**之间的空隙（见 table_gap_samples）。
+    # 每条：{index, before_pt, before_blank, after_pt, after_blank}；磅，None=不判/已有空行。
+    table_gap_samples: list = field(default_factory=list)
     # —— 表格边框（三线表，v2.3.85）——
     # 每张表一条 dict，见 sample_table_lines()：has_top / has_bottom / has_header_line /
     # has_vertical / has_inside_h / three_line。空列表 = 文档里没有表格（不是"合规"）。
@@ -1323,6 +1326,64 @@ def _row_tc_prs(row):
     return out
 
 
+def table_gap_samples(doc) -> tuple:
+    """每张表与前后**紧邻文字**之间的空隙（磅）→ (样本列表, 紧邻段落的 w:p 集合)。
+
+    APA 7（Publication Manual 7th, Tables and Figures）原文：
+    「If embedded, place the table or figure at either the top or the bottom of the page
+    **with an extra double-spaced line between the table or the figure and any text**.」
+    即：表格是「段落段前段后不加额外空」（§2.21）这条规则的**例外**，它必须和任何
+    文字之间额外空一条双倍行距。v2.3.97 之前没有任何维度管这件事，而「正文段前段后
+    应为 0」还会把原文里 14pt 的段前一起清掉 → 修完表格紧贴标题（老板 2026-10-23
+    截图）。本函数只负责读，不负责判/改。
+
+    规则（宁可不判，绝不臆造）：
+      · 紧邻的是**空段落** → 这条空行已经存在（gap 记为 None、blank=True）；
+      · 紧邻的是正文段 → 空隙 = 该段 space_after（表格在前）/ space_before（表格在后）；
+      · 紧邻的是另一张表 / 没有元素 → 不判（gap=None）。
+    返回的 `adjacent`（**紧邻且非空**的段落）必须从「正文段前段后=0」里豁免，
+    否则两个维度互相清，客户修完复检又报红（自伤）。采样侧同样要剔掉它们，
+    否则那 24pt 会抬高「正文段前段后」的众数。
+    """
+    samples: list = []
+    adjacent: set = set()
+    try:
+        from docx.text.paragraph import Paragraph
+        body = doc.element.body
+        seq = [c for c in body.iterchildren()
+               if c.tag in (qn("w:p"), qn("w:tbl"))]
+    except Exception:
+        return samples, adjacent
+
+    def _neighbour(j: int, side: str):
+        if j < 0 or j >= len(seq) or seq[j].tag != qn("w:p"):
+            return None, False
+        para = Paragraph(seq[j], doc)
+        if not (para.text or "").strip():
+            return None, True          # 已有真空行
+        sb, sa = _spacing_pair_of_para(para)
+        val = sa if side == "after" else sb
+        return float(0.0 if val is None else val), False
+
+    n = 0
+    for i, child in enumerate(seq):
+        if child.tag != qn("w:tbl"):
+            continue
+        n += 1
+        gap_b, blank_b = _neighbour(i - 1, "after")
+        gap_a, blank_a = _neighbour(i + 1, "before")
+        if gap_b is not None:
+            adjacent.add(seq[i - 1])
+        if gap_a is not None:
+            adjacent.add(seq[i + 1])
+        samples.append({
+            "index": n,
+            "before_pt": gap_b, "before_blank": blank_b,
+            "after_pt": gap_a, "after_blank": blank_a,
+        })
+    return samples, adjacent
+
+
 def sample_table_lines(doc) -> list:
     """采样每张表的边框现状，供 checker 判「是不是学术三线表」。
 
@@ -2000,6 +2061,18 @@ _CAPTION_STYLE_KEYWORDS = ("caption", "图注", "表注", "图表标题", "capti
 _CAPTION_PREFIX_RE = re.compile(
     r"^(?:table|figure|fig\.|tab\.|表|图)\s*\d+", re.IGNORECASE)
 
+# v2.3.98：正文**提及句**不是表题。
+# 真实论文里 "Table 1 below shows the detailed parameter estimates and statistical
+# significance tests." 这种句子以 "Table 1" 开头，旧判定一律当表题 →
+# ① `caption_position_table` 对一张**根本没有表号表题**的表格报「位置正确」（假绿）；
+# ② 修正器还会去改这句正文的字号/行距（把正文当表题刷）。
+# 故：标签后紧跟「下面的/上面的/展示了…」这类谓语 → 判为正文提及句，不是表题。
+_CAPTION_MENTION_RE = re.compile(
+    r"^\s*(?:table|figure|fig\.|tab\.|表|图)\s*\d+\s*"
+    r"(?:below|above|shows?|lists?|presents?|summari[sz]es?|reports?|"
+    r"displays?|provides?|illustrates?|contains?|gives?)\b",
+    re.IGNORECASE)
+
 
 def is_caption_paragraph(para) -> bool:
     """判断一段是否是图表标题（Caption）。
@@ -2016,7 +2089,11 @@ def is_caption_paragraph(para) -> bool:
     text = (para.text or "").strip()
     if not text:
         return False
-    return bool(_CAPTION_PREFIX_RE.match(text))
+    if not _CAPTION_PREFIX_RE.match(text):
+        return False
+    # v2.3.98：以 "Table 1" 开头的**句子**（"Table 1 below shows…"）是正文提及句，
+    # 不是表题 —— 否则"没有表号表题"会被判成"表题位置正确"，还会被当 caption 改字号。
+    return not _CAPTION_MENTION_RE.match(text)
 
 
 def _sample_captions(doc, prof: "DocumentProfile") -> None:
@@ -2713,6 +2790,15 @@ def _read_docx_impl(doc) -> DocumentProfile:
     indent_counter: Counter = Counter()
     space_after_counter: Counter = Counter()
     space_before_counter: Counter = Counter()
+    # v2.3.98：表格紧邻段落不参与「正文段前段后」众数（它们的间距归 table_gap 管），
+    # 否则给表格留的那 24pt 会把众数抬高，检查器反过来说「正文段前应 0」→ 自伤。
+    # 但退化文档（正文段落本来就少、且全挨着表格）会把众数算空 → 回退统计全量。
+    try:
+        prof.table_gap_samples, _tbl_adj_ps = table_gap_samples(doc)
+    except Exception:
+        prof.table_gap_samples, _tbl_adj_ps = [], set()
+    _spacing_all = []                       # [(sb, sa)] 全部正文段
+    _spacing_plain = []                     # 不含表格紧邻段
     for para in body_paras:
         al_raw = _pf_attr(para, doc_pf, "alignment")
         al = _ALIGN_MAP.get(al_raw) if al_raw is not None else "left"
@@ -2725,8 +2811,13 @@ def _read_docx_impl(doc) -> DocumentProfile:
         # 时读到 None → 计入 0.0 → 检查报「段后 0 磅，合规」，客户看到的空行
         # 比要求大一倍也不管。
         sb, sa = _spacing_pair_of_para(para)
-        space_after_counter[0.0 if sa is None else sa] += 1
-        space_before_counter[0.0 if sb is None else sb] += 1
+        _spacing_all.append((sb, sa))
+        if para._p not in _tbl_adj_ps:
+            _spacing_plain.append((sb, sa))
+
+    for _sb, _sa in (_spacing_plain or _spacing_all):
+        space_after_counter[0.0 if _sa is None else _sa] += 1
+        space_before_counter[0.0 if _sb is None else _sb] += 1
 
     if align_counter:
         prof.body_alignment = align_counter.most_common(1)[0][0]

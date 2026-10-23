@@ -2244,6 +2244,76 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     actual=_detail,
                     source=_lines_origin,
                 ))
+    # —— 表格与前后文字的间距（v2.3.98）——
+    # 老板 2026-10-23 截图：表格下面紧贴「Chapter 23」一级标题。取证发现原文该段
+    # 段前 14pt，被我们「正文段前段后应为 0」的规则清成了 0 —— 因为此前**没有任何
+    # 维度**管「表格与文字之间的空隙」。
+    # APA 7（Publication Manual 7th, Tables and Figures）原文：「If embedded, place the
+    # table or figure at either the top or the bottom of the page with an extra
+    # double-spaced line between the table or the figure and any text.」
+    # → 表格是「段前段后不加额外空」的**例外**，必须与任何文字之间额外空一条双倍行距。
+    _tg_want = getattr(target, "table_gap_pt", None)
+    if _tg_want is None and _fm_base:
+        _tg_want = getattr(_fm_spec, "table_gap_pt", None)
+    if _tg_want is not None:
+        _tg_origin = (target.resolution.get("table_gap_pt", "school")
+                      if getattr(target, "table_gap_pt", None) is not None else "spec")
+        _tg_msg = "Spacing between tables and the text"
+        _tg_exp = ("at least %g pt (one double-spaced line) above and below each table"
+                   % float(_tg_want))
+        _tg_samples = list(getattr(prof, "table_gap_samples", None) or [])
+        if not _tg_samples:
+            findings.append(Finding(
+                dimension="table_gap", severity="info", message=_tg_msg,
+                expected=_tg_exp, actual="No tables were found in the document",
+                source=_tg_origin,
+            ))
+        else:
+            _tg_short = []
+            _tg_judged = 0
+            for _s in _tg_samples:
+                _bits = []
+                for _side, _key, _blank in (("above", "before_pt", "before_blank"),
+                                            ("below", "after_pt", "after_blank")):
+                    if _s.get(_blank):
+                        continue            # 已有真空行 → 这一侧算够
+                    _g = _s.get(_key)
+                    if _g is None:
+                        continue            # 这一侧不判（邻接表格/文档边界）
+                    _tg_judged += 1
+                    if float(_g) + 1e-6 < float(_tg_want):
+                        _bits.append("%s %g pt" % (_side, float(_g)))
+                if _bits:
+                    _tg_short.append("Table %d: %s" % (_s.get("index", "?"),
+                                                       ", ".join(_bits)))
+            if not _tg_short and _tg_judged:
+                findings.append(Finding(
+                    dimension="table_gap", severity="pass", message=_tg_msg,
+                    expected=_tg_exp,
+                    actual="%d table(s), enough space around each" % len(_tg_samples),
+                    source=_tg_origin,
+                ))
+            elif not _tg_short:
+                # 每一侧都已是真空行（或紧邻另一张表）→ 这份文档无从判定，
+                # 不能说「间距够」（那是假绿），只说「表旁边本来就空着，没动」。
+                findings.append(Finding(
+                    dimension="table_gap", severity="info", message=_tg_msg,
+                    expected=_tg_exp,
+                    actual=("The tables are already separated from the text by a blank "
+                            "line, so no spacing was added"),
+                    source=_tg_origin,
+                ))
+            else:
+                _f = Finding(
+                    dimension="table_gap", severity="warn", message=_tg_msg,
+                    expected=_tg_exp,
+                    actual="; ".join(_tg_short),
+                    source=_tg_origin,
+                )
+                # 只动段前/段后间距，不碰一个字 → 可修。
+                _f.fix = FixAction(dimension="table_gap", value=float(_tg_want))
+                findings.append(_f)
+
     # —— 表格内段落：段前 / 段后（v2.3.77）——
     # 表格里「不要多余空行」是学校硬要求里很常见的一条；表格段落与正文是两套口径
     # （表格通常 0 磅、正文常有 6–12 磅），所以单独立维度、单独采样。

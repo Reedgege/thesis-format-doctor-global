@@ -49,6 +49,8 @@ from .docx_reader import (
     abstract_body_style_indices, is_keywords_line,
     pseudo_heading_level_map, structural_heading_map,
     _norm_matter_title, _MATTER_TITLES,
+    # v2.3.98：表格与前后文字的间距（读段前/段后，认「行」单位）
+    _spacing_pair_of_para,
     PAPER_SIZES, describe_paper_size, detect_title_page,
     doc_title_index,
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
@@ -342,6 +344,57 @@ def _write_one_spacing(para, attr: str, val_pt: float) -> bool:
     except Exception:
         pass
     return changed
+
+
+def _apply_table_gap(doc, gap_pt: float):
+    """在每张表与**前后文字**之间留出至少 ``gap_pt`` 的空隙（v2.3.98）。
+
+    APA 7（Publication Manual 7th, Tables and Figures）要求嵌入正文的表格「与任何
+    文字之间额外空一条双倍行距」（12pt 正文 = 24pt）。老板 2026-10-23 截图里表格紧贴
+    「Chapter 23」标题，就是因为此前没有任何维度管这件事，而「正文段前段后应为 0」
+    还把原文的 14pt 段前清掉了。
+
+    只改**紧邻段落**的段前/段后间距：
+      · 文字在表格上方 → 给上一段设 space_after；
+      · 文字在表格下方 → 给下一段设 space_before；
+      · 邻居已是空段落 → 这条空行已经存在，不动；
+      · 邻居是另一张表 / 没有元素 → 不判不改。
+    🔴 不碰文字、**不插空段落**（插空段会把段落下标全体错位，是以前踩过的坑）。
+    """
+    try:
+        want = float(gap_pt)
+    except (TypeError, ValueError):
+        return {"changed": False, "tables": 0, "paragraphs": 0}
+    try:
+        from docx.text.paragraph import Paragraph
+        body = doc.element.body
+        seq = [c for c in body.iterchildren()
+               if c.tag in (qn("w:p"), qn("w:tbl"))]
+    except Exception:
+        return {"changed": False, "tables": 0, "paragraphs": 0}
+    tables = 0
+    touched = 0
+    for i, child in enumerate(seq):
+        if child.tag != qn("w:tbl"):
+            continue
+        tables += 1
+        for j, side in ((i - 1, "space_after"), (i + 1, "space_before")):
+            if j < 0 or j >= len(seq) or seq[j].tag != qn("w:p"):
+                continue
+            try:
+                para = Paragraph(seq[j], doc)
+                if not (para.text or "").strip():
+                    continue                    # 已有真空行
+                _b, _a = _spacing_pair_of_para(para)
+                cur = _a if side == "space_after" else _b
+                if cur is not None and float(cur) >= want - 1e-6:
+                    continue                    # 已经够宽，别动客户已有的更大留白
+                if _write_one_spacing(para, side, want):
+                    touched += 1
+            except Exception:
+                continue
+    return {"changed": bool(touched), "tables": tables, "paragraphs": touched,
+            "gap_pt": want}
 
 
 def _write_para_spacing(paras: list, before_pt, after_pt) -> bool:
@@ -3274,6 +3327,22 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         except Exception:
             continue
     indent_targets = [p for p in body_only if p._p not in indent_exempt_ps]
+    # v2.3.98：表格**紧邻**段落不吃「正文段前段后 = 0」—— 它们的间距归 table_gap 维度管。
+    # 不豁免就是两个维度互相清：这边设 24pt、那边清回 0，客户每跑一遍都在原地打转。
+    try:
+        _tbl_adj_ps = set()
+        _body = doc.element.body
+        _seq = [c for c in _body.iterchildren() if c.tag in (qn("w:p"), qn("w:tbl"))]
+        for _i, _c in enumerate(_seq):
+            if _c.tag != qn("w:tbl"):
+                continue
+            for _j in (_i - 1, _i + 1):
+                if 0 <= _j < len(_seq) and _seq[_j].tag == qn("w:p"):
+                    _tbl_adj_ps.add(_seq[_j])
+        if _tbl_adj_ps:
+            indent_targets = [p for p in indent_targets if p._p not in _tbl_adj_ps]
+    except Exception:
+        pass
 
     summary: dict = {}
     applied: dict = {}
@@ -3562,6 +3631,23 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         tp_info = _apply_title_page_format(doc, target, spec)
     summary["title_page_formatted"] = tp_info["title_formatted"]
 
+    # 表格与前后文字的间距（v2.3.98）：**必须是最后一个写段落间距的**。
+    # 🔴 血泪原因：表格下方紧邻的那一段往往正是一个标题（真实论文里就是
+    # 「Chapter 23: …」），而 `_format_heading_one` 会按 APA「标题不加额外段前」
+    # 把它写成 before=0 —— 我们辛苦设的 24pt 当场被清掉，复检照样报红、第二遍
+    # 再修还是 0，客户每点一次「修正」原地打转。老板 2026-10-23 截图那处就是这么丢的。
+    # 语义上也该后者赢：APA 原文要求表格与**任何文字**之间空一条双倍行距，
+    # 标题也是文字；「标题不加额外段前」说的是相邻标题/正文之间，不是表格边上。
+    # 它同样**不属于 page 字典**（客户可能只填了「表格与正文间距」一项），故独立成块。
+    if "table_gap" in fix_dims:
+        _tg = getattr(target, "table_gap_pt", None)
+        if _tg is None and spec_is_baseline(target):
+            _tg = getattr(spec, "table_gap_pt", None)
+        if _tg is not None:
+            _tg_info = _apply_table_gap(doc, float(_tg))
+            if _tg_info.get("changed"):
+                applied["table_gap_pt"] = _tg_info
+
     # 批注：文档首段 + 末段各一条「改动清单」汇总本遍全部改动；参考文献段加批注
     summary_text = _build_summary_text(
         target, applied, spec, ref_info if target.reference_style else None, prof, head_info
@@ -3633,6 +3719,7 @@ _DIM_LABELS = {
         "caption_space_after": "Caption space after",
         "table_space_before": "Table cell space before",
         "table_space_after": "Table cell space after",
+        "table_gap": "Spacing between tables and the text",
         "table_lines": "Table rules (three-line)",
         "toc_heading_space_before": "Contents heading space before",
         "toc_heading_space_after": "Contents heading space after",
@@ -3674,6 +3761,7 @@ _DIM_LABELS = {
         "caption_space_after": "图表标题段后间距",
         "table_space_before": "表格内段落段前间距",
         "table_space_after": "表格内段落段后间距",
+        "table_gap": "表格与正文的间距",
         "table_lines": "表格线（三线表）",
         "toc_heading_space_before": "目录标题段前间距",
         "toc_heading_space_after": "目录标题段后间距",
@@ -4060,6 +4148,26 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
         if abs(float(_cur_tbl) - float(_want_tbl)) > 0.1:
             lines.append("%s: %g pt → %g pt" % (
                 _dim_label(L, _dim), float(_cur_tbl), float(_want_tbl)))
+
+    # —— 表格与前后文字的间距（v2.3.98）——
+    # 只有真的有不达标的表格才列一行（预览必须和 fixer 真会做的事一致）。
+    if _gate("table_gap"):
+        _want_gap = getattr(target, "table_gap_pt", None)
+        if _want_gap is None and spec_is_baseline(target):
+            _want_gap = getattr(spec, "table_gap_pt", None)
+        if _want_gap is not None:
+            _gap_short = []
+            for _s in (getattr(prof, "table_gap_samples", None) or []):
+                for _side, _key, _blank in (("above", "before_pt", "before_blank"),
+                                            ("below", "after_pt", "after_blank")):
+                    if _s.get(_blank):
+                        continue
+                    _g = _s.get(_key)
+                    if _g is not None and float(_g) + 1e-6 < float(_want_gap):
+                        _gap_short.append(float(_g))
+            if _gap_short:
+                lines.append("%s: %g pt → %g pt" % (
+                    _dim_label(L, "table_gap"), min(_gap_short), float(_want_gap)))
 
     # —— 表格线：三线表（v2.3.85）——
     # 只在真的有不符三线表的表格时才列一行（预览必须和 fixer 真会做的事一致）。

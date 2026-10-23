@@ -174,6 +174,11 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "table_space_after_pt", "label": "表格内段落段后", "group": "page",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
      "help": "表格单元格里每个段落的段后间距；常见 0；留空=不规定"},
+    # v2.3.98：表格与**前后文字**之间的空隙（不是表格内部）。
+    # APA 7 原文：「嵌入正文的表格要与任何文字之间额外空一条双倍行距」→ 12pt 正文 = 24 磅。
+    {"key": "table_gap_pt", "label": "表格与正文的间距", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "表格上方/下方与文字之间应留的空隙；APA=24 磅（12pt 正文的一条双倍行距）；留空=不规定"},
 
     # —— 目录（TOC，v2.3.77）——
     # 🔴 目录条目是**域段落**：Word 更新目录(F9)时会用 TOC 1..9 样式整体重排，
@@ -426,6 +431,11 @@ class TargetProfile:
     # 混成一个字段就会「改表格顺手把正文也改了」。None = 不规定。
     table_space_before_pt: Optional[float] = None
     table_space_after_pt: Optional[float] = None
+    # —— 表格与**前后文字**之间的空隙（v2.3.98）——
+    # 与上面两个（表格**单元格内部**的段距）语义完全不同：APA 7 要求嵌入正文的表格
+    # 「与任何文字之间额外空一条双倍行距」，12pt 正文即 24pt。此前没有任何维度管它，
+    # 而「正文段前段后应为 0」还会把原文的 14pt 清掉 → 表格紧贴标题（老板截图）。
+    table_gap_pt: Optional[float] = None
     # —— 表格线（v2.3.85）——
     # "three_line" = 学术三线表（只留顶线 / 表头下线 / 底线，无竖线无内部横线）；
     # None = 不规定（不检查、不改动）。与 columns / paper_size 同属**结构维度**：
@@ -487,7 +497,9 @@ class TargetProfile:
                      "keywords_label_italic", "keywords_indent_in")
 
     # 表格内段落（v2.3.77；不进 PAGE_KEYS：只作用于表格单元格段落）
-    TABLE_KEYS = ("table_space_before_pt", "table_space_after_pt")
+    # v2.3.98 起把 table_gap_pt（表格与前后**文字**之间的空隙）也放进来 ——
+    # 三者都是「表格相关、数值型、只作用于表格」，合并/落盘/来源登记可共用一条路径。
+    TABLE_KEYS = ("table_space_before_pt", "table_space_after_pt", "table_gap_pt")
 
     # 目录（v2.3.77；不进 PAGE_KEYS：只作用于目录标题段 / 目录条目）
     TOC_KEYS = ("toc_heading_space_before_pt", "toc_heading_space_after_pt",
@@ -569,6 +581,8 @@ def target_from_spec(key: str) -> TargetProfile:
     # v2.3.85：表格线（三线表）。与栏数同为版式结构维度，spec 来源即显式意图。
     if getattr(spec, "table_lines", None):
         resolution["table_lines"] = "spec"
+    if getattr(spec, "table_gap_pt", None) is not None:
+        resolution["table_gap_pt"] = "spec"
     # v2.3.69：把规范的**每级标题格式**一并带进目标画像。
     # 此前只带了 heading_levels（层级数），heading_formats 漏传，造成两处脱节：
     #   ① 手填问卷选 APA/IEEE 后「每级标题明细」表全空 —— 客户以为规范没要求；
@@ -606,6 +620,7 @@ def target_from_spec(key: str) -> TargetProfile:
         caption_position_table=spec.caption_position_table,
         caption_position_figure=spec.caption_position_figure,
         table_lines=getattr(spec, "table_lines", None),
+        table_gap_pt=getattr(spec, "table_gap_pt", None),
         reference_style=ref.style_key,
         reference_hanging_indent_in=ref.hanging_indent_in,
         reference_numbered=ref.numbered,
@@ -1083,6 +1098,15 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
             continue
         tpl_tbl[_key] = round(float(_val), 1)
         resolution[_key] = "school"
+
+    # 表格与前后文字的间距（v2.3.98）：模板里表格前后实际留了多少，就照抄多少。
+    # 取**最小值** —— 模板里每张表的留白可能被手调得不一样，最小那个才是它的下限；
+    # 读到「真空段」的（blank=True）不计入 pt，另按「一行」折算不了就不写（宁可不规定）。
+    _gap_vals = [g for _s in (getattr(doc_profile, "table_gap_samples", None) or [])
+                 for g in (_s.get("before_pt"), _s.get("after_pt")) if g is not None]
+    if _gap_vals:
+        tpl_tbl["table_gap_pt"] = round(min(_gap_vals), 1)
+        resolution["table_gap_pt"] = "school"
 
     # 目录（v2.3.77）：只有模板里真的带目录（TOC 条目）才写，读不到就不臆造。
     tpl_toc: dict = {}
