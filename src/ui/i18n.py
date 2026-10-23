@@ -623,6 +623,18 @@ STRINGS: dict = {
         "review_confirm": "Run check",
         "review_back": "Back",
         "review_missing": "Not detected — confirm or fill in",
+        # v2.3.94：客户选了「本身不定义分级编号标题」的内置规范（MLA 9th）。
+        # 以前这里复用了 review_missing，等于说「没检测出来，你来填」——
+        # 让客户去补一项规范根本没要求的东西。{name} 填规范显示名。
+        "review_headings_not_required":
+            "{name} does not require numbered heading levels — use one consistent "
+            "style of your own. Nothing to fill in here.",
+        # v2.3.94：这个弹窗里标题表是**只读**的，所以「confirm or fill in」是在
+        # 指点一个它自己做不到的动作。改成说清「去哪儿填」（Advanced options 里的
+        # 手动问卷 / 换一个定义了标题的来源）。
+        "review_headings_missing":
+            "Not detected — this source sets no heading levels. If your school "
+            "requires them, fill them in under Advanced options.",
         "review_lvl": "Level",
         "review_align": "Align",
         "review_bold": "Bold",
@@ -711,6 +723,18 @@ STRINGS: dict = {
         "review_confirm": "Run check",
         "review_back": "Back",
         "review_missing": "Not detected — confirm or fill in",
+        # v2.3.94：客户选了「本身不定义分级编号标题」的内置规范（MLA 9th）。
+        # 以前这里复用了 review_missing，等于说「没检测出来，你来填」——
+        # 让客户去补一项规范根本没要求的东西。{name} 填规范显示名。
+        "review_headings_not_required":
+            "{name} does not require numbered heading levels — use one consistent "
+            "style of your own. Nothing to fill in here.",
+        # v2.3.94：这个弹窗里标题表是**只读**的，所以「confirm or fill in」是在
+        # 指点一个它自己做不到的动作。改成说清「去哪儿填」（Advanced options 里的
+        # 手动问卷 / 换一个定义了标题的来源）。
+        "review_headings_missing":
+            "Not detected — this source sets no heading levels. If your school "
+            "requires them, fill them in under Advanced options.",
         "review_lvl": "Level",
         "review_align": "Align",
         "review_bold": "Bold",

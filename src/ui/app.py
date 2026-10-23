@@ -55,7 +55,7 @@ from ..engine.questionnaire import (
     apply_page_overrides, PAGE_NUMBER_POSITIONS, target_from_spec,
 )
 from ..engine.specs import (SPEC_ORDER, spec_display, REFERENCE_STYLE_KEYS,
-                            REFERENCE_STYLE_CHOICES)
+                            REFERENCE_STYLE_CHOICES, spec_is_baseline)
 from ..license import license as lic
 from .. import versioninfo
 from . import i18n, iconpath, recents, theme
@@ -4462,8 +4462,35 @@ class App:
                         row=r, column=j, sticky="w", padx=(0, 6))
                 r += 1
         else:
-            tk.Label(inner, text=tr("review_missing"), bg=theme.SURFACE, fg=warn_fg,
-                     font=F["F_HELP"], anchor="w").pack(fill="x", padx=12, pady=(0, 6))
+            # 🔴 v2.3.94（老板 2026-10-23 截图）：客户明明选了 MLA 9th，
+            # 这里只写「Not detected — confirm or fill in」—— 读起来像工具没检测出来、
+            # 还让客户去填一项**根本不存在**的东西。MLA 9th 自己就不定义分级编号标题体系
+            # （``specs.py`` 里 ``heading_levels=0``，notes 原文 "Numbered headings are not
+            # required (use a consistent format of your own)"）。这是「规范不要求」，
+            # 不是「没检测到」，两者的处置完全相反：前者无需任何动作，后者要客户补。
+            # 只有**客户真在规范下拉里选了内置规范**（spec_is_baseline）才敢这么说 ——
+            # 走学校模板 / 手填 / AI 时读不到标题格式是真的缺信息，仍按原提示让客户补。
+            _h_sp, _h_lv = None, 0
+            try:
+                _h_sp = checker.resolve_spec(target)
+                _h_lv = int(getattr(_h_sp, "heading_levels", 0) or 0)
+            except Exception:
+                _h_sp, _h_lv = None, 0
+            if spec_is_baseline(target) and _h_lv <= 0:
+                tk.Label(inner,
+                         text=tr("review_headings_not_required").format(
+                             name=(getattr(_h_sp, "name", None) or target.spec_key or "")),
+                         bg=theme.SURFACE, fg=theme.TEXT_2,
+                         font=F["F_HELP"], anchor="w", justify="left",
+                         wraplength=int(620 * self._ui_scale())).pack(
+                    fill="x", padx=12, pady=(0, 6))
+            else:
+                # 这个弹窗里标题表是只读的 → 不能写「confirm or fill in」（它自己做不到），
+                # 要说清去哪儿填（Advanced options 里的手动问卷）。
+                tk.Label(inner, text=tr("review_headings_missing"), bg=theme.SURFACE,
+                         fg=warn_fg, font=F["F_HELP"], anchor="w", justify="left",
+                         wraplength=int(620 * self._ui_scale())).pack(
+                    fill="x", padx=12, pady=(0, 6))
 
         # —— ③ References（只读）——
         self._review_section(inner, tr("review_refs"), theme.SECTION_GAP)
