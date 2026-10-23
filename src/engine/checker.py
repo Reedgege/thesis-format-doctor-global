@@ -773,8 +773,11 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             msg = ("No Heading styles; %d level%s recognised from manual bold headings "
                    "(levels are inferred from font size)"
                    % (len(_pseudo_lvls), "" if len(_pseudo_lvls) == 1 else "s"))
-            sev = _downgrade("warn", origin, is_page_or_heading=True,
-                             dim="heading", spec_key=target.spec_key)
+            # 🔴 v2.3.95：这是**提醒**不是**违规**。标题已经认出来了、每级格式也按规范
+            # 落了盘，唯一的不确定是「层级是按字号推的」。工具又造不出标题样式（那是
+            # 改正文结构），判 warn 就永远修不掉 —— 客户点完修正复检还是同一句。
+            # 老板 2026-10-23 四份产物实测正是如此（APA 两份修完仍报这条）。
+            sev = "info"
         elif prof.heading_levels_used > target.heading_levels:
             msg = f"Detected {prof.heading_levels_used} levels (exceeds ≤{target.heading_levels})"
             sev = _downgrade("warn", origin, is_page_or_heading=True,
@@ -1288,6 +1291,30 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 actual=f"{len(_missing)} of {len(prof.reference_entries)} entries not numbered",
                 source=ref_source,
             )
+    # 🔴 v2.3.95：反方向同样要判 —— 规范**明确不编号**（APA 7 §9.44：参考文献条目
+    # 不加序号；MLA 的 Works Cited 同理，条目按作者姓氏字母序、以姓名开头），
+    # 而客户条目带着 `1.` / `[1]` / `(1)` → 学生最常犯的错之一。
+    # 旧版只做「该补却没补」，反方向一个字都不说、也一个字不改：老板 2026-10-23
+    # 拿 v2.3.93 的四份产物（APA 学生版 / APA 专业版 / IEEE / MLA）核对，APA 与 MLA
+    # 两份的条目仍是 `1. Ivanov, D. (2020)…`，报告却全绿 —— 客户按 APA 交上去就是错的。
+    # 修正动作只动段首那个列表记号（`_drop_leading_chars`），条目正文一个字不碰。
+    elif target.reference_numbered is False and prof.reference_entries:
+        _numbered = [t for t in prof.reference_entries
+                     if t.strip() and _has_leading_number(t)]
+        if _numbered:
+            _all = len(_numbered) == len([t for t in prof.reference_entries if t.strip()])
+            ref_finding = Finding(
+                dimension="reference",
+                severity="fail" if _all else "warn",
+                message="Reference entries carry list numbers",
+                expected=("%s does not number reference entries — each entry starts "
+                          "with the author's name" % ref_style),
+                actual=("%d of %d entries start with a list number (e.g. %r)"
+                        % (len(_numbered), len(prof.reference_entries),
+                           _numbered[0].strip()[:34])),
+                source=ref_source,
+            )
+            ref_finding.fix = FixAction(dimension="reference_numbered", value=False)
     findings.append(ref_finding)
 
     # —— APA 参考文献内容级提示（仅信息，不误伤官方样例；见 _apa_reference_content_hints）——
@@ -2435,6 +2462,15 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         _lvl_value = target.heading_levels or (max(heading_targets) if heading_targets else 0)
         for f in findings:
             if f.dimension == "heading":
+                # 🔴 v2.3.95：「Heading levels」这一条讲的是**标题层级结构**
+                # （有没有套标题样式 / 层级数超没超），修正器**造不出标题、也合并不了层级**
+                # —— 标题是客户自己写的内容。旧版无条件给它绑 heading 修正，于是
+                # 「报告说可自动修正 → 客户点了 → 同一个 warn 还在」（老板 2026-10-23
+                # 四份产物实测：APA 两份修完复检仍报 `No Heading styles … levels are
+                # inferred from font size`）。改正文结构的活只能客户自己做，故只提示。
+                # 每级**格式**的 finding 不在此列，照旧精确到级地绑定修正。
+                if f.message == "Heading levels":
+                    continue
                 _lv = _finding_heading_level(f.message)
                 f.fix = FixAction(dimension="heading", value=_lvl_value,
                                   levels=(_lv,) if _lv else ())

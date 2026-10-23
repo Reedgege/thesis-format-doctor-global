@@ -1506,6 +1506,34 @@ def _drop_leading_chars(para, n_chars: int) -> bool:
     return remaining == 0
 
 
+# 条目开头的列表记号：[1] / (1) / 1. / 1)（含 `[n]`，因为「不编号」的规范连 [n] 也不许留）
+_NUM_MARKER_ANY_RE = re.compile(r"^\s*(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\d+\s*[.)])\s*")
+
+
+def _strip_reference_numbering(entries: list) -> int:
+    """删掉条目开头的序号记号（`[1]` / `1.` / `(1)` / `1)`）；返回改了几条。
+
+    v2.3.95（老板 2026-10-23 四份产物核对）：APA 7 §9.44 与 MLA 的 Works Cited
+    **都不给条目加序号**，条目以作者姓名开头、按字母序排。而旧修正器只有
+    「该编号 → 补 [n]」一条路，`numbered=False` 时一个字节都不动 ——
+    真实样本里 `1. Ivanov, D. (2020)…` 就这么原样交上去了，检查器也不报。
+
+    性质与 ``_normalize_number_markers`` 完全同类：**只动段首那个列表记号**，
+    条目正文一个字不碰（走 ``_drop_leading_chars``，遇到图形/域/超链接就整条放弃）。
+    """
+    changed = 0
+    for para in entries:
+        text = para.text or ""
+        if not text.strip():
+            continue
+        m = _NUM_MARKER_ANY_RE.match(text)
+        if not m or not m.group(0):
+            continue
+        if _drop_leading_chars(para, len(m.group(0))):
+            changed += 1
+    return changed
+
+
 def _normalize_number_markers(entries: list) -> int:
     """把已有的「1. / 1) / (1)」式列表符号改写成 IEEE 的 `[n]`；返回改了几条。
 
@@ -1588,6 +1616,7 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
       非 APA 模式或无法安全解析的条目一律不动其文本。
     """
     info = {"hanging_applied": False, "numbering_added": 0, "numbering_normalized": 0,
+            "numbering_stripped": 0,
             "rewritten": 0, "entry_reformatted": 0, "entry_spacing_applied": 0,
             "heading_formatted": 0, "new_page_applied": False}
     if not ref_indices:
@@ -1620,6 +1649,10 @@ def _apply_reference_format(doc, target: TargetProfile, ref_indices: list,
         # 变成「[1] 1. Ivanov…」两个编号并排。
         info["numbering_normalized"] = _normalize_number_markers(entries)
         info["numbering_added"] = _apply_reference_numbering(entries)
+    elif target.reference_numbered is False and fix_number:
+        # v2.3.95：规范明确不编号（APA 7 §9.44 / MLA Works Cited）→ 把 `1.` `[1]`
+        # 这类列表记号删掉，条目回到以作者姓名开头。只动段首记号，正文一字不碰。
+        info["numbering_stripped"] = _strip_reference_numbering(entries)
 
     # —— 条目字体 / 字号 / 行距（学校模板常与正文不同口径：正文小四双倍、条目五号单倍）——
     want_font = target.reference_font_family if fix_font else None
@@ -3271,6 +3304,7 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         summary["reference_numbered"] = target.reference_numbered
         summary["reference_numbering_added"] = ref_info["numbering_added"]
         summary["reference_numbering_normalized"] = ref_info["numbering_normalized"]
+        summary["reference_numbering_stripped"] = ref_info["numbering_stripped"]
         summary["reference_entries_reformatted"] = ref_info["entry_reformatted"]
         summary["reference_heading_formatted"] = ref_info["heading_formatted"]
         summary["reference_new_page_applied"] = ref_info["new_page_applied"]
@@ -3961,8 +3995,27 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
     if _gate("reference_numbered"):
         # v2.3.86：已有「1. / 1) / (1)」式列表符号的条目，会被规范化成 IEEE 的 [n]。
         # 预览必须把这条也说清楚，否则客户点完修正会发现「文字没变但符号变了」而不知为何。
-        _plain_markers = [t for t in prof.reference_entries
-                          if t.strip() and _NUM_MARKER_PLAIN_RE.match(t)]
+        # v2.3.95：反向（规范不编号）同样要说清楚 —— 客户得知道段首的 `1.` 会被删掉。
+        if target.reference_numbered is False:
+            _marked = [t for t in prof.reference_entries
+                       if t.strip() and _NUM_MARKER_ANY_RE.match(t)]
+            if _marked:
+                n = len(_marked)
+                ent = "entry" if n == 1 else "entries"
+                prefix = _dim_label(L, "ref_numbering")
+                if L == "zh":
+                    lines.append(
+                        f"{prefix}：去掉 {n} 条条目开头的序号（{target.reference_style} "
+                        f"不加编号；条目正文不动）")
+                else:
+                    lines.append(
+                        f"{prefix}: remove the leading list number from {n} {ent} "
+                        f"({target.reference_style} does not number entries; "
+                        f"entry text untouched)")
+            _plain_markers = []
+        else:
+            _plain_markers = [t for t in prof.reference_entries
+                              if t.strip() and _NUM_MARKER_PLAIN_RE.match(t)]
         if _plain_markers:
             n_norm = len(_plain_markers)
             prefix = _dim_label(L, "ref_numbering")
@@ -3973,8 +4026,11 @@ def _compute_changes(prof, target: TargetProfile, lang="en", findings=None,
                 lines.append(
                     f"{prefix}: change {n_norm} list marker(s) from \"1.\" to \"[n]\" "
                     f"({target.reference_style}; entry text untouched)")
-        missing = [t for t in prof.reference_entries if t.strip()
-                   and not _has_leading_number(t)]
+        # 「该补编号」只对**要求编号**的规范成立；不编号时这一条必须闭嘴，
+        # 否则预览会同时说「去掉序号」和「补 [n]」，自相矛盾。
+        missing = ([t for t in prof.reference_entries if t.strip()
+                    and not _has_leading_number(t)]
+                   if target.reference_numbered else [])
         if missing:
             n = len(missing)
             ent = "entry" if n == 1 else "entries"

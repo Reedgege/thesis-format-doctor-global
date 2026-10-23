@@ -108,13 +108,76 @@ def test_apa_does_not_normalise_markers(tmp_path):
     assert _ref_texts(out) == entries
 
 
-def test_numbering_flag_off_keeps_plain_marker(tmp_path):
-    """目标没要求编号（reference_numbered=False）时，1. 原样保留。"""
+def test_numbering_forbidden_strips_plain_marker(tmp_path):
+    """🔴 v2.3.95 契约升级：目标**明确不编号**时，`1.` 必须被去掉（旧版原样保留）。
+
+    旧行为（v2.3.86 ~ v2.3.94）：只有「该补编号 → 补 [n]」一条路，反方向一个字节都不动。
+    结果老板 2026-10-23 拿 v2.3.93 的四份产物核对时，APA 学生版 / APA 专业版 / MLA
+    三份的条目仍是 `1. Ivanov, D. (2020)…` —— APA 7 §9.44 与 MLA 的 Works Cited
+    都不许给条目加序号，客户就这么交上去了，而报告全绿。
+    性质与 `1.` → `[1]` 完全同类：只动段首那个列表记号，条目正文一个字不碰。
+    """
     src = _make(str(tmp_path / "f.docx"))
     out = str(tmp_path / "f_fixed.docx")
-    t = TargetProfile(reference_style="IEEE", reference_numbered=False)
+    t = TargetProfile(reference_style="APA", reference_numbered=False)
     fix_docx(src, out, t)
-    assert _ref_texts(out)[0].startswith("1. ")
+    texts = _ref_texts(out)
+    assert texts[0].startswith("Ivanov, D. (2020)."), texts
+    assert texts[1].startswith("Sheffi, Y."), texts
+    assert texts[2].startswith("Teece, D. J."), texts
+
+
+def test_numbering_forbidden_also_strips_brackets(tmp_path):
+    """已经是 `[1]` 的条目也要去掉 —— 「不编号」的规范连方括号编号也不许留。"""
+    entries = ["[1] Ivanov, D. (2020). First entry.", "[2] Sheffi, Y. (2005). Second entry."]
+    src = _make(str(tmp_path / "f2.docx"), entries=entries)
+    out = str(tmp_path / "f2_fixed.docx")
+    t = TargetProfile(reference_style="APA", reference_numbered=False)
+    fix_docx(src, out, t)
+    assert _ref_texts(out) == ["Ivanov, D. (2020). First entry.",
+                               "Sheffi, Y. (2005). Second entry."]
+
+
+def test_numbering_forbidden_leaves_entry_body_untouched(tmp_path):
+    """去编号只删段首记号；条目正文（含标点）必须逐字不变。"""
+    src = _make(str(tmp_path / "f3.docx"))
+    out = str(tmp_path / "f3_fixed.docx")
+    fix_docx(src, out, TargetProfile(reference_style="MLA", reference_numbered=False))
+    before = [_strip_marker(t) for t in _ref_texts(src)]
+    assert _ref_texts(out) == before
+
+
+def test_numbering_unspecified_leaves_entries_alone(tmp_path):
+    """reference_numbered 未声明（None）= 不规定 → 一个字节都不许动。"""
+    src = _make(str(tmp_path / "f4.docx"))
+    out = str(tmp_path / "f4_fixed.docx")
+    fix_docx(src, out, TargetProfile(reference_style=None, reference_numbered=None))
+    assert _ref_texts(out) == _ref_texts(src)
+
+
+def test_checker_reports_numbered_entries_when_style_forbids(tmp_path):
+    """条目不编号的规范（APA）遇到 `1.` 条目 → 报告要说话，且可修、修完收敛。"""
+    src = _make(str(tmp_path / "g2.docx"))
+    t = target_from_spec("APA-Student")
+    _, f1 = run_check(src, t)
+    ref = [f for f in f1 if f.dimension == "reference" and f.severity in ("warn", "fail")]
+    assert ref, "APA 下条目带 1./2./3. 必须报出来"
+    assert any(getattr(f, "fix", None) and f.fix.dimension == "reference_numbered"
+               for f in ref)
+    out = str(tmp_path / "g2_fixed.docx")
+    fix_docx(src, out, t)
+    _, f2 = run_check(out, t)
+    assert not [f for f in f2 if f.dimension == "reference"
+                and f.severity in ("warn", "fail")]
+
+
+def test_preview_mentions_marker_removal(tmp_path):
+    """预览必须先说「序号会被去掉」，客户才知道段首的 `1.` 为什么不见了。"""
+    src = _make(str(tmp_path / "h2.docx"))
+    lines = compute_changes(src, target_from_spec("APA-Student"), lang="en")
+    assert any("remove the leading list number" in ln for ln in lines), lines
+    assert not any("add [n] sequential code" in ln for ln in lines), lines
+
 
 
 def test_checker_warn_then_pass_after_fix(tmp_path):
