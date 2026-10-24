@@ -112,6 +112,9 @@ class DocumentProfile:
     # python-docx 1.2.0 的 Section 没有栏数属性，故直读 sectPr XML（见 _section_columns）。
     # 多分节取众数；读不到任何分节时保持 None（不臆造）。
     columns: Optional[int] = None
+    # v2.3.100：body 里的分节数量。>1 表示文档是"标题节/作者节/正文节"结构
+    # （IEEE 会议模板典型 5~7 节），此时页边距/栏数只按**正文节**判（见 _body_section）。
+    body_section_count: int = 0
     # 纸张大小（Letter / A4 / Legal / A5 / None=非标准或读不到）。**通用维度**：
     # 北美常用 Letter，欧洲/中国常用 A4，与引用规范无关，由学校模板/客户决定。
     # 多分节取众数；横向文档按「短边×长边」归一后识别（不会因宽高对调漏判）。
@@ -167,6 +170,8 @@ class DocumentProfile:
     heading_levels_used: int = 0
     reference_text: str = ""                           # 参考文献段原始文本
     reference_entries: list = field(default_factory=list)
+    # 每个条目是否自带 Word 自动编号（`w:numPr`）；与 reference_entries 等长
+    reference_entries_numbered: list = field(default_factory=list)
     # 与 reference_entries 一一对应：该条目是否含有任意斜体 run（用于 APA 等风格的
     # 「期刊名/书名应斜体」提示检查）。直接格式化的斜体均可被 python-docx 读到；
     # 仅当整份参考文献「一条斜体都没有」时才作为可疑信号（避免误伤纯网页型条目）。
@@ -201,12 +206,66 @@ class DocumentProfile:
     has_author_note: bool = False                     # 文档是否含 Author Note / 作者注 段落（专业版要求）
     # —— 摘要页特化（v2.3.67）：摘要正文段的口径与正文不同（APA 摘要不首行缩进、另起一页）——
     abstract_first_line_indent_in: Optional[float] = None  # 摘要正文段实测首行缩进（英寸）；无摘要段=None
+    # v2.3.100（C 批 D-08）：摘要正文的字号 / 加粗 / 对齐（IEEE 会议档判定用）
+    abstract_font_size_pt: Optional[float] = None
+    abstract_bold: Optional[bool] = None
+    abstract_alignment: Optional[str] = None
     # v2.3.76：摘要正文段的段前 / 段后（磅）；无摘要段 = None
     abstract_space_before_pt: Optional[float] = None
     abstract_space_after_pt: Optional[float] = None
     abstract_new_page: Optional[bool] = None          # 摘要是否另起一页（段前分页/上一段末尾分页符）；无摘要段=None
     # —— 图表 caption 采样（v2.3.67）——
     caption_count: int = 0                            # 识别到的 Caption 样式段落数
+    # v2.3.100（F-5 / 裁定 C-6）：IEEE byline（作者/单位/城市/邮箱那几行）实测。
+    # 官方会议模板用 `Author` 样式承载，**样式字号 11pt**（run 上的 9pt 是模板占位，
+    # 不代表规范要求）→ 故 byline 字号优先取**样式字号**，客户没用 byline 样式时才取 run。
+    byline_size_pt: Optional[float] = None      # byline 字号（磅）；无 byline=None
+    byline_line_count: int = 0                  # byline 行数（结构提示用）
+    # v2.3.100（D-1 / 裁定 C-11）：官方模板**指导文字残留**的命中位置。
+    # 每条：{"where": "body"/"footer"/"header", "index": 段号, "text": 摘要}。
+    # 空列表 = 没有残留。IEEE 官方原文：「Failure to remove template text from your
+    # paper may result in your paper not being published.」——客户直接交就是"论文不
+    # 发表"，而我们此前完全不查。**只报位置，绝不自动删**（删客户文字越权）。
+    boilerplate_hits: list = field(default_factory=list)
+    # v2.3.100（F-9 / 裁定 C-12 C-13 C-14）：三类「只提示、不改字」的引用/标点观测。
+    # 三条都是**改文字**类 → 绝不能挂 FixAction（P-2 文字锁死）。
+    # C-12：文内连续引用里的 en dash（IEEE Reference Guide V3.28.2025 已不用）
+    citation_range_en_dash: list = field(default_factory=list)
+    # C-13：Jr. / Sr. / III 前面的逗号（REF：无逗号）
+    suffix_name_comma: list = field(default_factory=list)
+    # C-14：全文公式编号出现过哪些形态（只判「是否一致」，不判某种形式为错）
+    equation_number_styles: list = field(default_factory=list)
+    # v2.3.100（D-2~D-11）：IEEE 系列的**只提示/只判**观测（ESM + OWL + 数学指南）。
+    # 每项都只读、不改；涉及"改文字"的一律只提示（见各 checker 维度的说明）。
+    ieee_caption_labels: list = field(default_factory=list)   # 表/图标签形态与句点
+    ieee_caption_position: dict = field(default_factory=dict)  # 表题在上/图题在下
+    ieee_figure_ref_order: list = field(default_factory=list)  # 正文首次引用顺序
+    ieee_first_footnote: dict = field(default_factory=dict)    # 首脚注形态
+    ieee_acknowledgment: dict = field(default_factory=dict)   # 致谢拼写与位置
+    ieee_coi: dict = field(default_factory=dict)               # 利益冲突声明位置
+    ieee_biography: dict = field(default_factory=dict)         # 作者传记姓名加粗
+    ieee_index_terms: dict = field(default_factory=dict)       # Index Terms 位置
+    ieee_abstract_numbered_refs: list = field(default_factory=list)  # 摘要里的编号引用
+    ieee_numbered_singular_heads: list = field(default_factory=list) # 被编号的单数标题
+    # v2.3.100（E 批）：MLA + APA 剩余的只读观测。
+    body_title_repeat: bool = False        # 正文首段是否重复了论文标题（APA）
+    numbered_body_heads: list = field(default_factory=list)  # 被编号的正文标题
+    author_note_index: Optional[int] = None   # Author Note 段下标（APA 专业版）
+    author_note_has_superscript: Optional[bool] = None  # Author Note 里是否有上标编号
+    first_page_left_texts: list = field(default_factory=list)  # MLA 首页左上各行文本
+    # v2.3.100（E-2 / D-18）：APA caption 的**字形**实测。
+    # APA 7 §2.5/§2.6：图表**号**（"Table 1" / "Figure 1"）用**粗体**，
+    # 图/表的**题**（描述文字）用**斜体**；注（Note.）两者都不用。
+    caption_label_bold: Optional[bool] = None   # 号段是否粗体（众数）
+    caption_title_italic: Optional[bool] = None  # 题段是否斜体（众数）
+    caption_typography_count: int = 0            # 采到多少组「号+题」
+    # v2.3.100（E-6 / D-22）：MLA 论文标题段的实测（居中 / 不粗 / 不斜）。
+    # index=None → 定位不到（不判）；certain=False → 定位到但**不能确定是标题**。
+    mla_title_index: Optional[int] = None
+    mla_title_alignment: Optional[str] = None
+    mla_title_bold: Optional[bool] = None
+    mla_title_italic: Optional[bool] = None
+    mla_title_certain: bool = False
     caption_font_size_pt: Optional[float] = None      # 图表标题实测字号（众数）；无 caption=None
     caption_line_spacing: Optional[float] = None      # 图表标题实测行距（众数）；无 caption=None
     # v2.3.76：图表标题段的段前 / 段后（磅，众数）；无 caption = None
@@ -415,6 +474,135 @@ def _line_spacing_of(pf) -> Optional[float]:
     return None
 
 
+def _raw_line_pt(para):
+    """从 段落 → 样式链 取 ``w:spacing/@w:line`` 的原始值与 rule。
+
+    为什么必须直读 XML：IEEE 会议模板把 ``w:line="11.4pt" w:lineRule="auto"`` 写在
+    **BodyText 样式**上，python-docx 会按「1/240 行」把它算成 0.95 倍（比字号还小，
+    渲染上不可能），而作者的本意是"11.4pt 行距"。要判定是否合规必须能看见原始单位。
+    """
+    def _from_ppr(ppr):
+        if ppr is None:
+            return None
+        sp = ppr.find(qn("w:spacing"))
+        if sp is None:
+            return None
+        raw = sp.get(qn("w:line"))
+        if raw is None:
+            return None
+        return (raw, sp.get(qn("w:lineRule")))
+    try:
+        hit = _from_ppr(para._p.find(qn("w:pPr")))
+        if hit:
+            return hit
+    except Exception:
+        pass
+    try:
+        st = para.style
+    except Exception:
+        st = None
+    while st is not None:
+        try:
+            el = getattr(st, "element", None)
+            hit = _from_ppr(el.find(qn("w:pPr")) if el is not None else None)
+            if hit:
+                return hit
+        except Exception:
+            pass
+        st = getattr(st, "base_style", None)
+    return None
+
+
+def _doc_default_size_pt(doc) -> Optional[float]:
+    """文档默认字号（``styles.xml`` → ``w:docDefaults/w:rPrDefault/w:rPr/w:sz``，磅）。
+
+    ⚠️ ``doc.styles["Normal"].font.size`` **不等于** docDefaults —— Normal 样式没写 sz 时
+    它返回 None，而真正决定继承字号的是 docDefaults。旧代码把两者混用，导致
+    "字号读不到 → 硬编码 10pt 兜底"，把 10pt 混进正文众数（MLA 实测众数变成 10.0）。
+    """
+    try:
+        root = doc.styles.element
+        dd = root.find(qn("w:docDefaults"))
+        if dd is None:
+            return None
+        rprd = dd.find(qn("w:rPrDefault"))
+        if rprd is None:
+            return None
+        rpr = rprd.find(qn("w:rPr"))
+        if rpr is None:
+            return None
+        sz = rpr.find(qn("w:sz"))
+        if sz is None:
+            return None
+        return round(float(sz.get(qn("w:val"))) / 2.0, 1)
+    except Exception:
+        return None
+
+
+def _style_chain_size_pt(para) -> Optional[float]:
+    """沿段落样式链（含 base_style）找字号。"""
+    try:
+        st = para.style
+    except Exception:
+        return None
+    while st is not None:
+        try:
+            if st.font is not None and st.font.size is not None:
+                return round(float(st.font.size.pt), 1)
+        except Exception:
+            pass
+        st = getattr(st, "base_style", None)
+    return None
+
+
+def _font_size_hint(para) -> Optional[float]:
+    """该段的字号提示（run → 样式链），仅用于把「pt 行距」换算成倍数。"""
+    try:
+        for r in para.runs:
+            if (r.text or "").strip() and r.font.size is not None:
+                return round(float(r.font.size.pt), 1)
+    except Exception:
+        pass
+    try:
+        st = para.style
+    except Exception:
+        st = None
+    while st is not None:
+        try:
+            if st.font is not None and st.font.size is not None:
+                return round(float(st.font.size.pt), 1)
+        except Exception:
+            pass
+        st = getattr(st, "base_style", None)
+    return None
+
+
+def _line_pt_multiple(para) -> Optional[float]:
+    """``w:line`` 带 **pt 单位** 且 ``lineRule=auto`` 时，按 ``pt ÷ 字号`` 换算倍数。
+
+    IEEE 会议模板实测：BodyText 样式 ``w:line="11.4pt" lineRule="auto"``，字号 10pt
+    → 1.14 倍（C 批裁定 D-13 的口径）。不带 pt 的普通写法（``w:line="480"``）不在此
+    处理，仍走 python-docx 的老路径（480/240 = 2.0 倍），影响面为零。
+    """
+    hit = _raw_line_pt(para)
+    if not hit:
+        return None
+    raw, rule = hit
+    s = str(raw).strip()
+    if not s.lower().endswith("pt"):
+        return None
+    if rule not in (None, "", "auto"):
+        return None
+    try:
+        pt = float(s[:-2])
+    except (TypeError, ValueError):
+        return None
+    size = _font_size_hint(para) or 10.0
+    if size <= 0:
+        return None
+    return round(pt / size, 2)
+
+
 def _line_spacing_of_para(para, doc_pf=None) -> Optional[float]:
     """行距倍数，带**样式继承**回退（段落直接 → 段落样式链 → 文档默认/Normal）。
 
@@ -433,6 +621,13 @@ def _line_spacing_of_para(para, doc_pf=None) -> Optional[float]:
         pf0 = para.paragraph_format
     except Exception:
         pf0 = None
+    # v2.3.100：pt 单位的 auto 行距（IEEE 模板写法）先换算成倍数，见 _line_pt_multiple
+    try:
+        _pt_mul = _line_pt_multiple(para)
+        if _pt_mul is not None:
+            return _pt_mul
+    except Exception:
+        pass
     if pf0 is not None:
         try:
             rule0 = pf0.line_spacing_rule
@@ -797,6 +992,28 @@ def is_section_heading_line(para) -> bool:
     return bool(_SECTION_HEADING_RE.match(text))
 
 
+def is_standalone_heading_shape(para) -> bool:
+    """段落是否呈「独立标题行」形状：短（≤ ``_PSEUDO_HEADING_MAX_LEN`` 字）+ 不以句读结尾。
+
+    v2.3.100（幂等收尾）：判定**刻意不依赖加粗 / 居中 / 编号** —— 这三样都会被修正器
+    写掉：IEEE 一级标题按裁定 C-5 是「不加粗 + 居中 + small caps」，于是第一遍修好后
+    第二遍 ``is_pseudo_heading``（要求整段显式加粗）就不再命中它，12pt 的标题重新混进
+    正文字号众数 → 众数被判 12pt、而修正侧只改正文 → 每遍都判「字号不符」、
+    每遍都记 applied → 客户点完「修正」那条红杠永远不消失
+    （实测 ``test_fix_ieee_realistic_doc_is_idempotent`` 第二遍 applied 非空）。
+    判据只保留「短 + 无句读结尾」这两个修正器改不掉的形状特征。
+    """
+    try:
+        text = (para.text or "").strip()
+    except Exception:
+        return False
+    if not text or len(text) > _PSEUDO_HEADING_MAX_LEN:
+        return False
+    if text.endswith(_SENTENCE_END):
+        return False
+    return True
+
+
 def heading_level(para) -> Optional[int]:
     """公开的标题层级访问器（fixer 套用每级格式规则用）。
 
@@ -936,8 +1153,23 @@ def structural_heading_map(paras, min_pt: Optional[float] = None,
     # L3、套上 APA Level 3 的「加粗+斜体」），又会被套成错的格式（摘要标题被套成
     # Level 2 的左对齐）。见 _MATTER_TITLES 的说明。
     _text_by_p = {para._p: (para.text or "") for para in paras}
-    out = {p: lv for p, lv in out.items()
-           if _norm_matter_title(_text_by_p.get(p, "")) not in _MATTER_TITLES}
+    _kept = {p: lv for p, lv in out.items()
+             if _norm_matter_title(_text_by_p.get(p, "")) not in _MATTER_TITLES}
+    # 🔴 v2.3.100：过滤后**紧凑重编号**（消除跳级）。
+    # 旧写法直接留下空洞：一篇论文里「Abstract」若是 12pt 加粗，它会占掉字号档的 L2，
+    # 而它作为材料标题又被上面过滤掉 → 真实的 11pt 小节行从 **L3** 起步，
+    # 于是分层变成「有 L1、有 L3、没有 L2」的跳级形态。
+    # 后果（实测）：APA Level 3 要求斜体，而修正器第一遍只修**检查当时报出的**层级
+    # （原稿还没有 L3，只报了 L1/L2）→ 修完层级漂移 → 复检报「Level 3 not italic」
+    # → 第二遍又去改 24 个标题（headings_formatted=24、comments_added=24），
+    # 客户点一次「修正」以为是干净的，其实第二遍还在动文档。
+    # 紧凑化后层级连续，漂移从根上消失。分层本就是推断值，连续比保真跳级更重要。
+    if _kept:
+        _order = sorted(set(_kept.values()))
+        _compact = {old: i + 1 for i, old in enumerate(_order)}
+        out = {p: _compact[lv] for p, lv in _kept.items()}
+    else:
+        out = {}
 
     # 已有锚点的最高层级：编号小节要排在它下面，而不是跟它抢同一级。
     base = max(out.values()) if out else 0
@@ -1096,7 +1328,17 @@ def _ppr_spacing_pair(pPr, base_size_pt=None):
             raw = sp.get(qn(pt_attr))
             if raw is not None:
                 try:
-                    v = round(float(raw) / 20.0, 1)
+                    # v2.3.100：`w:before/after` 除 twips 十进制数外，**还允许带单位**
+                    # （官方 IEEE 模板的 Abstract 样式写的就是 `<w:spacing w:after="10pt"/>`）。
+                    # 旧代码一律 `float(raw)/20` → "10pt" 抛 ValueError → 落到 0 磅，
+                    # 于是摘要"段后 10pt"被判成 0，判定与修正都跟着错。
+                    _s = str(raw).strip()
+                    if _s.lower().endswith("pt"):
+                        v = round(float(_s[:-2]), 1)
+                    elif _s.lower().endswith("in"):
+                        v = round(float(_s[:-2]) * 72.0, 1)
+                    else:
+                        v = round(float(_s) / 20.0, 1)      # twips → 磅
                 except (TypeError, ValueError):
                     v = None
         out.append(v)
@@ -1326,6 +1568,569 @@ def _row_tc_prs(row):
     return out
 
 
+_BYLINE_STYLE_KEYWORDS = ("author", "affiliation", "byline", "authors")
+
+
+def sample_byline(doc) -> tuple:
+    """采样 byline（作者信息块）→ (字号磅值或 None, 行数)。
+
+    v2.3.100（F-5 / 落地裁定 C-6）。IEEE 会议模板的作者块用 ``Author`` 样式承载，
+    OWL 与官方模板对字号的说法不一致（OWL 10pt / 模板 11pt），老板裁定**以模板 11pt
+    为准。本函数只负责读，判与修在 checker/fixer。
+
+    取字号口径（宁可不判，不臆造）：
+      · **样式字号优先** —— byline 的字号由 Author/byline 样式定义，模板里 run 上的
+        9pt 是"占位提示"（同一批 run 的文字是 "line 1: 1st Given Name Surname" 这种
+        指导文字），拿它当规范值会把官方模板判红；
+      · 没有任何 byline 样式时（客户手打）才退回 run 显式字号的众数；
+      · 两类都读不到 → None（不判）。
+    行数：连续 byline 段的条数（结构只提示，不判好坏 —— 删/补行都是改文字）。
+    """
+    paras = []
+    for para in doc.paragraphs:
+        try:
+            nm = (para.style.name or "").strip().lower()
+        except Exception:
+            continue
+        if not (para.text or "").strip():
+            continue
+        if any(nm == k or nm.startswith(k) for k in _BYLINE_STYLE_KEYWORDS):
+            paras.append(para)
+    if not paras:
+        # 退回标题页探测到的作者段（detect_title_page 只抓 ≤3 段，作兜底）
+        try:
+            tp = detect_title_page(doc) or {}
+            for idx in (tp.get("authors") or ()):  # noqa: E501
+                if 0 <= idx < len(doc.paragraphs):
+                    paras.append(doc.paragraphs[idx])
+        except Exception:
+            paras = []
+    if not paras:
+        return None, 0
+    style_sizes, run_sizes = [], []
+    for para in paras:
+        try:
+            st = para.style
+        except Exception:
+            st = None
+        if st is not None and st.font is not None and st.font.size is not None:
+            style_sizes.append(round(float(st.font.size.pt), 1))
+        for r in para.runs:
+            if (r.text or "").strip() and r.font.size is not None:
+                run_sizes.append(round(float(r.font.size.pt), 1))
+    if style_sizes:
+        from collections import Counter
+        return Counter(style_sizes).most_common(1)[0][0], len(paras)
+    if run_sizes:
+        from collections import Counter
+        return Counter(run_sizes).most_common(1)[0][0], len(paras)
+    return None, len(paras)
+
+
+def sample_template_boilerplate(doc) -> list:
+    """扫出官方模板**指导文字**残留（v2.3.100，D-1 / 裁定 C-11）。
+
+    IEEE 官方会议模板下载页原文：「Please ensure that all **guidance text is removed**
+    from your conference paper prior to submission… **Failure to remove template text
+    from your paper may result in your paper not being published.**」
+    本地两份 2024-07-16 官方模板实测仍含：
+      · 正文：「This electronic document is a "live" template…」
+      · 正文：「line 1: 1st Given Name Surname」「line 2: dept. name of organization」
+      · 正文：「Identify applicable funding agency here」
+      · 页脚：「XXX-X-XXXX-XXXX-X/XX/$XX.00 ©20XX IEEE」
+    客户把模板直接交上去 = 论文不发表，而我们此前报"全部合规"。
+
+    只读不改：返回命中位置清单，删除由客户自己做（删文字越权，且 P-2 锁死文字）。
+    """
+    hits: list = []
+
+    def _scan(text: str, where: str, index, limit: int = 60):
+        t = (text or "").strip()
+        if not t:
+            return
+        if is_template_boilerplate_text(t):
+            hits.append({"where": where, "index": index,
+                         "text": t[:limit] + ("…" if len(t) > limit else "")})
+
+    for i, para in enumerate(doc.paragraphs):
+        _scan(para.text or "", "body", i)
+    # 页眉 / 页脚：官方模板的论文编号/版权行在**页脚**，不在正文
+    try:
+        for part, kind, _scope in _iter_header_footer_parts(doc):
+            for j, para in enumerate(_part_paragraphs(part)):
+                _scan(para.text or "", kind, j)
+    except Exception:
+        pass
+    return hits
+
+
+# —— F-9：三类「只提示」的引用 / 标点观测（v2.3.100）——
+# C-12：IEEE Reference Guide V3.28.2025 原文：「Reference ranges in text **will not
+# include an en dash** … '[1]–[4]' will now be '[1], [2], [3], [4]'」。
+# ⚠️ 形状是「**两个方括号**中间一个破折号」：[3]–[5] —— 不是 [3-5]。
+# 我第一版写成 `\[\d+\s*-\s*\d+\]`（一个方括号里含范围），实测一个都匹配不到。
+_CITATION_RANGE_RE = re.compile(
+    r"\[\s*\d+\s*\]\s*[\u2013\u2014-]\s*\[\s*\d+\s*\]")
+# C-13：同指南：「**Do not use commas** around Jr., Sr., and III：Michael Smith Jr.」。
+# 只认「逗号 + 空白 + Jr./Sr./II/III/IV」这一种形状，不碰 "Smith, J."（那是姓名缩写）。
+_SUFFIX_COMMA_RE = re.compile(r",\s+(?:Jr|Sr|II|III|IV|V)\.?(?=\s|$|[),.;])")
+# C-14：公式编号形态。IEEE Mathematics Guide：「Hyphens and periods are usually
+# removed from equation numbers, i.e., (1a) rather than (1-a) … consistently」。
+# ESM 则说 (1a)/(1.1)/(1-1) 都行、只要全文一致 → 我们**只采集形态、不判好坏**。
+_EQ_NUM_STYLE_RES = (
+    ("plain", re.compile(r"\(\s*\d+\s*\)")),
+    ("letter_suffix", re.compile(r"\(\s*\d+\s*[a-z]\s*\)")),
+    ("dotted", re.compile(r"\(\s*\d+(?:\.\d+)+\s*\)")),
+    ("hyphenated", re.compile(r"\(\s*\d+-\d+[a-z]?\s*\)")),
+    ("appendix", re.compile(r"\(\s*[A-Z]\d+[a-z]?\s*\)")),
+)
+
+
+def sample_text_style_notes(doc) -> dict:
+    """扫全文引用/标点/公式编号的三类**只提示**观测（v2.3.100，F-9）。
+
+    返回 ``{"citation_range_en_dash": [...], "suffix_name_comma": [...],
+    "equation_number_styles": [...]}``。每条命中带 ``para``（段下标）与 ``text``（摘要）。
+
+    🔴 三类全部**只提示**：改标点就是改客户的文字（P-2 锁死），所以 checker 侧一律
+    info、**绝不挂 FixAction**。C-14 更特殊 —— ESM 明说 (1a)/(1.1)/(1-1) 均可、
+    只要求全文一致，所以我们只判「混用了几种形态」，绝不判某种形式为错。
+    """
+    out = {"citation_range_en_dash": [], "suffix_name_comma": [],
+           "equation_number_styles": []}
+    styles_seen: set = set()
+
+    def _note(bucket: list, i: int, text: str, limit: int = 48):
+        t = (text or "").strip()
+        if not t:
+            return
+        bucket.append({"para": i,
+                       "text": t[:limit] + ("…" if len(t) > limit else "")})
+
+    for i, para in enumerate(doc.paragraphs):
+        t = para.text or ""
+        if not t.strip():
+            continue
+        for m in _CITATION_RANGE_RE.finditer(t):
+            _note(out["citation_range_en_dash"], i, m.group(0))
+        for m in _SUFFIX_COMMA_RE.finditer(t):
+            _note(out["suffix_name_comma"], i, m.group(0))
+        if "(" in t:
+            for name, rx in _EQ_NUM_STYLE_RES:
+                if rx.search(t):
+                    styles_seen.add(name)
+                    break
+    out["equation_number_styles"] = sorted(styles_seen)
+    return out
+
+
+# —— D 批：IEEE 系列的只读观测（v2.3.100）——
+# 表标签：IEEE 表题是「TABLE I」（罗马数字、大写），图题是「Fig. N.」（阿拉伯数字 + 句点）。
+_CAP_TABLE_LABEL_RE = re.compile(r"^\s*TABLE\s+([IVXLCDM]+|\d+)\b", re.IGNORECASE)
+_CAP_FIG_LABEL_RE = re.compile(r"^\s*Fig(?:ure)?\.?\s+(\d+)\b", re.IGNORECASE)
+# 正文里对图表的引用（用于"首次引用必须按数字序"）
+_FIG_REF_RE = re.compile(r"\bFig(?:ure)?\.?\s+(\d+)\b", re.IGNORECASE)
+_TAB_REF_RE = re.compile(r"\bTABLE\s+(\d+|I|II|III|IV|V|VI|VII|VIII|IX|X)\b")
+# 章节标题里的"单数"形式（IEEE 惯例用复数 Introduction / References）
+_SINGULAR_HEADS = {
+    "introduction", "references", "acknowledgment", "acknowledgement",
+    "appendix", "biography", "abstract", "conclusion", "conclusions",
+}
+
+
+def _roman_to_int(s: str) -> int:
+    """罗马数字 → 整数（认不了就返回 0）。"""
+    vals = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    s = (s or "").strip().upper()
+    if not s:
+        return 0
+    total, prev = 0, 0
+    for ch in reversed(s):
+        v = vals.get(ch)
+        if v is None:
+            return 0
+        if v < prev:
+            total -= v
+        else:
+            total += v
+            prev = v
+    return total
+
+
+def sample_ieee_extras(doc) -> dict:
+    """采集 IEEE 系列的只读观测（D-2~D-11）。
+
+    🔴 本函数**只读**：所有结果都只用于出提示或判定"形态是否一致"，
+    绝不在这里改客户文字。涉及"改文字"的项目（引用顺序、拼写）在 checker 侧一律 info。
+    """
+    out = {
+        "caption_labels": [], "caption_position": {}, "figure_ref_order": [],
+        "first_footnote": {}, "acknowledgment": {}, "coi": {},
+        "biography": {}, "index_terms": {}, "abstract_numbered_refs": [],
+        "numbered_singular_heads": [],
+    }
+    paras = list(doc.paragraphs)
+    texts = [(p.text or "") for p in paras]
+
+    # —— D-2 / D-3：表/图标签形态与句点 ——
+    for i, t in enumerate(texts):
+        ts = t.strip()
+        if not ts:
+            continue
+        m = _CAP_TABLE_LABEL_RE.match(ts)
+        if m:
+            tok = m.group(1)
+            out["caption_labels"].append({
+                "kind": "table", "para": i, "label": ts.split("\n")[0][:40],
+                "number": _roman_to_int(tok) if tok.isalpha() else int(tok),
+                "numeral": "roman" if tok.isalpha() else "arabic",
+                "uppercase": ts.strip().startswith("TABLE"),
+                "ends_with_period": ts.rstrip().endswith("."),
+                "text": ts[:60],
+            })
+            continue
+        m = _CAP_FIG_LABEL_RE.match(ts)
+        if m:
+            out["caption_labels"].append({
+                "kind": "figure", "para": i, "label": ts.split("\n")[0][:40],
+                "number": int(m.group(1)), "numeral": "arabic",
+                "uppercase": False,
+                "ends_with_period": ts.rstrip().endswith("."),
+                "text": ts[:60],
+            })
+
+    # —— D-2 续：表题在表**上方**、图题在图**下方**（IEEE 惯例）——
+    try:
+        body = doc.element.body
+        seq = [c for c in body.iterchildren()
+               if c.tag in (qn("w:p"), qn("w:tbl"))]
+        tbl_idx = [k for k, c in enumerate(seq) if c.tag == qn("w:tbl")]
+        for lab in out["caption_labels"]:
+            if lab["kind"] != "table":
+                continue
+            # 找该 caption 段在 body 序列中的位置
+            for k, c in enumerate(seq):
+                if c.tag != qn("w:p"):
+                    continue
+                if paras and _same_p(c, paras[lab["para"]]):
+                    nxt_tbl = next((t for t in tbl_idx if t > k), None)
+                    if nxt_tbl is not None:
+                        lab["caption_above_table"] = (nxt_tbl - k) <= 2
+                    break
+    except Exception:
+        pass
+
+    # —— D-4：正文首次引用图表的数字序 ——
+    seen_fig, seen_tab = [], []
+    for i, t in enumerate(texts):
+        for m in _FIG_REF_RE.finditer(t):
+            n = int(m.group(1))
+            if n not in seen_fig:
+                seen_fig.append(n)
+                out["figure_ref_order"].append({"para": i, "number": n,
+                                               "text": m.group(0)})
+        for m in _TAB_REF_RE.finditer(t):
+            tok = m.group(1)
+            n = _roman_to_int(tok) if tok.isalpha() else int(tok)
+            if n and n not in seen_tab:
+                seen_tab.append(n)
+    out["figure_ref_order_ok"] = (seen_fig == sorted(seen_fig)) if seen_fig else None
+    out["table_ref_order_ok"] = (seen_tab == sorted(seen_tab)) if seen_tab else None
+
+    # —— D-5：首脚注 ——
+    # ⚠️ python-docx 的 `Package` **没有** `.blob` 属性（实测），脚注 part 要从
+    # `package.iter_parts()` 里按 partname 找 —— 这是唯一稳定的取法。
+    try:
+        _blob = None
+        try:
+            for _part in doc.part.package.iter_parts():
+                if str(getattr(_part, "partname", "")) == "/word/footnotes.xml":
+                    _blob = _part.blob
+                    break
+        except Exception:
+            _blob = None
+        if _blob:
+            from lxml import etree as _et
+            _root = _et.fromstring(_blob)
+            _ids, _ftxts = [], []
+            for _fn in _root.findall(qn("w:footnote")):
+                _fid = _fn.get(qn("w:id"))
+                try:
+                    _fid = int(_fid)
+                except Exception:
+                    continue
+                if _fid <= 0:
+                    continue          # 分隔线条目
+                _ftxt = "".join(t.text or "" for t in _fn.iter(qn("w:t")))
+                _ids.append(_fid)
+                _ftxts.append(_ftxt.strip())
+            if _ftxts:
+                out["first_footnote"] = {
+                    "count": len(_ftxts),
+                    "first_text": _ftxts[0][:80],
+                    "numbered": bool(_ids and sorted(_ids) == list(range(1, len(_ids) + 1))),
+                }
+    except Exception:
+        pass
+
+    # —— D-6 / D-7 / D-8 / D-9：致谢、COI、传记、Index Terms ——
+    abs_head, abs_body = find_abstract_section(paras)
+    abs_last = max(abs_body) if abs_body else None
+    for i, t in enumerate(texts):
+        low = t.strip().lower()
+        if not low:
+            continue
+        if low.startswith("acknowledg"):
+            out["acknowledgment"] = {
+                "para": i,
+                "spelling": ("acknowledgement" if low.startswith("acknowledgement")
+                             else "acknowledgment"),
+                "text": t.strip()[:70],
+            }
+        elif low.startswith("conflict of interest") or low.startswith("conflicts of interest"):
+            out["coi"] = {"para": i, "text": t.strip()[:70]}
+        elif low.startswith("index terms") or low.startswith("indexterm"):
+            out["index_terms"] = {
+                "para": i,
+                "text": t.strip()[:70],
+                "in_abstract_block": (abs_last is not None and i <= abs_last),
+                "is_last_in_abstract": (abs_last is not None and i == abs_last),
+            }
+        elif low.startswith("biography") or low.startswith("biographies"):
+            # 作者传记：姓名一般加粗
+            _name_bold = None
+            _nxt = paras[i + 1] if i + 1 < len(paras) else None
+            if _nxt is not None:
+                _rs = [r for r in _nxt.runs if (r.text or "").strip()]
+                if _rs:
+                    _name_bold = any(r.font.bold is True for r in _rs)
+            out["biography"] = {"para": i, "name_bold": _name_bold,
+                                "text": t.strip()[:60]}
+
+    # —— D-10：摘要里出现编号引用 / 编号公式 ——
+    if abs_body:
+        for j in abs_body:
+            _t = texts[j] if j < len(texts) else ""
+            for _m in re.finditer(r"\[\s*\d+\s*\]", _t):
+                out["abstract_numbered_refs"].append(
+                    {"para": j, "text": _m.group(0)})
+            for _m in re.finditer(r"\(\s*\d+\s*[a-z]?\s*\)", _t):
+                out["abstract_numbered_refs"].append(
+                    {"para": j, "text": _m.group(0)})
+
+    # —— D-11：被编号的**单数**章节标题（IEEE 惯例用复数）——
+    try:
+        _cand = [p for p in paras if heading_level(p) is not None]
+        _lvl = structural_heading_map(_cand)
+        for _p, _lv in _lvl.items():
+            _txt = (_p.text or "").strip().lower()
+            _core = re.sub(r"^[\s\d.ivxlcdm()\-–—]+", "", _txt).strip(" .:")
+            if _core in _SINGULAR_HEADS:
+                _has_prefix = bool(re.match(r"^\s*(?:[\d]+|[IVXLCDM]+|[A-Z])\.?\s", _txt))
+                if _has_prefix:
+                    out["numbered_singular_heads"].append(
+                        {"level": _lv, "text": (_p.text or "").strip()[:50]})
+    except Exception:
+        pass
+    return out
+
+
+def sample_mla_apa_extras(doc) -> dict:
+    """MLA + APA 剩余的只读观测（v2.3.100，E 批 E-1/E-3/E-4/E-5/E-7/E-8）。
+
+    全部**只读**：判定结果只用于出 info 提示，涉及"改文字"的一律不改。
+    """
+    out = {"body_title_repeat": False, "numbered_body_heads": [],
+           "author_note_index": None, "author_note_has_superscript": None,
+           "first_page_left_texts": []}
+    paras = list(doc.paragraphs)
+    texts = [(p.text or "") for p in paras]
+    _norm = lambda t: re.sub(r"\s+", " ", (t or "").strip().lower())
+
+    # —— E-1：正文首段是否重复了论文标题（APA 稿里标题只该出现在题名页）——
+    _title = ""
+    for t in texts[:12]:
+        if t.strip():
+            _title = _norm(t)
+            break
+    if _title:
+        for i, t in enumerate(texts):
+            if i < 6 or not t.strip():
+                continue
+            if _norm(t) == _title:
+                out["body_title_repeat"] = True
+                break
+
+    # —— E-3 / E-4：正文标题带编号（APA / MLA 都不用编号标题）——
+    try:
+        _cand = [p for p in paras if heading_level(p) is not None]
+        _lvl = structural_heading_map(_cand)
+        for _p, _lv in _lvl.items():
+            _txt = (_p.text or "").strip()
+            if not _txt:
+                continue
+            if re.match(r"^\s*(?:\d+(?:\.\d+)*[.)]?|[IVXLCDM]+[.)]?|[A-Z][.)])\s+\S", _txt):
+                out["numbered_body_heads"].append(
+                    {"level": _lv, "text": _txt[:50]})
+    except Exception:
+        pass
+
+    # —— E-7 / E-8：APA 专业版 Author Note 的位置与上标编号 ——
+    for i, t in enumerate(texts):
+        if _norm(t).startswith("author note"):
+            out["author_note_index"] = i
+            # 该段或其紧邻段里是否有上标 run（APA 的作者注编号用上标）
+            _sup = False
+            for _j in (i, i + 1):
+                if 0 <= _j < len(paras):
+                    for _r in paras[_j].runs:
+                        if not ( _r.text or "").strip():
+                            continue
+                        try:
+                            if _r.font.superscript is True:
+                                _sup = True
+                        except Exception:
+                            pass
+            out["author_note_has_superscript"] = _sup
+            break
+
+    # —— E-5：MLA 首页左上四行（姓名/教授/课程/日期）——
+    try:
+        from docx.enum.text import WD_ALIGN_PARAGRAPH as _WA
+        _cnt = 0
+        for i, p in enumerate(paras[:12]):
+            _t = (p.text or "").strip()
+            if not _t:
+                continue
+            if p.alignment == _WA.LEFT:
+                _cnt += 1
+                out["first_page_left_texts"].append(_t[:50])
+            else:
+                break
+    except Exception:
+        pass
+    return out
+
+
+# v2.3.100（E-2 / D-18）：纯标签段（"Table 1" / "Figure 1."）——只含编号、没有描述文字。
+_CAPTION_PURE_LABEL_RE = re.compile(
+    r"^\s*(?:Table|Figure|Fig\.?)\s*\d+\s*\.?\s*$", re.IGNORECASE)
+
+
+def sample_caption_typography(doc) -> dict:
+    """采样 APA caption 的字形：号段是否粗体、题段是否斜体（v2.3.100，E-2 / D-18）。
+
+    APA 7：号（"Table 1"）**粗体**，题（描述）**斜体**。
+    「题段」的位置约定：紧跟在号段之后的那一段（APA 的标准排法就是号、题各占一段）。
+    只在**确实采到「号 + 题」这一对**时才给结论，否则 None（不判）。
+
+    ⚠️ 字形取「run 直接格式 → 样式链」三级回退（与摘要标题同一口径），
+    否则官方样例（caption 用 Normal + 直接格式）会读成"读不到"。
+    """
+    out = {"caption_label_bold": None, "caption_title_italic": None, "count": 0}
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return out
+    label_bolds, title_italics = [], []
+    for i, p in enumerate(paras):
+        if not is_caption_paragraph(p):
+            continue
+        text = (p.text or "").strip()
+        if not _CAPTION_PURE_LABEL_RE.match(text):
+            continue                      # 不是纯号段（可能是号+题同段）
+        runs = [r for r in p.runs if (r.text or "").strip()]
+        if not runs:
+            continue
+        _b = _run_bool_with_style(runs, p, "bold")
+        # ⚠️ None（run 与样式链都没写）= 渲染出来就是**不加粗** → 记 False。
+        # 与摘要标题那边不同：那里 None 表示"读不到、别冤枉客户"；这里要求是
+        # "必须是粗体"，未设置就是不满足 → 如实报出来（可修）。
+        label_bolds.append(bool(_b))
+        # 题段 = 紧跟其后的一段
+        if i + 1 < len(paras):
+            nxt = paras[i + 1]
+            ntxt = (nxt.text or "").strip()
+            if ntxt and not is_caption_paragraph(nxt):
+                nruns = [r for r in nxt.runs if (r.text or "").strip()]
+                if nruns:
+                    _it = _run_bool_with_style(nruns, nxt, "italic")
+                    title_italics.append(bool(_it))
+    out["count"] = len(label_bolds)
+    if label_bolds:
+        out["caption_label_bold"] = (sum(label_bolds) * 2 >= len(label_bolds))
+    if title_italics:
+        out["caption_title_italic"] = (sum(title_italics) * 2 >= len(title_italics))
+    return out
+
+
+def sample_mla_title(doc) -> dict:
+    """定位并实测 MLA 的论文标题段（v2.3.100，E-6 / D-22）。
+
+    MLA 9：标题**居中**、**不加粗、不加斜**、不额外加空行，字号与正文相同。
+
+    🔴 定位的难点（计划里点名了）：MLA 稿里"论文标题"与"章节标题"长得一样，
+    而"首页左上四行信息块"与"标题"也可能都左对齐 —— **定位错就会改错客户的段**。
+    故分两级置信度：
+      · **certain=True**：首页首个**居中**段（`doc_title_index`）—— 绝无可能是信息块；
+      · **certain=False**：首页左上信息块之后的第一段非空段（客户没居中时兜底）——
+        可能其实是正文首段，所以只给**提示**，**不自动改**。
+
+    返回 ``{"index":…, "alignment":…, "bold":…, "italic":…, "certain":…}``。
+    """
+    out = {"index": None, "alignment": None, "bold": None, "italic": None,
+           "certain": False}
+    try:
+        from docx.enum.text import WD_ALIGN_PARAGRAPH as _WA
+        paras = list(doc.paragraphs)
+    except Exception:
+        return out
+    if not paras:
+        return out
+
+    # —— 定位：跳过首页开头的**左对齐连续块**（MLA 的姓名/教授/课程/日期信息块），
+    #    取其后第一段非空段。
+    # ⚠️ 不能用 doc_title_index：它要求「**第一个非空段**就是标题」，而 MLA 稿的
+    #   第一个非空段是信息块 → 永远认不出（实测）。
+    i = 0
+    while i < len(paras):
+        p = paras[i]
+        t = (p.text or "").strip()
+        if not t:
+            i += 1
+            continue
+        if p.alignment == _WA.LEFT:
+            i += 1
+            continue
+        break
+    if i >= len(paras):
+        return out
+    p = paras[i]
+    text = (p.text or "").strip()
+    if not text:
+        return out
+    runs = [r for r in p.runs if (r.text or "").strip()]
+    out["index"] = i
+    # 🔴 `_effective_para_alignment` 已经返回**字符串**（"left"/"center"/…），
+    #    不要再过 `_ALIGN_MAP`（那会把值映成 None）。
+    out["alignment"] = _effective_para_alignment(p)
+    if runs:
+        out["bold"] = _run_bool_with_style(runs, p, "bold")
+        out["italic"] = _run_bool_with_style(runs, p, "italic")
+    # 置信度：**居中**才是确定无疑的标题（信息块一定是左对齐）；
+    # 不居中时可能其实是正文首段 → 只提示、不自动改。
+    out["certain"] = (out["alignment"] == "center")
+    return out
+
+
+def _same_p(el, para) -> bool:
+    """body 序列里的元素是否就是某个段落对象（用于定位 caption 段的下标）。"""
+    try:
+        return el is para._p
+    except Exception:
+        return False
+
+
 def caption_block_top(seq, j: int, doc) -> int:
     """表格**上方**紧邻段 ``j`` → 承载「表格与文字之间那一条空隙」的段落下标。
 
@@ -1367,6 +2172,85 @@ def caption_block_top(seq, j: int, doc) -> int:
     return k
 
 
+def _is_table_note(para) -> bool:
+    """段落是否是表格的**表注**（APA 惯例：紧贴表格下方，以 "Note." 开头）。
+
+    v2.3.100（F-2 / 裁定 C-2）。APA 7 表注规范：表注置于表格下方、与表格紧贴，
+    所以「表格与表注之间」本来就不该有额外空隙 —— 旧写法把表注当普通文字，
+    量到 0pt 就判"below 0 pt"，把官方样例判红。
+    只认 **"Note." 开头的短段**（≤200 字）：正文里 "Note that ..." 是句子，不误伤。
+    """
+    try:
+        text = (para.text or "").strip()
+    except Exception:
+        return False
+    if not text or len(text) > 200:
+        return False
+    return bool(re.match(r"(?i)^note\.\s", text))
+
+
+# v2.3.100（F-7）：Word 的**样式提示 run** —— 文本就是 "(references)"、"(body text)"
+# 这种，Word 用它在页面显示当前样式名，自带 SimSun 10pt。混进参考文献字号众数会把
+# 模板的 8pt 顶成 10pt（实测）。只认"纯字母串"，条目里的 "(2020)" 不受影响。
+_STYLE_HINT_RE = re.compile(r"^\([A-Za-z][A-Za-z ]{0,28}\)$")
+
+
+# v2.3.100（F-7 先建、D-1 扩展为 template_boilerplate 维度）：官方模板**指导文字**特征串。
+# 来源：IEEE 官方会议模板下载页原文「Please ensure that all guidance text is removed from
+# your conference paper prior to submission… **Failure to remove template text from your
+# paper may result in your paper not being published.**」—— 客户直接交就是"论文不发表"，
+# 而我们此前完全不查。这里先取**完整短语**（宁窄勿宽：只匹配 "Given Name" 这种碎片会
+# 误命中正常论文的姓名栏）。
+TEMPLATE_BOILERPLATE_CUES = (
+    "this electronic document is a",
+    "given name surname",
+    "dept. name of organization",
+    "identify applicable funding agency",
+    "name of organization",
+    "ieee conference templates contain guidance text",
+    "xxx-x-xxxx-xxxx-x/xx",
+    "use style: paper title",
+    "are not captured in xplore",
+)
+
+
+def is_template_boilerplate_text(text: str) -> bool:
+    """文本是否是 IEEE 官方模板的**指导文字**（v2.3.100，C-11 / D-12）。
+
+    只认完整短语，避免把客户论文里的正常内容误判成模板残留。
+    """
+    try:
+        low = (text or "").strip().lower()
+    except Exception:
+        return False
+    if not low:
+        return False
+    return any(cue in low for cue in TEMPLATE_BOILERPLATE_CUES)
+
+
+def _is_real_ref_entry(paras, i: int) -> bool:
+    """``paras[i]`` 是不是**真正的参考文献条目**（v2.3.100，F-7 / 裁定 C-10）。
+
+    采用**排除法**而非准入法（踩过）：早期版本要求"样式含 reference 或带 numPr"
+    才算真条目，结果把普通论文里用 Normal 样式手打的参考文献**整段滤光**，
+    ``reference_font`` / ``reference_size`` / ``reference_spacing`` 三个维度全部
+    读成 None（``test_param_pipeline`` roundtrip 实测回归）。普通客户的条目才是
+    常态，官方模板的特殊样式不是 —— 准入法会把常态判成"读不到"。
+
+    现在只排除一类**确定不是条目**的段：文本命中官方模板**指导文字**特征串的
+    （``is_template_boilerplate_text``）。官方模板 "References" 标题下夹 4 段
+    Body Text 指导文字、末尾又夹 1 段，不排除就会把它们的 SimSun 10pt 混进条目
+    字号众数（实测把模板 references 样式的 8pt 顶成 10pt）。
+    只认形状、不猜内容：模板残留由 D 批 ``template_boilerplate`` 维度单独报告，
+    只提示不删。
+    """
+    try:
+        p = paras[i]
+    except Exception:
+        return False
+    return not is_template_boilerplate_text(p.text or "")
+
+
 def table_gap_samples(doc) -> tuple:
     """每张表与前后**紧邻文字**之间的空隙（磅）→ (样本列表, 紧邻段落的 w:p 集合)。
 
@@ -1382,6 +2266,10 @@ def table_gap_samples(doc) -> tuple:
       · 紧邻的是**空段落** → 这条空行已经存在（gap 记为 None、blank=True）；
       · 紧邻的是正文段 → 空隙 = 该段 space_after（表格在前）/ space_before（表格在后）；
       · 紧邻的是另一张表 / 没有元素 → 不判（gap=None）。
+      · **v2.3.100（F-2 / 裁定 C-2）跨页侧不判**：docx 没有绝对页坐标，只能用近似 ——
+        邻接段落带 `w:pageBreakBefore`（它是新页的第一段）说明表格与该段之间隔着分页，
+        这一侧量出来的"空隙"其实跨了两页，判它毫无意义。该侧记 `same_page=False`，
+        checker 见到 False 就跳过（宁可不判，不冤枉客户）。
     返回的 `adjacent`（**紧邻且非空**的段落）必须从「正文段前段后=0」里豁免，
     否则两个维度互相清，客户修完复检又报红（自伤）。采样侧同样要剔掉它们，
     否则那 24pt 会抬高「正文段前段后」的众数。
@@ -1409,9 +2297,23 @@ def table_gap_samples(doc) -> tuple:
         if side == "after":
             k = caption_block_top(seq, j, doc)
             if k != j or is_caption_paragraph(para):
+                # 🔴 v2.3.100（F-2 / 裁定 C-2）：上溯到表题块最上一段后，还要看
+                # **表题块之上**是不是空段落。官方 APA 样例就是「空段 + "Table 1" +
+                # 表题描述 + 表格」四件套 —— 空隙其实已经由那个空段提供了，
+                # 旧写法只读到表题自身的 space_before=0 → 判"上方 0pt"→ **把官方
+                # 合规样例判红**。有空行就是有空行，这一侧不判。
+                if k - 1 >= 0 and seq[k - 1].tag == qn("w:p"):
+                    _above = Paragraph(seq[k - 1], doc)
+                    if not (_above.text or "").strip():
+                        return None, True, None
                 _sb, _ = _spacing_pair_of_para(Paragraph(seq[k], doc))
                 return float(0.0 if _sb is None else _sb), False, seq[k]
         sb, sa = _spacing_pair_of_para(para)
+        # 🔴 v2.3.100（F-2）：表格**下方**紧邻的是表注（APA 惯例 "Note. ..."）时，
+        # 这一侧不判 —— 表注紧贴自己的表格是 APA 标准写法（官方 mixed-methods 样例
+        # Table 3 正是如此），旧写法把它当普通文字 → 判"below 0 pt"→ 把官方样例判红。
+        if side == "before" and _is_table_note(para):
+            return None, True, None
         val = sa if side == "after" else sb
         return float(0.0 if val is None else val), False, seq[j]
 
@@ -1430,8 +2332,35 @@ def table_gap_samples(doc) -> tuple:
             "index": n,
             "before_pt": gap_b, "before_blank": blank_b,
             "after_pt": gap_a, "after_blank": blank_a,
+            # v2.3.100（F-2 / 裁定 C-2）：两侧是否与表格**同页**。
+            # 邻接段带 pageBreakBefore → 它与表格之间隔着分页 → 该侧跨页，不判。
+            "before_same_page": not _starts_new_page(seq[i - 1]) if i > 0 else False,
+            "after_same_page": not _starts_new_page(seq[i + 1]) if i + 1 < len(seq) else False,
         })
     return samples, adjacent
+
+
+def _starts_new_page(el) -> bool:
+    """元素（段落）是否是「新页的第一段」—— 带 `w:pageBreakBefore`。
+
+    v2.3.100（F-2）：docx 没有绝对页坐标，判「表格与邻接文字是否同页」只能用这个近似。
+    宁可漏判（把同页的当跨页而跳过），也不能把跨页的当同页去判一个没有意义的空隙。
+    """
+    try:
+        if el is None or el.tag != qn("w:p"):
+            return False
+        ppr = el.find(qn("w:pPr"))
+        if ppr is None:
+            return False
+        if ppr.find(qn("w:pageBreakBefore")) is not None:
+            return True
+        # 段内分页符（`<w:br w:type="page"/>`）同样说明它前面换了页
+        for br in el.iter(qn("w:br")):
+            if br.get(qn("w:type")) == "page":
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def sample_table_lines(doc) -> list:
@@ -1453,6 +2382,10 @@ def sample_table_lines(doc) -> list:
         except Exception:
             continue
         if not rows:
+            continue
+        if len(rows) < 2:
+            # 单行（含 1×1 布局/摘要框）无法形成「表头线」，不属于数据表。
+            # 参与三线表判定会永远 warn 且修正器永远修不动 → 非幂等。跳过（N/A）。
             continue
         try:
             tblPr = tbl._tbl.tblPr
@@ -1477,7 +2410,12 @@ def sample_table_lines(doc) -> list:
                     has_inside_h = True
         has_header_line = False
         if len(rows) >= 2:
-            has_header_line = bool(first) and all(
+            # v2.3.100（B-6 / 裁定 C-3）：表头行**任一**单元格有 bottom 即算有表头线。
+            # 旧写法用 ``all`` —— 官方 APA 样例（qualitative / mixed-methods）把表头线
+            # 写在**单元格级** tcBorders 上，且常常只给部分单元格写（合并单元格、
+            # 首列不写），``all`` 于是判"没有表头线"→ 报 table_lines 不符（2 份连报）。
+            # 裁定原文：「合并表级→行级→单元格级边框；表头行任一单元格有 bottom 即算有」。
+            has_header_line = bool(first) and any(
                 _border_visible(_effective_border(tblPr, style_box, p, "bottom"))
                 for p in first)
         out.append({
@@ -1806,6 +2744,45 @@ class PageNumberInfo:
         return self.has_field or self.has_static
 
 
+def _part_paragraphs(part) -> list:
+    """页眉/页脚 part 的段落列表，**含被 ``w:sdt`` 内容控件包住的段落**（v2.3.100，B-1）。
+
+    🔴 为什么需要它：Word 的「插入页码」会把页码段落整个包进一个**内容控件**
+    （``<w:sdt>``），python-docx 的 ``part.paragraphs`` 只认直接子级的 ``<w:p>``，
+    于是这些页码段落**完全看不见**。实测 13 份官方 APA 样例里 9 份的页码就是这样
+    被包着的 → 我们报「No page number found in the header or footer」；更糟的是
+    「一键修正」会**再插一个页码**，客户文档里出现两个页码。
+
+    官方 IEEE 模板的页眉同理（``header1.xml`` 顶层就是 ``<w:sdt>``）。
+
+    实现：按文档序遍历 part 的**直接子级** ``w:p``，以及 ``w:sdt/w:sdtContent``
+    里的 ``w:p``。不递归进 ``w:tbl``（表格单元格里的文字不是页眉文字）；
+    不去重（同一段落不会被两条路径同时命中 —— sdt 与直接子级互斥）。
+    """
+    out: list = []
+    try:
+        root = part._element if hasattr(part, "_element") else part
+    except Exception:
+        return list(getattr(part, "paragraphs", []) or [])
+    try:
+        from docx.text.paragraph import Paragraph
+        for child in root.iterchildren():
+            tag = child.tag
+            if tag == qn("w:p"):
+                out.append(Paragraph(child, part))
+            elif tag == qn("w:sdt"):
+                # 内容控件：取其 sdtContent 下的段落（只一层，不递归嵌套 sdt）
+                content = child.find(qn("w:sdtContent"))
+                if content is None:
+                    continue
+                for sub in content.iterchildren():
+                    if sub.tag == qn("w:p"):
+                        out.append(Paragraph(sub, part))
+    except Exception:
+        return list(getattr(part, "paragraphs", []) or [])
+    return out
+
+
 def _iter_header_footer_parts(doc):
     """产出 ``(part, kind, scope)``：kind="header"/"footer"，scope="main"/"first"/"even"。
 
@@ -1854,24 +2831,64 @@ def _page_field_pushed_right_by_tab(para) -> bool:
 
     判定：段内有 right 制表位，且 PAGE 域之前出现过 ``<w:tab/>``。
     """
+    # 🔴 v2.3.100（B-1）：**递归**找制表位与 run，并且制表位要沿**样式链**找。
+    # 实测官方 APA 专业版样例的页眉段落：Word 把「短标题 + 若干 run + 页码」整段包进
+    # 段落内的 ``<w:sdt>``（内容控件），run 全在 ``sdtContent`` 里 ——
+    # ``para._p.findall("w:r")`` 只认直接子级，**一个都找不到**；
+    # 而右制表位根本不写在段落上，而是写在 **Header 样式**里（Word 内置样式自带
+    # center + right 两个制表位）。两处都按"直接子级"找 → 恒判 False →
+    # 完全合规的 APA 专业版页眉被报「Page number is left-aligned」（5 份样例连报）。
+    def _tabs_in(el) -> list:
+        try:
+            ppr = el.find(qn("w:pPr"))
+        except Exception:
+            return []
+        if ppr is None:
+            return []
+        tabs = ppr.find(qn("w:tabs"))
+        if tabs is None:
+            return []
+        return list(tabs.findall(qn("w:tab")))
+
+    tab_els: list = []
     try:
-        tabs = para._p.findall(
-            qn("w:pPr") + "/" + qn("w:tabs") + "/" + qn("w:tab"))
+        tab_els.extend(_tabs_in(para._p))
+        # 样式链：段落样式 → base_style（右制表位常定义在 Header 样式上）
+        st = para.style
+        seen = set()
+        while st is not None and st.style_id not in seen:
+            seen.add(st.style_id)
+            el = getattr(st, "element", None)
+            if el is not None:
+                tab_els.extend(_tabs_in(el))
+            st = getattr(st, "base_style", None)
     except Exception:
-        return False
-    has_right_tab = any((t.get(qn("w:val")) or "") == "right" for t in tabs)
-    if not has_right_tab:
-        return False
-    # 逐个走 run 子元素：见到 <w:tab/> 记一笔，见到 PAGE 域的 fldChar(begin) 就结算
+        pass
+    has_right_tab = any((t.get(qn("w:val")) or "") == "right" for t in tab_els)
+    # 逐个走 run（**递归**，含 sdtContent 内的 run）：
+    # 见到 <w:tab/> 记一笔，见到 PAGE 域的 fldChar(begin) 就结算。
+    # ⚠️ v2.3.100：两条路径都要走到底，不能因为有/没有 right 制表位就提前 return ——
+    # 「连续多个 tab」这条路在**没有** right 制表位时也成立（见下方注释）。
     seen_tab = False
+    tab_count = 0
     try:
-        for r in para._p.findall(qn("w:r")):
+        for r in para._p.iter(qn("w:r")):
             for el in r:
                 if el.tag == qn("w:tab"):
                     seen_tab = True
+                    tab_count += 1
                 elif el.tag == qn("w:fldChar") \
                         and (el.get(qn("w:fldCharType")) or "") == "begin":
-                    return seen_tab
+                    if has_right_tab and seen_tab:
+                        return True
+                    # v2.3.100（B-1 收尾）：**连续多个 tab 也是右推**。
+                    # Word 的「Page Numbers (Top of Page)」构件常写成
+                    # 「短标题 + 5 个以上 <w:tab/> + 页码」（官方 mixed-methods 样例即此：
+                    # 段内 6 个 tab、段落与 Header 样式里都没有 right 制表位），
+                    # 渲染上页码确实落在右端 → 旧判据漏掉它，报「left-aligned」。
+                    # 阈值取 2：单个 tab 在没有右制表位时只跳到默认制表位（0.5"），
+                    # 不足以断定"到右边界"；≥2 个连续 tab 才是一路顶到右边的写法。
+                    return tab_count >= 2
     except Exception:
         return False
     return False
@@ -1894,7 +2911,7 @@ def read_page_number_info(doc) -> PageNumberInfo:
     info = PageNumberInfo()
     for part, kind, _scope in _iter_header_footer_parts(doc):
         try:
-            para_list = part.paragraphs
+            para_list = _part_paragraphs(part)
         except Exception:
             continue
         for p in para_list:
@@ -1928,7 +2945,7 @@ def _read_header_footer_info(doc) -> tuple[str, bool, Optional[bool]]:
         if kind != "header" or scope != "main":
             continue
         try:
-            para_list = part.paragraphs
+            para_list = _part_paragraphs(part)
         except Exception:
             continue
         for p in para_list:
@@ -1964,10 +2981,165 @@ def _para_ends_with_page_break(para) -> bool:
     return False
 
 
-def _reference_starts_new_page(prev_para, cur_para) -> bool:
-    """参考文献标题是否另起一页：段前分页 或 上一段末尾分页符。"""
-    if cur_para is not None and _para_page_break_before(cur_para):
+def _run_bool_with_style(runs: list, para, attr: str):
+    """run 级三态布尔（bold / italic）取值：**run 直接格式 → 段落样式链**（v2.3.100，B-5）。
+
+    🔴 为什么需要它：官方 APA 样例的 "Abstract" 标题用 **Heading 1 样式**承载，
+    加粗/斜体写在**样式**里，run 上什么都没有。旧写法只读 ``r.font.bold`` →
+    全部读成 None → 判定"读不到" → 报「Abstract heading: could not read bold」
+    （7 份官方样例连报同一条），而修正器其实按样式判得了、能改 —— 检查与修正脱节。
+
+    三态语义必须保住：``None`` = 真的没设置（run 与样式链都没写），不能与
+    ``False`` 混 —— 混了就会把"未规定"当成"规定不要加粗"，从而改错客户文档。
+
+    返回：``True`` / ``False`` / ``None``。
+    """
+    vals = []
+    for r in runs:
+        try:
+            vals.append(getattr(r.font, attr, None))
+        except Exception:
+            vals.append(None)
+    if not vals:
+        return None
+    if any(v is True for v in vals):
         return True
+    if all(v is False for v in vals):
+        return False
+    # 全部 None → 查**字符样式**（rStyle），再查段落样式链（含 base_style）。
+    # v2.3.100（E-2 续）：B-5 当时留的尾巴「rStyle（字符样式）要一起解析，
+    # 否则'用字符样式加粗'仍读不到」—— 这次补上。官方样例里就有用字符样式
+    # （如 Strong / Emphasis）做加粗斜体的段落，只查段落样式链会读不到。
+    try:
+        for r in runs:
+            rpr = r._r.find(qn("w:rPr"))
+            if rpr is None:
+                continue
+            rstyle = rpr.find(qn("w:rStyle"))
+            if rstyle is None:
+                continue
+            sid = rstyle.get(qn("w:val"))
+            if not sid:
+                continue
+            _doc = getattr(getattr(r, "part", None), "document", None)
+            if _doc is None:
+                continue
+            _cstyle = _doc.styles.element.find(
+                qn("w:style") + "[@" + qn("w:styleId") + "='%s']" % sid)
+            if _cstyle is None:
+                continue
+            _rpr = _cstyle.find(qn("w:rPr"))
+            if _rpr is None:
+                continue
+            _el = _rpr.find(qn("w:b") if attr == "bold" else qn("w:i"))
+            if _el is None:
+                continue
+            _val = _el.get(qn("w:val"))
+            if _val is None:
+                return True
+            if str(_val).strip().lower() in ("0", "false", "off"):
+                return False
+            return True
+    except Exception:
+        pass
+    # 全部 None → 查段落样式链（含 base_style）
+    try:
+        st = para.style
+    except Exception:
+        return None
+    seen = set()
+    while st is not None and st.style_id not in seen:
+        seen.add(st.style_id)
+        try:
+            v = getattr(st.font, attr, None) if st.font is not None else None
+        except Exception:
+            v = None
+        if v is True:
+            return True
+        if v is False:
+            return False
+        st = getattr(st, "base_style", None)
+    return None
+
+
+def _para_starts_with_page_break(para) -> bool:
+    """段落**自身开头**是否带分页符（v2.3.100，B-3 / D-04）。
+
+    🔴 实测官方 APA 专业版样例（``qualitative-professional-paper.docx`` 的 "Abstract"
+    段）的分页写法是：
+
+        ``<w:p><w:r><w:br w:type="page"/></w:r><w:r>Abstract</w:r></w:p>``
+
+    即**段首一个分页符 run，然后才是标题文字**。这种写法三个旧判据全部落空：
+      · 不是 ``pageBreakBefore``（``_para_page_break_before`` 判不到）；
+      · 分页符不在**上一段**末尾（``_para_ends_with_page_break(prev)`` 判不到）；
+      · 段落自身有文字，不会被当成"空段"跳过。
+    → 明明另起了一页，我们报「Abstract continues on the same page」，
+      而"修正"还会再插一个分页 → **客户文档多出一张空白页**（B-4/D-05）。
+
+    判定：按文档序找第一个含 ``w:t`` 的 run，若在它之前出现过 ``w:br w:type="page"``
+    即算。纯空段（没有任何文字）不算 —— 那种由 ``_para_ends_with_page_break`` 管。
+    """
+    try:
+        seen_text = False
+        for r in para._p.iter(qn("w:r")):
+            has_text = any(t.text for t in r.iter(qn("w:t")) if t.text)
+            if has_text:
+                seen_text = True
+                continue
+            if seen_text:
+                # 文字都出现了还往后找就没有意义（段首才叫"另起一页"）
+                break
+            for br in r.iter(qn("w:br")):
+                if br.get(qn("w:type")) == "page":
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _para_rendered_at_page_top(para) -> bool:
+    """段落是否**上次渲染时就在页首**（v2.3.100，B-3 收尾）。
+
+    Word 会在每个"上次保存时恰好位于页首"的段落第一个 run 里写一个
+    ``<w:lastRenderedPageBreak/>`` 标记。它是**渲染痕迹**、不是分页控制
+    （客户之后编辑排版，Word 会重算它），但对我们回答的"这一页是不是另起的"
+    恰恰是最直接的证据 —— 实测官方 ``quantitative-professional-paper.docx`` 的
+    "Abstract" 段就是这样：没有 pageBreakBefore、没有 br type=page，
+    只有一个 lastRenderedPageBreak，而它**确实**渲染在新页上。
+    没有这条证据时报「continues on the same page」= 把官方合规样例判红。
+
+    判定：文字出现之前有 ``w:lastRenderedPageBreak``。
+    """
+    try:
+        for r in para._p.iter(qn("w:r")):
+            for el in r:
+                if el.tag == qn("w:t") and (el.text or "").strip():
+                    return False          # 文字出现了还没见到标记 → 不在页首
+                if el.tag == qn("w:lastRenderedPageBreak"):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _reference_starts_new_page(prev_para, cur_para) -> bool:
+    """参考文献标题 / 摘要标题是否另起一页。
+
+    四条路径（v2.3.100 补齐后两条）：
+      ① 当前段 ``pageBreakBefore``；
+      ② 上一段末尾分页符（分页符单独占一个空段的写法）；
+      ③ **当前段自身开头**带分页符（官方 APA 样例的标准写法）；
+      ④ 当前段**上次渲染就在页首**（``lastRenderedPageBreak``，无分页控制但
+         确实另起了一页的官方样例 —— quantitative-professional 即此）。
+    """
+    if cur_para is not None:
+        if _para_page_break_before(cur_para):
+            return True
+        if _para_starts_with_page_break(cur_para):
+            return True
+        if _para_rendered_at_page_top(cur_para):
+            return True
     if prev_para is not None and _para_ends_with_page_break(prev_para):
         return True
     return False
@@ -1983,11 +3155,23 @@ def _scan_front_matter(paras) -> tuple[bool, bool]:
     has_auth = False
     for p in paras:
         t = (p.text or "").strip().lower()
-        if not t or len(t) > 40:
+        if not t:
             continue
-        if "abstract" in t or "摘要" in t:
+        if len(t) <= 40 and ("abstract" in t or "摘要" in t):
             has_abs = True
-        if "author note" in t or "作者注" in t:
+        else:
+            # v2.3.100（C 批 D-08）：**期刊式同段摘要** `Abstract—正文…`（IEEE 官方
+            # 会议模板就是这种），整段很长（>40 字），旧规则直接跳过 → has_abstract=False
+            # → 摘要维度只能给 info「No Abstract section detected」，9pt/加粗规则无从生效。
+            # 只认正面信号：文本以 Abstract / 摘要 起头，或段落样式名含 abstract。
+            if re.match(r"^(?:abstract|摘\s*要)\b", t) or t.startswith(("abstract", "摘要")):
+                has_abs = True
+            try:
+                if "abstract" in (p.style.name or "").lower():
+                    has_abs = True
+            except Exception:
+                pass
+        if len(t) <= 40 and ("author note" in t or "作者注" in t):
             has_auth = True
     return has_abs, has_auth
 
@@ -2064,6 +3248,35 @@ def find_abstract_section(paras) -> tuple[Optional[int], list[int]]:
                     body.append(j)
             return i, body
 
+    # ①-b v2.3.100（C 批 D-08）：**期刊式同段摘要** —— `Abstract—正文…` 写在一段里，
+    # 且用专属段落样式（IEEE 官方会议模板就是 `<w:pStyle w:val="Abstract"/>` +
+    # `Abstract—This electronic document…`）。旧逻辑要求"整行等于 Abstract"，认不出
+    # 这类格式 → 整份 IEEE 模板被判「没有摘要」，D-08 的 9pt/加粗规则无从落地。
+    # 只认**正面信号**：样式名含 abstract 且该段文本以 Abstract 起头（不靠"像摘要"瞎猜）。
+    for i, para in enumerate(paras):
+        text = (para.text or "").strip()
+        if not text:
+            continue
+        try:
+            _sn = (para.style.name or "").strip().lower()
+        except Exception:
+            _sn = ""
+        if "abstract" not in _sn:
+            continue
+        if not re.match(r"(?i)^abstract\b", text):
+            continue
+        body = [i]                     # 标题与正文同段：这一段既是标题也是正文
+        for j in range(i + 1, len(paras)):
+            pj = paras[j]
+            if heading_level(pj) is not None:
+                break
+            if re.match(r"(?i)^(index\s*terms|keywords?)\b", (pj.text or "").strip()):
+                body.append(j)         # 含关键词行（分页锚点要用 max(body)+1）
+                break
+            if (pj.text or "").strip():
+                body.append(j)
+        return i, body
+
     # ② 文字回退（严格限定，见上方常量注释）
     for i, para in enumerate(paras[:_ABS_FALLBACK_WINDOW]):
         text = (para.text or "").strip()
@@ -2107,9 +3320,17 @@ def abstract_body_style_indices(paras, body) -> list[int]:
 # 图表 caption 识别（v2.3.67）：Word 内置 "Caption" 样式 + 文本前缀启发式双保险。
 # 很多学生用「Table 1」「Figure 2」「表 1」「图 2」作为标题段，但没套 Caption 样式；
 # 只认样式会漏掉一大半。前缀式兜底（保守：前缀后必须跟数字或标题文字）。
-_CAPTION_STYLE_KEYWORDS = ("caption", "图注", "表注", "图表标题", "captions")
+_CAPTION_STYLE_KEYWORDS = ("caption", "图注", "表注", "图表标题", "captions",
+                           # v2.3.100（C 批 D-15）：IEEE 会议模板用
+                           # `<w:pStyle w:val="tablehead"/>`（表题）与 `figurecaption`（图题）
+                           "tablehead", "table head", "table title")
 _CAPTION_PREFIX_RE = re.compile(
-    r"^(?:table|figure|fig\.|tab\.|表|图)\s*\d+", re.IGNORECASE)
+    # v2.3.100（F-2）：允许 **字母+数字**的编号（"Table D1"、"Fig. A2"）——
+    # APA 官方 design 模板的表题就是 "Table D1"，旧正则只认纯数字 → 认不出表题
+    # → 表格上方的空隙量到表题自身（0pt）→ 把官方合规样例判红。
+    # 前瞻 `(?=[0-9a-z]*\d)` 保证编号里**至少有一个数字**，否则 "Tables are useful"、
+    # "Table of Contents" 也会被当表题（实测踩过）。
+    r"^(?:table|figure|fig\.|tab\.|表|图)\s*(?=[0-9a-z]*\d)[0-9a-z]+\b", re.IGNORECASE)
 
 # v2.3.98：正文**提及句**不是表题。
 # 真实论文里 "Table 1 below shows the detailed parameter estimates and statistical
@@ -2166,6 +3387,17 @@ def _sample_captions(doc, prof: "DocumentProfile") -> None:
     cap_sa: Counter = Counter()
     for p in cap_paras:
         sz = _max_run_size_pt(p)
+        if sz is None:
+            # v2.3.100（C 批 D-15）：run 没有显式字号时回退到**样式字号**。
+            # IEEE 模板的 `tablehead` / `figurecaption` 样式把 `<w:sz w:val="16"/>`（8pt）
+            # 写在样式里，run 上一片空白 → 旧逻辑读不到 → caption_size 只能给 info
+            # 「Could not read caption size」，8pt 规则形同虚设。
+            try:
+                _st = p.style
+                if _st is not None and _st.font is not None and _st.font.size is not None:
+                    sz = round(float(_st.font.size.pt), 1)
+            except Exception:
+                sz = None
         if sz is not None:
             sizes[sz] += 1
         sp = _line_spacing_of_para(p)
@@ -2235,34 +3467,53 @@ def _sample_captions(doc, prof: "DocumentProfile") -> None:
 # detected and passed through untouched (zero risk of regression).
 # ---------------------------------------------------------------------------
 _STRICT_TO_TRANSITIONAL: dict = {
+    # ---------------------------------------------------------------------
+    # 🔴 v2.3.100（D-01 修复）：整张表按**官方 IEEE 会议模板（Strict OOXML）实测**
+    # 的命名空间清单重写。旧表的键集体多写了 "/2006"（例如
+    #   http://purl.oclc.org/ooxml/wordprocessingml/2006/main
+    # 而 Strict 真实值是没有 2006 的 .../wordprocessingml/main），
+    # 于是除关系类型外**一条都没匹配上** —— 归一化形同虚设，官方模板永远打不开。
+    # 教训：这类映射必须以实产物的 xmlns 原文为准，不能凭印象写。
+    # ---------------------------------------------------------------------
+    # ① 关系类型（rel Type）前缀：必须先于裸 officeDocument 命中，
+    #    否则会改写成 .../2006/relationships/**relationships**/xxx（重复）。
+    b"http://purl.oclc.org/ooxml/officeDocument/relationships":
+        b"http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    # ② 文档属性命名空间（Strict 用驼峰，Transitional 用连字符）
     b"http://purl.oclc.org/ooxml/officeDocument/docProps/core-properties":
         b"http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
-    b"http://purl.oclc.org/ooxml/officeDocument/extended-properties":
+    b"http://purl.oclc.org/ooxml/officeDocument/docPropsVTypes":
+        b"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes",
+    b"http://purl.oclc.org/ooxml/officeDocument/extendedProperties":
         b"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties",
     b"http://purl.oclc.org/ooxml/officeDocument/custom-properties":
         b"http://schemas.openxmlformats.org/officeDocument/2006/custom-properties",
+    b"http://purl.oclc.org/ooxml/officeDocument/customXml":
+        b"http://schemas.openxmlformats.org/officeDocument/2006/customXml",
     b"http://purl.oclc.org/ooxml/officeDocument/math":
         b"http://schemas.openxmlformats.org/officeDocument/2006/math",
-    # Bare officeDocument URI must be mapped AFTER the longer /docProps/... keys
-    # above (handled by the length-sorted rewrite below).
+    # 裸 officeDocument URI 只在上面的长前缀都没命中时才生效（长度排序保证）
     b"http://purl.oclc.org/ooxml/officeDocument":
         b"http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-    b"http://purl.oclc.org/ooxml/wordprocessingml/2006/main":
+    # ③ WordprocessingML（Strict 无 /2006）
+    b"http://purl.oclc.org/ooxml/wordprocessingml/main":
         b"http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/main":
+    # ④ DrawingML（Strict 无 /2006）
+    b"http://purl.oclc.org/ooxml/drawingml/main":
         b"http://schemas.openxmlformats.org/drawingml/2006/main",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/wordprocessingDrawing":
+    b"http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing":
         b"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/picture":
+    b"http://purl.oclc.org/ooxml/drawingml/picture":
         b"http://schemas.openxmlformats.org/drawingml/2006/picture",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/chart":
+    b"http://purl.oclc.org/ooxml/drawingml/chart":
         b"http://schemas.openxmlformats.org/drawingml/2006/chart",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/chartDrawing":
+    b"http://purl.oclc.org/ooxml/drawingml/chartDrawing":
         b"http://schemas.openxmlformats.org/drawingml/2006/chartDrawing",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/diagram":
+    b"http://purl.oclc.org/ooxml/drawingml/diagram":
         b"http://schemas.openxmlformats.org/drawingml/2006/diagram",
-    b"http://purl.oclc.org/ooxml/drawingml/2006/lockedCanvas":
+    b"http://purl.oclc.org/ooxml/drawingml/lockedCanvas":
         b"http://schemas.openxmlformats.org/drawingml/2006/lockedCanvas",
+    # ⑤ package / Markup Compatibility（包层无 strict 变体，仍是自映射，保留兜底）
     b"http://purl.oclc.org/ooxml/package/2006/relationships":
         b"http://schemas.openxmlformats.org/package/2006/relationships",
     b"http://purl.oclc.org/ooxml/package/2006/content-types":
@@ -2270,6 +3521,7 @@ _STRICT_TO_TRANSITIONAL: dict = {
     b"http://purl.oclc.org/ooxml/markup-compatibility/2006":
         b"http://schemas.openxmlformats.org/markup-compatibility/2006",
 }
+
 # Replace longest keys first so a base URI is not partially rewritten
 # (e.g. the longer ".../officeDocument/docProps/core-properties" must be handled
 # before the bare ".../officeDocument").
@@ -2433,14 +3685,41 @@ def detect_title_page(doc):
         return None
     if heading_level(paras[idx0]) is not None:
         return None
-    if is_heading(paras[idx0]):
-        # 无样式但形似标题（大字 + 加粗）：只有居中才按「论文大标题」处理
+    # v2.3.100（C 批 D-14）：官方 IEEE 会议模板的论文标题用 **`paper title` 样式**
+    # （`<w:pStyle w:val="papertitle"/>`，居中写在样式里、段落本身没有 w:jc）。
+    # 旧逻辑在这里走 is_heading 分支后又因"读不到段落级居中"而放弃 → 整份模板被判
+    # 「没有标题页」，title_page 维度只能给 info。样式名是模板给的正面信号，直接认。
+    try:
+        _st0 = (paras[idx0].style.name or "").strip().lower()
+    except Exception:
+        _st0 = ""
+    _is_paper_title_style = ("paper title" in _st0) or (_st0 in ("papertitle", "title"))
+    if not _is_paper_title_style and is_heading(paras[idx0]):
+        # 标题页型论文的大标题常是「左对齐 + 加粗 + 大字」的手排样式（尚未被居中）。
+        # 这里仅在首段像**章节标题**（带编号前缀 "1." / "3.1"）时才放弃 ——
+        # 章节标题永远不是首页首段；否则仍按论文大标题处理。原写法「不居中就放弃」
+        # 会造成死锁：没居中→认不出→标题页版式不修正→永远不居中（v2.3.101）。
+        # 论文大标题被认出后，标题页版式会先把它居中，彼此不冲突。
+        if re.match(r'^\s*\d+(\.\d+)*\s*[\.\)]', (paras[idx0].text or "")):
+            return None
         _al_raw = paras[idx0].alignment
         if _al_raw is None:
             _al_raw = _pf_attr(paras[idx0], None, "alignment")
-        if _ALIGN_MAP.get(_al_raw) != "center":
-            return None
-    blob = "\n".join((p.text or "") for p in paras[:min(len(paras), 40)])
+        # 不再因「未居中」放弃：让标题页版式把它居中，打破死锁。
+    blob = "\n".join((p.text or "") for p in paras[:min(len(paras), 60)])
+    # v2.3.101：摘要常写在表格里（真实样本用 1×1 表格当摘要框）。只扫段落文字会
+    # 漏掉 Abstract 信号 → 整篇被判「无标题页」→ 作者块没被排除 → 被卷进章节标题
+    # 判定、误当成 run-in 标题还被注入句点（TEXT_IS_LOCKED 红线）。把表格文字也并入。
+    try:
+        for _t in doc.tables:
+            for _row in _t.rows:
+                for _cell in _row.cells:
+                    blob += "\n" + (_cell.text or "")
+    except Exception:
+        pass
+    # v2.3.100（C 批 D-14）：窗口 40 → **60 段**。IEEE 会议模板的 Abstract/Index Terms
+    # 落在第 46 段附近（前面是标题、作者、摘要前的说明段），40 段窗口看不见 →
+    # 整份模板被判「没有标题页」。60 段仍只是首页范围，不会把正文吞进来。
     if not re.search(r"(?i)\babstract\b|\bkeywords\b", blob):
         return None
     title_idx = idx0
@@ -2659,6 +3938,110 @@ def _section_columns(sec) -> int:
         return 1
 
 
+def _body_sections(doc) -> list:
+    """按 body 顺序产出 ``(sectPr 元素, 该节覆盖的块数)``。
+
+    OOXML 没有「节起始」标记，只有「节结束」：段落 ``pPr/w:sectPr`` 表示**这一节
+    在这段结束**；body 末尾的 ``sectPr`` 表示最后一节。所以只能顺序反推。
+
+    🔴 为什么需要它（v2.3.100，C 批前置 X-1/X-2）：
+    官方 IEEE 会议模板有 **5~7 个分节**（标题节 top=27pt 单栏、作者节 3~4 栏、
+    正文节 top=54pt 两栏、尾节单栏…）。旧代码把**所有节的页边距/栏数取众数**，
+    结果拿到的是标题节/作者节的值 —— A4 模板读出 top=0.312″、columns=1，
+    而正文其实要求 0.75″/2 栏。判据错在「取哪一节」，不在「规范值」。
+    """
+    out: list = []
+    try:
+        body = doc.element.body
+    except Exception:
+        return out
+    pending = 0
+    for child in body.iterchildren():
+        tag = child.tag
+        if tag == qn("w:p"):
+            pending += 1
+            ppr = child.find(qn("w:pPr"))
+            sp = ppr.find(qn("w:sectPr")) if ppr is not None else None
+            if sp is not None:
+                out.append((sp, pending))
+                pending = 0
+        elif tag == qn("w:tbl"):
+            pending += 1
+        elif tag == qn("w:sectPr"):
+            out.append((child, pending))
+            pending = 0
+    return out
+
+
+def _body_section(doc):
+    """取**正文节**的 sectPr：覆盖块数最多者；并列取靠后的（正文在标题/作者节之后）。"""
+    secs = _body_sections(doc)
+    if not secs:
+        return None
+    best = secs[0]
+    for sp, cnt in secs[1:]:
+        if cnt >= best[1]:        # >= ：并列时向后取（后面的是正文）
+            best = (sp, cnt)
+    return best[0] if best[1] > 0 else None
+
+
+def _twips_to_inch(raw) -> Optional[float]:
+    """``w:pgMar`` / ``w:pgSz`` 的度量值 → 英寸。
+
+    值可能是 twip 十进制数（``1440``），也可能带单位（Strict 的 IEEE 模板写的是
+    ``54pt``）——两种都必须认，否则 Strict 文档的页边距会读成 0.0375″。
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    try:
+        if s.lower().endswith("pt"):
+            return round(float(s[:-2]) / 72.0, 4)
+        if s.lower().endswith("in"):
+            return round(float(s[:-2]), 4)
+        return round(float(s) / 1440.0, 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sect_attr(sectPr, tag: str) -> dict:
+    """安全读 sectPr 下的 pgMar/pgSz/cols 属性字典（键已去命名空间）。"""
+    try:
+        el = sectPr.find(qn(tag))
+    except Exception:
+        return {}
+    if el is None:
+        return {}
+    return {k.split("}")[-1]: v for k, v in el.attrib.items()}
+
+
+def _sect_columns(sectPr) -> int:
+    """sectPr 的栏数：``w:cols/@w:num``，缺省 1（与 ``_section_columns`` 同口径）。"""
+    raw = _sect_attr(sectPr, "w:cols").get("num")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
+# 🔴 v2.3.100（C 批前置 X-3）：符号/公式字体不该参与「正文字体 + 字号」众数。
+# 官方 IEEE 会议模板里 Symbol 的 run 数量压过正文 run，导致 font_family 读成
+# "Symbol"、font_size 读成 9.0（正文其实是 Times New Roman 10pt）。
+# 判定会因此全错，且这不是"规范值"问题、是"取样口径"问题。
+_SYMBOL_FONT_NAMES = (
+    "symbol", "wingdings", "webdings", "cambria math", "mt extra",
+    "euclid math", "stix", "asana math", "latin modern math", "xits math",
+)
+
+
+def _is_symbol_font(name) -> bool:
+    """是否为符号/数学字体（这类字体的字号不代表正文字号）。"""
+    n = str(name or "").strip().lower()
+    if not n:
+        return False
+    return any(n == s or n.startswith(s) for s in _SYMBOL_FONT_NAMES)
+
+
 def _read_docx_impl(doc) -> DocumentProfile:
     prof = DocumentProfile()
 
@@ -2714,16 +4097,55 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if paper_samples:
             prof.paper_size = Counter(paper_samples).most_common(1)[0][0]
 
+    # 🔴 v2.3.100（C 批前置 X-1/X-2）：**正文节优先**。
+    # 上面按"全节众数"取到的往往是标题节/作者节的值（A4 官方模板 5 个分节：
+    # 标题节 top=27pt 单栏、作者节 3 栏、正文节 top=54pt 双栏），拿它去判
+    # 「页边距/栏数」必错。这里改用**覆盖块数最多的那一节**（= 正文节）的值覆盖，
+    # 若拿不到正文节则保留众数兜底（旧行为，不倒退）。
+    try:
+        _sec = _body_section(doc)
+    except Exception:
+        _sec = None
+    if _sec is not None:
+        _mar = _sect_attr(_sec, "w:pgMar")
+        _body_margins = {
+            "top": _twips_to_inch(_mar.get("top")),
+            "bottom": _twips_to_inch(_mar.get("bottom")),
+            "left": _twips_to_inch(_mar.get("left")),
+            "right": _twips_to_inch(_mar.get("right")),
+        }
+        for _side, _v in _body_margins.items():
+            if _v is not None:
+                prof.margins[_side] = _v
+        prof.columns = _sect_columns(_sec)
+        _sz = _sect_attr(_sec, "w:pgSz")
+        _w_in, _h_in = _twips_to_inch(_sz.get("w")), _twips_to_inch(_sz.get("h"))
+        if _w_in and _h_in:
+            _ps = identify_paper_size(_w_in, _h_in)
+            if _ps:
+                prof.paper_size = _ps
+        # 记录"这份文档是分节结构"，供报告说明"只按正文节判"（避免客户误解）
+        prof.body_section_count = len(_body_sections(doc))
+
+
     # —— 文档默认（Normal）样式：字体 + 段落格式，作为三级回退的兜底 ——
     doc_default_font: Optional[str] = None
+    doc_default_size: Optional[float] = None
     doc_pf = None
     try:
         normal = doc.styles["Normal"]
         if normal.font is not None:
             doc_default_font = normal.font.name
+            # X-3 后续：字号也要三级回退（run → 样式 → 文档默认）。
+            # 官方 IEEE 模板的正文 BodyText 样式**不写字号**（继承 OOXML 缺省 10pt），
+            # 旧代码把这类 run 直接跳过，于是"有显式字号的 run"（摘要/作者信息 9pt）
+            # 成了众数 → 正文字号被判成 9pt。这是取样口径问题，不是规范值问题。
+            if normal.font.size is not None:
+                doc_default_size = round(float(normal.font.size.pt), 1)
         doc_pf = normal.paragraph_format
     except Exception:
         pass
+
 
     # 参考文献区的软换行拆分已提到 `_read_docx_impl` 第一行（v2.3.87 起全文档统一拆），
     # 这里保留一次幂等调用兜底（无软换行时直接返回 0），防止将来有人单独调用本函数。
@@ -2732,7 +4154,51 @@ def _read_docx_impl(doc) -> DocumentProfile:
 
     # —— 参考文献段（先定位，正文统计时要排除）——
     ref_start, ref_indices = find_reference_section(paras)
+    # 🔴 v2.3.100（C 批 D-16）：若区内存在**专属参考文献样式**（IEEE 模板用
+    # `<w:pStyle w:val="references"/>`，带 `<w:numPr/>` 自动编号），只认这些段落。
+    # 官方模板在 "References" 标题与真条目之间还夹着 4 段**指导文字**（Body Text 样式），
+    # 旧逻辑把它们也算成条目 → 15/16 被判"未编号"，连官方模板都被判红。
+    # 只在该样式段落 ≥2 条时才生效，APA/MLA（条目多为 Normal/Body Text）完全不受影响。
+    try:
+        _ref_style_idx = [
+            i for i in ref_indices
+            if (paras[i].style.name or "").strip().lower()
+            in ("references", "reference", "bibliography", "works cited", "workscited")
+        ]
+        if len(_ref_style_idx) >= 2:
+            ref_indices = _ref_style_idx
+    except Exception:
+        pass
     prof.reference_entries = [paras[i].text.strip() for i in ref_indices]
+    # v2.3.100（C 批 D-16）：条目是否**自带编号**。
+    # ① 段落级 `<w:numPr/>`；② **样式级** numPr（IEEE 模板把编号写在 `references`
+    # 样式里，段落本身不带 numPr —— 只看段落会 11/12 全判"未编号"）；
+    # ③ 文本里已有 [n]（由 checker 的 _has_leading_number 判，不在这里重复）。
+    try:
+        def _has_num(para) -> bool:
+            try:
+                ppr = para._p.find(qn("w:pPr"))
+                if ppr is not None and ppr.find(qn("w:numPr")) is not None:
+                    return True
+            except Exception:
+                pass
+            try:
+                st = para.style
+            except Exception:
+                st = None
+            while st is not None:
+                try:
+                    el = getattr(st, "element", None)
+                    ppr = el.find(qn("w:pPr")) if el is not None else None
+                    if ppr is not None and ppr.find(qn("w:numPr")) is not None:
+                        return True
+                except Exception:
+                    pass
+                st = getattr(st, "base_style", None)
+            return False
+        prof.reference_entries_numbered = [_has_num(paras[i]) for i in ref_indices]
+    except Exception:
+        prof.reference_entries_numbered = []
     prof.reference_entries_italic = [
         any(getattr(r.font, "italic", None) is True for r in paras[i].runs)
         for i in ref_indices
@@ -2767,9 +4233,64 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if _tp_probe.get("title") is not None:
             skip.add(_tp_probe["title"])
         skip.update(_tp_probe.get("authors") or ())
-    body_paras = [p for i, p in enumerate(paras)
+    # 🔴 v2.3.100（C 批前置 X-3 续）：再按**样式名**排除前置部分。
+    # 官方 IEEE 会议模板里 Author 占位段有 41 段、正文 Body Text 只有 17 段，且作者段
+    # 全是 9pt + 居中 → 正文字号被判 9pt、对齐被判 center、首行缩进被判 0，**三项全错**。
+    # detect_title_page 只能抓到「标题 + 紧随其后的 ≤3 段」，兜不住整块作者信息，
+    # 所以这里按模板自带的样式名再兜一层（Author / paper title / Abstract / Keywords…）。
+    _FRONT_STYLE_KEYS = ("author", "affiliation", "paper title", "papertitle",
+                         "paper subtitle", "papersubtitle", "abstract", "keyword",
+                         "index term", "sponsor", "cover page", "title")
+
+    def _is_front_style(p) -> bool:
+        try:
+            nm = (p.style.name or "").strip().lower()
+        except Exception:
+            return False
+        return any(nm == k or nm.startswith(k) for k in _FRONT_STYLE_KEYS)
+
+    # 🔴 v2.3.100（幂等收尾）：把「fixer 会当成标题的段」也从正文字号/行距众数里排除。
+    # 单一真相源：与 fixer._assign_heading_levels 共用 structural_heading_map。
+    # 旧口径只排 is_heading()（**带样式**的标题），漏了「12pt 加粗、样式 Normal」的伪标题：
+    # 官方 IEEE 样例里 7 个伪标题 12pt > 5 个正文 10pt → 众数被判 12pt，
+    # 而修正侧只改正文段（标题有自己的字号口径）→ 每遍都判「字号不符」、
+    # 每遍都记 applied → 客户点完「修正」那条红杠永远不消失。
+    # ⚠️ 必须**先筛候选**（heading_level 为 None 的段）再喂给 structural_heading_map ——
+    # 与 fixer 的调用方式保持一致。直接传全量 paras 会认出 **0 个**标题（实测：全量时
+    # pseudo_heading_level_map 的字号档推断被正文段稀释，整张表落空），排除等于没做。
+    _excl_p = {paras[i]._p for i in skip if 0 <= i < len(paras)}
+    _pseudo_cand = [p for p in paras if _heading_level(p) is None]
+    _struct_ps = set(structural_heading_map(_pseudo_cand, exclude_ps=_excl_p).keys())
+
+    _body_core = [p for i, p in enumerate(paras)
                   if i not in skip and p.text.strip() and not is_heading(p)
-                  and toc_entry_level(p) is None and not is_toc_heading(p)]
+                  and toc_entry_level(p) is None and not is_toc_heading(p)
+                  and not _is_front_style(p)
+                  # v2.3.100：**手排伪标题**（"1. Introduction"、"Chapter 2: …"，
+                  # 样式是 Normal、但显然是标题）也要排除出行距众数 ——
+                  # 否则「手排标题 1.0 倍 + 正文 1.14 倍」打平/被拉低，判定说"行距不符"，
+                  # 而修正侧（fixer 的 no_heading）本就不改标题 → **每跑一遍都判不符**，
+                  # 客户点完「修正」那条红杠永远不消失（幂等缺陷的真凶）。
+                  and not is_section_heading_line(p)
+                  # v2.3.100：fixer 认得出的标题段（含上面 is_section_heading_line 兜不住的
+                  # 「无编号加粗标题」）一并排除，保证「检查所依据的正文」与
+                  # 「修正所施加的正文」是同一批段落。
+                  and p._p not in _struct_ps
+                  # v2.3.100：**形状像标题的段**也排除。上面两条都依赖「加粗/编号」，
+                  # 而 IEEE 一级标题按 C-5 是「不加粗 + 居中」—— 第一遍修好后，
+                  # is_pseudo_heading 与 is_section_heading_line 同时失效，12pt 标题
+                  # 重新混进众数。改用修正器改不掉的「短 + 不以句读结尾」。
+                  and not is_standalone_heading_shape(p)]
+    # 兜底：**只要还剩 1 段就用**。原阈值是 >=3，本意是防「极端文档全用前置样式 →
+    # 采样搞空」，但它把「排除标题后只剩 2 段真正文」的文档也打回了含标题的旧口径 ——
+    # 官方 IEEE 样例正文只有 5 段、伪标题 7 段，排除后剩 5 段（没事）；而合成样例
+    # 排除后只剩 2 段 → 回退 → 7 个 12pt 标题重新压过 2 个 10pt 正文 →
+    # 众数判 12pt，而修正侧只改正文 → 每遍都判「字号不符」→ 红杠永远不消失。
+    # 兜底要防的是「空」，不是「少」：剩 1 段时那 1 段就是正文，取它比取标题更接近真相。
+    body_paras = _body_core if _body_core else [
+        p for i, p in enumerate(paras)
+        if i not in skip and p.text.strip() and not is_heading(p)
+        and toc_entry_level(p) is None and not is_toc_heading(p)]
 
     # —— 标题段探测（MLA/APA：标题居中；MLA 不加粗/不斜体/不下划线）——
     # 首页首个居中段落即视为标题（MLA 标题居中；参考文献标题已排除在 skip 外，另有专门检查）。
@@ -2881,21 +4402,34 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # —— 字体 / 字号 / 行距 / 标题（正文段落 + 表格段落）——
     font_counter: Counter = Counter()
     size_counter: Counter = Counter()
+    # X-3：非符号字体的字号（正文字号的真实众数来源）
+    plain_size_counter: Counter = Counter()
+    # v2.3.100：表格段的字体/字号**单独计数**。旧写法把表格 run 并进正文 counter，
+    # 于是一篇「正文 12pt、表格 10pt」的论文里，40 个表格 run 会压过 34 个正文 run →
+    # 正文字号被判 10pt，而修正只改正文 → 复检仍读 10 → **永远点不掉的红杠**
+    # （v2.3.97 只在 family_size_counter 上挡过这一刀，font/size 两个 counter 仍被污染）。
+    # 现在表格只在「正文完全没有样本」时兜底。
+    table_font_counter: Counter = Counter()
+    table_size_counter: Counter = Counter()
     family_size_counter: dict = {}          # 字体 → 该字体出现的字号计数（判混用）
     spacing_samples: list = []
     heading_styles: list = []
     heading_levels: set = set()
 
-    def _sample_paragraph(para, pair_by_family: bool = True):
+    def _sample_paragraph(para, pair_by_family: bool = True, into_body: bool = True):
         """把一段文字的字体/字号纳入采样（run → 段落样式 → 文档默认）。
 
         ``pair_by_family``：是否同时记「字体 → 字号」配对。表格段落传 False ——
-        正文（含表格）的字体/字号众数照旧统计，但**配对表只统计正文段**：
         配对表是 `font_size_by_font` 维度的唯一依据，而这个维度只改正文段
         （`_apply_size_by_font_family(no_heading, ...)` 从不碰表格）。
         表格若混进来，一篇表格文字 10pt 的论文里 TNR 的众数会被 10 顶掉 →
         检查说「应为 12pt」、修正只改正文、复检仍读 10 → **一条永远点不掉的红杠**
         （v2.3.97 实测：真实论文 40 个表格 run 压过 34 个正文 run）。
+
+        ``into_body``：是否计入**正文字体/字号众数**。表格段落传 False ——
+        表格有自己的字号口径（常见比正文小 2pt），压过正文会让「正文字号」判错
+        （v2.3.100 实测：MLA 真实论文 80 个表格 10pt run 压过 65 个正文 12pt run，
+        第二遍恒记 `font_size_pt` 改动）。行距/段距同理早已分开（见下方注释）。
         """
         for run in para.runs:
             if not run.text.strip():
@@ -2908,20 +4442,32 @@ def _read_docx_impl(doc) -> DocumentProfile:
             fs = run.font.size
             if fs is None and para.style is not None and para.style.font is not None:
                 fs = para.style.font.size
-            if fn:
-                font_counter[fn] += 1
+            # X-3 后续：第三级回退到文档默认；再取不到按 OOXML 缺省 w:sz=20（10pt）。
+            # 少这一级，正文"靠样式继承字号"的文档会把只有显式字号的 run（题注 9pt、
+            # 作者信息 9pt）当成正文众数 —— IEEE 模板实测就因此读成 9pt。
+            _fs_pt: Optional[float] = None
             if fs is not None:
                 try:
-                    size_counter[round(float(fs.pt), 1)] += 1
+                    _fs_pt = round(float(fs.pt), 1)
                 except Exception:
-                    pass
+                    _fs_pt = None
+            if _fs_pt is None:
+                _fs_pt = doc_default_size if doc_default_size is not None else 10.0
+            if fn:
+                if into_body:
+                    font_counter[fn] += 1
+                else:
+                    table_font_counter[fn] += 1
+            if _fs_pt is not None:
+                if into_body:
+                    size_counter[_fs_pt] += 1
+                    if not _is_symbol_font(fn):
+                        plain_size_counter[_fs_pt] += 1
+                else:
+                    table_size_counter[_fs_pt] += 1
             # 字体 → 字号配对计数（混用字体时每种字体各取自己的众数字号）
-            if pair_by_family and fn and fs is not None:
-                try:
-                    family_size_counter.setdefault(fn, Counter())[
-                        round(float(fs.pt), 1)] += 1
-                except Exception:
-                    pass
+            if pair_by_family and fn and _fs_pt is not None:
+                family_size_counter.setdefault(fn, Counter())[_fs_pt] += 1
 
     # 标题统计（样式名 / outlineLvl）
     for para in paras:
@@ -2947,10 +4493,11 @@ def _read_docx_impl(doc) -> DocumentProfile:
         if not para.text.strip():
             continue
         table_count += 1
-        _sample_paragraph(para, pair_by_family=False)
-        sp = _line_spacing_of_para(para)
-        if sp is not None:
-            spacing_samples.append(sp)
+        _sample_paragraph(para, pair_by_family=False, into_body=False)
+        # v2.3.100：**表格段不参与正文行距众数**。表格有自己的行距口径（常见单倍），
+        # 混进来会把正文众数拉低 → 判定说"行距不符 1.14"，而修正侧只改正文段
+        # （表格不动）→ 每遍都判不符、每遍都记 applied → **永远修不掉的红杠**。
+        # 字体/字号仍然纳入（防表格字号压过正文，那两条改的是正文，必须看得见表格）。
         # v2.3.77：表格单元格段落的段前 / 段后单独立计数器 —— 绝不能并进正文众数
         # （表格里通常是 0，正文却常有 6–12 磅；混在一起两边都会判错）。
         _tb, _ta = _spacing_pair_of_para(para)
@@ -2968,15 +4515,113 @@ def _read_docx_impl(doc) -> DocumentProfile:
     except Exception:
         prof.table_line_states = []
 
-    if font_counter:
-        prof.font_family = font_counter.most_common(1)[0][0]
+    # v2.3.100（F-5 / 裁定 C-6）：byline（作者/单位/城市/邮箱）采样。
+    try:
+        prof.byline_size_pt, prof.byline_line_count = sample_byline(doc)
+    except Exception:
+        prof.byline_size_pt, prof.byline_line_count = None, 0
+    # v2.3.100（D-1 / 裁定 C-11）：官方模板指导文字残留（只报位置，不自动删）。
+    try:
+        prof.boilerplate_hits = sample_template_boilerplate(doc)
+    except Exception:
+        prof.boilerplate_hits = []
+    # v2.3.100（F-9 / 裁定 C-12 C-13 C-14）：三类只提示观测。
+    try:
+        _tsn = sample_text_style_notes(doc)
+        prof.citation_range_en_dash = _tsn["citation_range_en_dash"]
+        prof.suffix_name_comma = _tsn["suffix_name_comma"]
+        prof.equation_number_styles = _tsn["equation_number_styles"]
+    except Exception:
+        prof.citation_range_en_dash = []
+        prof.suffix_name_comma = []
+        prof.equation_number_styles = []
+    # v2.3.100（D-2~D-11）：IEEE 系列只读观测。
+    try:
+        _ie = sample_ieee_extras(doc)
+        prof.ieee_caption_labels = _ie["caption_labels"]
+        prof.ieee_caption_position = {
+            "figure_ref_order_ok": _ie.get("figure_ref_order_ok"),
+            "table_ref_order_ok": _ie.get("table_ref_order_ok"),
+        }
+        prof.ieee_figure_ref_order = _ie["figure_ref_order"]
+        prof.ieee_first_footnote = _ie["first_footnote"]
+        prof.ieee_acknowledgment = _ie["acknowledgment"]
+        prof.ieee_coi = _ie["coi"]
+        prof.ieee_biography = _ie["biography"]
+        prof.ieee_index_terms = _ie["index_terms"]
+        prof.ieee_abstract_numbered_refs = _ie["abstract_numbered_refs"]
+        prof.ieee_numbered_singular_heads = _ie["numbered_singular_heads"]
+    except Exception:
+        prof.ieee_caption_labels = []
+        prof.ieee_caption_position = {}
+        prof.ieee_figure_ref_order = []
+        prof.ieee_first_footnote = {}
+        prof.ieee_acknowledgment = {}
+        prof.ieee_coi = {}
+        prof.ieee_biography = {}
+        prof.ieee_index_terms = {}
+        prof.ieee_abstract_numbered_refs = []
+        prof.ieee_numbered_singular_heads = []
+    # v2.3.100（E 批）：MLA + APA 剩余只读观测。
+    try:
+        _me = sample_mla_apa_extras(doc)
+        prof.body_title_repeat = _me["body_title_repeat"]
+        prof.numbered_body_heads = _me["numbered_body_heads"]
+        prof.author_note_index = _me["author_note_index"]
+        prof.author_note_has_superscript = _me["author_note_has_superscript"]
+        prof.first_page_left_texts = _me["first_page_left_texts"]
+    except Exception:
+        prof.body_title_repeat = False
+        prof.numbered_body_heads = []
+        prof.author_note_index = None
+        prof.author_note_has_superscript = None
+        prof.first_page_left_texts = []
+    # v2.3.100（E-6 / D-22）：MLA 论文标题段实测。
+    try:
+        _mt = sample_mla_title(doc)
+        prof.mla_title_index = _mt["index"]
+        prof.mla_title_alignment = _mt["alignment"]
+        prof.mla_title_bold = _mt["bold"]
+        prof.mla_title_italic = _mt["italic"]
+        prof.mla_title_certain = bool(_mt["certain"])
+    except Exception:
+        prof.mla_title_index = None
+        prof.mla_title_alignment = None
+        prof.mla_title_bold = None
+        prof.mla_title_italic = None
+        prof.mla_title_certain = False
+    # v2.3.100（E-2 / D-18）：APA caption 字形。
+    try:
+        _ct = sample_caption_typography(doc)
+        prof.caption_label_bold = _ct["caption_label_bold"]
+        prof.caption_title_italic = _ct["caption_title_italic"]
+        prof.caption_typography_count = _ct["count"]
+    except Exception:
+        prof.caption_label_bold = None
+        prof.caption_title_italic = None
+        prof.caption_typography_count = 0
+
+    # v2.3.100：**正文优先，表格只在正文无样本时兜底**。
+    # 旧写法把表格 run 并进同一个 counter，一篇「正文 12pt / 表格 10pt」的论文里
+    # 表格 run 数常常更多 → 正文字号判成 10pt，而修正只改正文 → 复检仍读 10
+    # → 客户点完「修正」那条红杠永远不消失（实测 MLA 第二遍恒记 font_size_pt）。
+    _font_pool = font_counter or table_font_counter
+    if _font_pool:
+        # X-3：符号/数学字体（Symbol、Cambria Math…）不代表正文字体，排除后再取众数；
+        # 若全篇只有符号字体（极端情况）则回退全量，不制造 None。
+        _plain_fonts = Counter({k: v for k, v in _font_pool.items()
+                                if not _is_symbol_font(k)})
+        prof.font_family = (_plain_fonts or _font_pool).most_common(1)[0][0]
     if family_size_counter:
         prof.font_size_by_family = {
             str(f): float(c.most_common(1)[0][0])
-            for f, c in family_size_counter.items() if c
+            for f, c in family_size_counter.items() if c and not _is_symbol_font(f)
         }
-    if size_counter:
-        prof.font_size_pt = size_counter.most_common(1)[0][0]
+    # X-3：优先用「非符号字体」的字号众数；全篇皆为符号字体时回退全量。
+    # v2.3.100：正文样本永远优先于表格样本（见 _font_pool 处注释）。
+    _size_pool = plain_size_counter or size_counter or table_size_counter
+    if _size_pool:
+        prof.font_size_pt = _size_pool.most_common(1)[0][0]
     if spacing_samples:
         prof.line_spacing = Counter(round(s, 2) for s in spacing_samples).most_common(1)[0][0]
 
@@ -3017,7 +4662,15 @@ def _read_docx_impl(doc) -> DocumentProfile:
         _dt = doc_title_index(doc)
         if _dt is not None:
             _skip_ps.add(paras[_dt]._p)
-        _pseudo = structural_heading_map(paras, exclude_ps=_skip_ps)
+        # 🔴 v2.3.100：**必须先筛候选再调**，与 fixer._assign_heading_levels 完全一致。
+        # 旧写法直接传全量 paras → structural_heading_map 内部 pseudo_heading_level_map
+        # 的字号档推断被正文段稀释，**一张表全落空**（实测认出 0 个）；而 fixer 传的是
+        # 「heading_level 为 None 的候选子集」，认得出 7 个。于是同一份文档：
+        # 检查器按 reader 的分层（产物实测 L1+L3）判「三级标题该斜体」，
+        # 修正器按自己的分层（L1+L2+L4）压根不碰 L3 → **报了却修不掉的红杠**
+        # （C-4 停掉 font_size_by_font 自动修后，这条在 APA 真实论文上显形）。
+        _pseudo_cand2 = [p for p in paras if _heading_level(p) is None]
+        _pseudo = structural_heading_map(_pseudo_cand2, exclude_ps=_skip_ps)
         _first_of_level: dict = {}
         for para in paras:
             lvl = _pseudo.get(para._p)
@@ -3051,10 +4704,36 @@ def _read_docx_impl(doc) -> DocumentProfile:
         ref_spacings: list = []
         ref_sb: list = []
         ref_sa: list = []
+        _ref_style_sizes: list = []
         for i in ref_indices:
+            if not _is_real_ref_entry(paras, i):
+                continue
+            _st = paras[i].style
+            while _st is not None:
+                if _st.font is not None and _st.font.size is not None:
+                    _ref_style_sizes.append(round(float(_st.font.size.pt), 1))
+                    break
+                _st = getattr(_st, "base_style", None)
+        for i in ref_indices:
+            # v2.3.100（F-7 / 裁定 C-10）：只统计**真条目**。
+            # 官方模板 "References" 标题下先夹 4 段 `Body Text` 样式的**指导文字**
+            # （"The template will number citations…"），末尾又夹 1 段 —— 旧写法把它们
+            # 一起算进众数，字號被 Body Text 的 10pt 顶掉（实测 reference_size=10.0，
+            # 而模板 references 样式明明是 8pt）→ 判"应为 8pt"→ 把官方模板判红。
+            # 真条目判据：样式名含 reference/bibliography，或该段带 Word 自动编号。
+            if not _is_real_ref_entry(paras, i):
+                continue
             para_i = paras[i]
             for r in para_i.runs:
                 if not (r.text or "").strip():
+                    continue
+                # v2.3.100：段内还夹着 **Word 的样式提示 run** —— 文本就是 "(references)"、
+                # "(body text)" 这种（Word 用它在页边显示当前样式名），自带 SimSun 10pt。
+                # 不排除的话 3 个提示 run 就能把整条参考文献的字号众数顶成 10pt
+                # （实测：模板 references 样式明明 8pt，却被判 10pt）。
+                # 判据：纯括号包住的**字母串**（≤30 字）—— 条目里的 "(2020)"、"(IEEE)"
+                # 之类含数字或是专有名词的仍照常统计。
+                if _STYLE_HINT_RE.match(r.text.strip()):
                     continue
                 fn = _run_font_name(r)
                 if fn:
@@ -3073,6 +4752,11 @@ def _read_docx_impl(doc) -> DocumentProfile:
             prof.reference_font_family = ref_fonts.most_common(1)[0][0]
         if ref_sizes:
             prof.reference_size_pt = ref_sizes.most_common(1)[0][0]
+        elif _ref_style_sizes:
+            # v2.3.100（F-7）：run 没写字号时回退**样式链字号** ——
+            # 官方模板的 references 条目正是如此（样式 8pt、run 无 sz）。
+            # 没有这一级回退就会读成 None → 该维度恒"无结论"，等于没判。
+            prof.reference_size_pt = Counter(_ref_style_sizes).most_common(1)[0][0]
         if ref_spacings:
             prof.reference_line_spacing = Counter(
                 round(s, 2) for s in ref_spacings).most_common(1)[0][0]
@@ -3156,6 +4840,58 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 prof.abstract_space_before_pt = _abs_sb.most_common(1)[0][0]
             if _abs_sa:
                 prof.abstract_space_after_pt = _abs_sa.most_common(1)[0][0]
+            # v2.3.100（C 批 D-08）：摘要正文的字号 / 加粗 / 对齐（IEEE 会议模板
+            # Abstract 样式 `<w:sz w:val="18"/>`(9pt) + `<w:b/>` + `jc=both`）。
+            # 采样口径与正文一致：run → 样式 → OOXML 缺省 10pt；对齐走三级回退。
+            _abs_sizes: Counter = Counter()
+            _abs_bold: Counter = Counter()
+            _abs_align: Counter = Counter()
+            for _j in _abs_style:
+                _pj = paras[_j]
+                _sz_pt = None
+                for _r in _pj.runs:
+                    if not (_r.text or "").strip():
+                        continue
+                    if _r.font.size is not None:
+                        _sz_pt = round(float(_r.font.size.pt), 1)
+                        break
+                if _sz_pt is None:
+                    try:
+                        _stf = _pj.style.font
+                        if _stf is not None and _stf.size is not None:
+                            _sz_pt = round(float(_stf.size.pt), 1)
+                    except Exception:
+                        _sz_pt = None
+                if _sz_pt is None:
+                    _sz_pt = doc_default_size if doc_default_size is not None else 10.0
+                _abs_sizes[_sz_pt] += 1
+                for _r in _pj.runs:
+                    if (_r.text or "").strip():
+                        _bl = _r.font.bold
+                        if _bl is None:
+                            # v2.3.100：run 未写 bold 时回退**样式链**。
+                            # IEEE 模板把 `<w:b/>` 写在 Abstract 样式里，run 上一片空白，
+                            # 只看 run 会判成 "not bold"，把合规摘要报成 warn（R2 同类病根）。
+                            try:
+                                _stb = _pj.style
+                                while _stb is not None:
+                                    if _stb.font is not None and _stb.font.bold is not None:
+                                        _bl = _stb.font.bold
+                                        break
+                                    _stb = getattr(_stb, "base_style", None)
+                            except Exception:
+                                _bl = None
+                        _abs_bold[bool(_bl)] += 1
+                        break
+                _al = _pf_attr(_pj, doc_pf, "alignment")
+                if _al is not None:
+                    _abs_align[_ALIGN_MAP.get(_al) or str(_al)] += 1
+            if _abs_sizes:
+                prof.abstract_font_size_pt = _abs_sizes.most_common(1)[0][0]
+            if _abs_bold:
+                prof.abstract_bold = _abs_bold.most_common(1)[0][0]
+            if _abs_align:
+                prof.abstract_alignment = _abs_align.most_common(1)[0][0]
             # 是否另起一页：段前分页 或 上一段末尾分页符（复用参考文献同一口径）
             _prev_abs = paras[_abs_head - 1] if _abs_head > 0 else None
             prof.abstract_new_page = _reference_starts_new_page(
@@ -3169,21 +4905,24 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 _ALIGN_MAP.get(_ah_al) if _ah_al is not None else None)
             _ah_runs = [r for r in _ah.runs if (r.text or "").strip()]
             if _ah_runs:
-                _b = [getattr(r.font, "bold", None) for r in _ah_runs]
-                prof.abstract_heading_bold = (
-                    True if any(v is True for v in _b)
-                    else (False if all(v is False for v in _b) else None))
-                _i = [getattr(r.font, "italic", None) for r in _ah_runs]
-                prof.abstract_heading_italic = (
-                    True if any(v is True for v in _i)
-                    else (False if all(v is False for v in _i) else None))
+                # v2.3.100（B-5）：走「run 直接 → 样式链」三级回退。
+                # 官方样例的 Abstract 标题用 Heading 1 样式承载，加粗写在样式里，
+                # 只读 run 会全部得到 None → 报「could not read bold」这种修不掉的错。
+                prof.abstract_heading_bold = _run_bool_with_style(
+                    _ah_runs, _ah, "bold")
+                prof.abstract_heading_italic = _run_bool_with_style(
+                    _ah_runs, _ah, "italic")
             # v2.3.97：关键词行（"Keywords: ..."）的标签斜体 + 整行首行缩进（APA §2.10）。
             _kw_idx = next((j for j in _abs_body if is_keywords_line(paras[j])), None)
             if _kw_idx is not None:
                 _kwp = paras[_kw_idx]
                 _kw_runs = [r for r in _kwp.runs if (r.text or "").strip()]
                 if _kw_runs:
-                    prof.keywords_label_italic = getattr(_kw_runs[0].font, "italic", None)
+                    # v2.3.100（B-5）：与摘要标题同一口径（run → 样式链）。
+                    # 官方样例的 "Keywords:" 标签斜体常写在字符/段落样式上，
+                    # 只读 run 会得到 None → 判定"label italic not set" → 误报。
+                    prof.keywords_label_italic = _run_bool_with_style(
+                        _kw_runs, _kwp, "italic")
                 _kw_fli = _inch(_pf_attr(_kwp, doc_pf, "first_line_indent"))
                 prof.keywords_indent_in = 0.0 if _kw_fli is None else _kw_fli
             # v2.3.91：摘要之后**正文首段**是否另起一页（APA：正文从摘要后新一页开始）。

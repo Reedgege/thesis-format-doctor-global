@@ -95,8 +95,12 @@ def _cell_texts(path: str) -> list:
 
 # ------------------------------------------------------------------ spec 侧
 def test_academic_specs_declare_three_line():
-    for key in ("APA", "APA-Student", "APA-Professional", "MLA", "IEEE"):
+    # v2.3.100（C 批 D-31 / 裁定 C-8）：IEEE **不再强制三线**。
+    # OWL 原文「vertical lines are optional, and double horizontal lines may be used」
+    # —— 强制三线会把合规 IEEE 表判红，故 IEEE 的 table_lines 改为 None（不判）。
+    for key in ("APA", "APA-Student", "APA-Professional", "MLA"):
         assert get_spec(key).table_lines == "three_line", key
+    assert get_spec("IEEE").table_lines is None
 
 
 def test_other_spec_does_not_declare_table_lines():
@@ -112,7 +116,9 @@ def test_target_from_spec_carries_table_lines():
 
 
 def test_spec_to_dict_roundtrip_has_table_lines():
-    assert get_spec("IEEE").to_dict().get("table_lines") == "three_line"
+    # v2.3.100（C 批 D-31）：IEEE 改判 None（不强制三线），改用 APA 验证透传
+    assert get_spec("APA-Student").to_dict().get("table_lines") == "three_line"
+    assert get_spec("IEEE").to_dict().get("table_lines") is None
 
 
 # ------------------------------------------------------------------ 读侧采样

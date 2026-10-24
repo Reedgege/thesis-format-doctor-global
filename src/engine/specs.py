@@ -82,6 +82,11 @@ class HeadingLevelFormat:
     bold: Optional[bool] = None
     italic: Optional[bool] = None
     run_in: bool = False                 # L4/L5：标题与正文接排（同行）
+    # v2.3.100（C 批 D-11）：接排时**段尾用什么符号收尾**。
+    # APA L4/L5 = 句点（"…emphasis: text."）；IEEE L3/L4 = **冒号**
+    # （ESM 原文 "followed by a colon … no line break between the heading and the text"）。
+    # 旧实现写死句点，IEEE 会被补成 "1) Prior work. 正文" —— 与规范相反。
+    run_in_sep: str = "."
     indent: bool = False                 # 缩进式标题（L4/L5 首行缩进）——旧的开关式写法
     # v2.3.65：缩进量可填（英寸）。学校模板里大量是「标题左缩进 0.5 英寸 / 首行缩进 0.25」
     # 这种具体值，只有一个开关表达不了。为 None 时回退到旧的 indent 开关（0.5 英寸）。
@@ -92,6 +97,12 @@ class HeadingLevelFormat:
     size_pt: Optional[float] = None      # None = 与正文同字号
     number_prefix: Optional[str] = None  # 见上；None = 不加章节编号
     uppercase: bool = False              # 标题文本全大写（IEEE 约定）
+    # v2.3.100（C 批 D-11 / 裁定 Q-1）：小型大写（small caps）。
+    # IEEE 官方 ESM 原文：一级标题 "set in 10-pt. and 8-pt. caps"（= small caps，不是全大写），
+    # 官方会议模板 Heading1 样式也是 `<w:smallCaps/>`（无 `<w:b/>`）。
+    # 三态：None=本级不规定；True=必须小型大写；False=必须不是。
+    # 🔴 字符类改动受 P-2 约束：**只判定、不执行改字**（见 policy.TEXT_IS_LOCKED）。
+    small_caps: Optional[bool] = None
     # v2.3.67：段前分页（pageBreakBefore）。三态：None=本级不规定 / True=该级标题必须
     # 另起一页 / False=明确不另起一页。海外学术市场高频诉求：Journal Article 章首不分页、
     # Dissertation 每章（通常是 L1）强制另起一页。落在段落 pPr/pageBreakBefore（纯格式、
@@ -147,6 +158,12 @@ class TitlePageFormat:
     title_page_lines_tolerance: float = 0.25
     # ↑ 判定容差（单位：行）。行高换算本来就受字体度量影响，卡到 0.01 行等于自找误报。
     zero_extra_spacing: Optional[bool] = None
+    # v2.3.100（C 批 D-14 / 裁定 C-5）：标题字号。**必须放在末尾** —— 前面三个字段
+    # 常按位置传参（`TitlePageFormat(True, False, False)`），新字段插在中间会把
+    # 第三个位置参数错当成字号（实测踩过：TypeError: multiple values for title_size_pt）。
+    # 依据：Purdue OWL「centered at the top of the first page, in 24-point type」+
+    # 官方会议模板 `papertitle` 样式 `<w:sz w:val="48"/>`（24pt，且**无** `<w:b/>`）。
+    title_size_pt: Optional[float] = None
     # ↑ 标题页**其余**元素（作者/单位/课程/教师/日期）不留额外段前/段后。
     #   True = 这些行的段前段后清零；None = 不动。**不作用于标题本身**（标题的段后
     #   是「一个空行」，由 title_space_after_lines 单独管）。
@@ -182,6 +199,10 @@ class StyleSpec:
     running_head: bool = False            # 专业版要求页眉短标题+页码；学生版不需要
     expect_abstract: bool = False         # 专业版须含 Abstract+Keywords；学生版仅当老师要求
     expect_author_note: bool = False      # 专业版须含 Author Note；学生版无
+    # v2.3.100（C 批 D-27）：必须有 Index Terms（IEEE 会议/期刊都要求）。
+    # 依据：Purdue OWL「All papers must begin with an abstract and index terms」+
+    # ESM「All articles must contain Index Terms … alphabetical order」。
+    expect_index_terms: bool = False
     title_page_kind: str = ""             # "student" / "professional" / ""
     front_matter_note: str = ""           # 给用户的「前置材料期望」说明（报告展示）
     # —— APA 7th 专属格式约束（仅 APA 两档赋值；其余风格默认中性值，零影响）——
@@ -237,6 +258,14 @@ class StyleSpec:
     # None = 该风格不规定（由学校模板 / 问卷 / AI 决定）。APA/IEEE 表题在上、图题在下。
     caption_font_size_pt: Optional[float] = None             # 图表标题字号（磅）
     caption_line_spacing: Optional[float] = None             # 图表标题行距（倍数）
+    # —— v2.3.100（C 批）：摘要与参考文献的字号/字形（IEEE 会议档）——
+    # 依据：官方会议模板 Abstract 样式 `<w:sz w:val="18"/>`（9pt）+ `<w:b/>` + `jc=both`
+    #       + `w:after="10pt"`；references 样式 `<w:sz w:val="16"/>`（8pt）+ 编号悬挂。
+    abstract_font_size_pt: Optional[float] = None   # 摘要正文字号；None=不规定
+    abstract_bold: Optional[bool] = None            # 摘要正文是否加粗（三态）
+    abstract_alignment: Optional[str] = None        # 摘要正文对齐（justify/left）
+    abstract_space_after_pt: Optional[float] = None  # 摘要段落段后间距（磅）
+    reference_font_size_pt: Optional[float] = None  # 参考文献条目字号；None=不规定
     caption_position_table: Optional[str] = None             # "top" / "bottom"（表题在表格上方/下方）
     caption_position_figure: Optional[str] = None            # "top" / "bottom"（图题在图上方/下方）
     # —— 表格线（v2.3.85）——
@@ -255,6 +284,19 @@ class StyleSpec:
     # 额外空一条双倍行距。APA 正文 12pt + 双倍行距 → 一行 = 12 × 2 = 24pt。
     # None = 该风格不规定（MLA 靠整篇双倍行距、IEEE 各模板自定 6–12pt → 都不写死）。
     table_gap_pt: Optional[float] = None
+    # v2.3.100（F 批 F-2 / 落地裁定 C-2）：table_gap 的三档阈值。
+    # 手册原文要求「额外一条双倍行距」（APA 正文 12pt 双倍 → 24pt），但**官方样例实测
+    # 只有 0/12pt** —— 按 24pt 硬判等于把官方合规样例判红。故：
+    #   · ``table_gap_min_pt`` = 硬下限（< 它 → warn 且可修）；
+    #   · ``table_gap_ratio`` = 推荐值比例（实测 ≥ table_gap_pt × ratio 即 pass，附推荐提示）；
+    #   · 官方样例 12pt 落在 [min, 24×0.8) 区间 → pass，正合裁定「12pt 放行」。
+    # None = 不规定该风格的表格间距（MLA/IEEE 现状）。
+    table_gap_min_pt: Optional[float] = None
+    table_gap_ratio: Optional[float] = None
+    # v2.3.100（F-5 / 裁定 C-6）：byline（作者/单位/城市/邮箱）字号。
+    # OWL 说 10pt、官方会议模板 `Author` 样式是 11pt → 老板裁定**以模板 11pt 为准**。
+    # None = 该风格不规定（APA/MLA 不设 byline）。
+    byline_size_pt: Optional[float] = None
     notes: str = ""
 
     def to_dict(self) -> dict:
@@ -292,6 +334,9 @@ class StyleSpec:
         "caption_position_figure": self.caption_position_figure,
         "table_lines": self.table_lines,
         "table_gap_pt": self.table_gap_pt,
+        "table_gap_min_pt": self.table_gap_min_pt,
+        "table_gap_ratio": self.table_gap_ratio,
+        "byline_size_pt": self.byline_size_pt,
         "notes": self.notes,
         }
 
@@ -376,17 +421,30 @@ APA_HEADING: dict[int, HeadingLevelFormat] = {
 # 仅 L1 做全大写（编号 + 样式），L2–L5 不改文字大小写 —— 严守「不改内容」原则；
 # 罗马数字递增由 fixer 按文档顺序维护（同层 +1、遇浅层重置更深层），幂等。
 IEEE_HEADING: dict[int, HeadingLevelFormat] = {
-    1: HeadingLevelFormat(alignment="center", bold=True, number_prefix="roman",
-                          uppercase=True,
-                          desc="centered, bold, roman numeral, uppercase"),
-    2: HeadingLevelFormat(alignment="left", bold=True, number_prefix="upper_letter",
-                          desc="flush-left, bold, capital letter"),
-    3: HeadingLevelFormat(alignment="left", italic=True, number_prefix="number_paren",
-                          desc="flush-left, italic, arabic numeral + paren"),
-    4: HeadingLevelFormat(alignment="left", italic=True, number_prefix="lower_letter",
-                          desc="flush-left, italic, lowercase letter"),
-    5: HeadingLevelFormat(alignment="left", italic=True, number_prefix="lower_roman",
-                          desc="flush-left, italic, lowercase roman"),
+    # 🔴 v2.3.100（C 批 D-11 / 裁定 Q-1）：按 IEEE 官方 ESM「Text Section Headings」
+    # 原文 + 官方会议模板 Heading1~4 样式逐条重写。原文摘录：
+    #   一级：`<w:smallCaps/>`（无 `<w:b/>`）、Roman 数字、居中、段前 8pt / 段后 4pt
+    #   二级：`<w:i/>`、大写字母 + 句点、左对齐、**不缩进**、段前 6 / 段后 3
+    #   三级：`<w:i/>`、数字 + 右括号、**缩进 1em(0.2″)**、**冒号接排（不换行）**
+    #   四级：`<w:i/>`、小写字母 + 右括号、**缩进 2em(0.35″)**、**冒号接排**
+    #   五级：ESM 只定义四级（"four levels"）→ **不定义**，见 heading_levels=4
+    # ⚠️ 字符类（small caps / 大写 / 编号）受 P-2 约束：**只判定，不执行改字**。
+    1: HeadingLevelFormat(alignment="center", bold=False, small_caps=True,
+                          number_prefix="roman", uppercase=False,
+                          space_before_pt=8.0, space_after_pt=4.0,
+                          desc="centered, small caps (no bold), roman numeral"),
+    2: HeadingLevelFormat(alignment="left", bold=False, italic=True,
+                          number_prefix="upper_letter",
+                          space_before_pt=6.0, space_after_pt=3.0,
+                          desc="flush-left, italic (no bold), capital letter + period"),
+    3: HeadingLevelFormat(alignment="left", italic=True, bold=None,
+                          number_prefix="number_paren", indent_in=0.2, run_in=True,
+                          run_in_sep=":",
+                          desc="indented 1 em, italic, arabic numeral + paren, run-in with colon"),
+    4: HeadingLevelFormat(alignment="left", italic=True, bold=None,
+                          number_prefix="lower_letter", indent_in=0.35, run_in=True,
+                          run_in_sep=":",
+                          desc="indented 2 ems, italic, lowercase letter + paren, run-in with colon"),
 }
 
 
@@ -521,8 +579,18 @@ def heading_level_format_from_dict(raw: dict) -> "HeadingLevelFormat":
         space_before_pt=_num("space_before_pt"),
         space_after_pt=_num("space_after_pt"),
         line_spacing=_num("line_spacing"),
+        # v2.3.100（C 批 D-11）：**这两处漏过** —— 我只在
+        # questionnaire.HEADING_LEVEL_KEYS 放了行，忘了 dict→对象 这一层，
+        # 结果 spec/target 里都写着 `run_in_sep=":"`，修正器拿到的对象却是默认 "."，
+        # IEEE L3/L4 段尾被补成句点（与 ESM「followed by a colon」相反）。
+        # 以后新增 HeadingLevelFormat 字段，必须同时改：① dataclass 默认值
+        # ② 这里 from_dict ③ questionnaire 白名单 ④ AI 填表模板说明 —— 四处缺一即静默丢失。
+        small_caps=_tri("small_caps"),
         desc=str(raw.get("desc") or "").strip(),
     )
+    # run_in_sep 只接受 "." / ":"（其它符号一律回落句点，不猜）
+    _sep = str(raw.get("run_in_sep") or "").strip()
+    f.run_in_sep = _sep if _sep in (".", ":") else "."
     if not f.desc:
         f.desc = describe_heading(f)
     return f
@@ -582,7 +650,10 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
                caption_position_figure: Optional[str] = "bottom",
                # v2.3.98：表格与前后文字之间「额外一条双倍行距」= 12pt × 2 = 24pt。
                # MLA / IEEE 不写死（MLA 靠整篇双倍行距；IEEE 各模板 6–12pt 不一）。
-               table_gap_pt: Optional[float] = 24.0) -> StyleSpec:
+               table_gap_pt: Optional[float] = 24.0,
+               table_gap_min_pt: Optional[float] = 12.0,
+               table_gap_ratio: Optional[float] = 0.8,
+               byline_size_pt: Optional[float] = None) -> StyleSpec:
     """构造一个 APA 7th 规范档（学生/专业共享同一套正文/标题/参考文献规则，仅前置材料不同）。
 
     新增的 APA 专属维度（页码位置 / 参考文献另起一页 / 字体允许清单 / 页眉≤50字符 /
@@ -649,6 +720,9 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         # APA 7th §7.10：表格只用横线，**不许有竖线**（就要求是顶线/表头下线/底线）。
         table_lines="three_line",
         table_gap_pt=table_gap_pt,
+        table_gap_min_pt=table_gap_min_pt,
+        table_gap_ratio=table_gap_ratio,
+        byline_size_pt=byline_size_pt,
         notes=notes,
     )
 
@@ -725,24 +799,60 @@ SPECS: dict[str, StyleSpec] = {
     "IEEE": StyleSpec(
         key="IEEE",
         name="IEEE - Standard Two-Column (Word)",
-        page=PageLayout(1.0, 1.0, 1.0, 1.0, "Times New Roman", 10.0, 1.0),
+        # 🔴 v2.3.100（C 批 D-07/D-13）：整套按**官方会议模板正文节**的 sectPr / 样式值。
+        # 模板实测（`conference-template-*.docx`，2024-07-16 版）：
+        #   正文节 `<w:pgMar w:top="54pt" w:bottom="72pt" w:left="45.35pt" w:right="45.35pt"/>`
+        #           → 0.75″ / 1″ / 0.63″ / 0.63″（其余节是标题节 top=27pt、尾节 44.65pt）
+        #   BodyText 样式 `<w:ind w:firstLine="14.4pt"/>` → 0.2″
+        #   BodyText 样式 `<w:spacing w:line="11.4pt" w:lineRule="auto"/>` + 10pt → ≈1.14 倍
+        #   正文 `<w:jc w:val="both"/>` → 两端对齐
+        page=PageLayout(0.75, 1.0, 0.63, 0.63, "Times New Roman", 10.0, 1.14,
+                        body_alignment="justify", first_line_indent_in=0.2),
         reference=ReferenceRule(
             style_key="IEEE",
-            hanging_indent_in=0.0,
+            # v2.3.100（D-16 / 裁定 C-10）：编号**自成列、悬挂于条目正文之外**
+            # （IEEE Reference Guide：「numbers … form a column of their own,
+            # hanging out beyond the body of the reference」）。
+            # 具体值取官方会议模板实测 0.25″（模板 references 样式：numPr 自动编号 +
+            # left/hanging ≈ 0.246″）。原来写 0.0 → 修正侧把 left/first_line 都设成 0，
+            # 等于什么都没改 → 客户点「修正」那条红杠永远不消失。
+            hanging_indent_in=0.25,
             numbered=True,
             order_hint="Sequential: [1] A. Author, \"Title,\" Journal, vol., no., pp., Year.",
             pattern_hint='[1] J. A. Smith, "Title," J. Name, vol. 1, no. 2, pp. 3-4, 2020.',
             checks=("numbered_ref",),
         ),
-        heading_levels=5,
+        # D-11（裁定 Q-1）：ESM 原文「There are **four** levels of section headings」，
+        # 故 IEEE 只定义 4 级；官方模板虽有 Heading5（small caps 无编号），但不属于正文层级。
+        heading_levels=4,
         columns=2,   # IEEE 标准两栏（会议/期刊）：选此规范即声明双栏布局意图
         paper_size=None,   # IEEEtran 官方模板 A4 / US Letter 两版并存 → 不规定，由模板决定
         heading_formats=IEEE_HEADING,
-        title_page=TitlePageFormat(True, True, True),
+        # D-14（裁定 C-5）：`<w:sz w:val="48"/>` = 24pt；模板 papertitle **无** `<w:b/>`。
+        title_page=TitlePageFormat(True, False, True, title_size_pt=24.0),
+        # D-08（裁定 C-7）：OWL「All papers must begin with an abstract」
+        expect_abstract=True,
+        # 模板 Abstract 样式：`<w:sz w:val="18"/>`（9pt）+ `<w:b/>` + `jc=both` + after=10pt
+        abstract_font_size_pt=9.0,
+        abstract_bold=True,
+        abstract_alignment="justify",
+        abstract_space_after_pt=10.0,
+        # D-27：OWL/ESM 都要求 Index Terms（字母序、摘要后独立段）
+        expect_index_terms=True,
+        # D-32（裁定 C-6）：byline 字号以**官方会议模板**为准 —— `Author` 样式
+        # `<w:sz w:val="22"/>` = 11pt（OWL 说的 10pt 作废）。四行结构只提示、不代写。
+        byline_size_pt=11.0,
+        # D-16（裁定 C-10 只做 8pt）：模板 references 样式 `<w:sz w:val="16"/>` = 8pt
+        reference_font_size_pt=8.0,
         # 图表 caption（v2.3.67）：IEEE 表题在表格上方、图题在图下方（IEEEtran 约定）。
         caption_position_table="top",
         caption_position_figure="bottom",
-        table_lines="three_line",   # IEEEtran 表格为 open table：无竖线，顶线/表头线/底线
+        # D-15：模板 tablehead / figurecaption 样式 `<w:sz w:val="16"/>` = 8pt
+        caption_font_size_pt=8.0,
+        # 🔴 D-31（裁定 C-8）：**删除** three_line 强制。OWL 原文「vertical lines are optional,
+        # and double horizontal lines may be used」—— 强制三线会把合规 IEEE 表判红。
+        # 通用三线判定对 APA/MLA 照旧，这里只让 IEEE 不受约束。
+        table_lines=None,
         notes="Numeric (sequential) citation system [1]; section headings use Roman/Arabic "
               "numbering (I. / A. / 1.): level 1 centered + bold + UPPERCASE, level 2 flush-left "
               "+ bold, deeper levels italic. This option targets the standard IEEE two-column "
@@ -773,13 +883,15 @@ SPECS: dict[str, StyleSpec] = {
 # 说明：均为「该风格典型文稿」的兜底参考，检查时 spec 来源会降级为 info；
 #       学校模板 / 问卷 / AI 显式给出时才硬判。
 # 依据：APA 7 / MLA 9 均为左对齐 + 首行缩进 0.5″ + 段间无空行（§2.21：段前段后都不许
-#       加空行）；IEEE 正文两端对齐、首行不缩进、段间无空行（IEEEtran 默认）。
+#       加空行）；IEEE 正文两端对齐、**首行缩进 0.2″**、段间无空行
+#       （v2.3.100 修正：官方会议模板 BodyText 样式 `<w:ind w:firstLine="14.4pt"/>` = 0.2″；
+#        旧值 0.0 是错的，会把合规 IEEE 正文判成"首行未缩进"）。
 # ---------------------------------------------------------------------------
 _BODY_LAYOUT: dict[str, tuple] = {
     "APA-Student":     ("left",    0.5,  0.0,  0.0),
     "APA-Professional": ("left",   0.5,  0.0,  0.0),
     "MLA":     ("left",    0.5,  0.0,  0.0),
-    "IEEE":    ("justify", 0.0,  0.0,  0.0),
+    "IEEE":    ("justify", 0.2,  0.0,  0.0),
     "Other":   (None,      None, None, None),
 }
 

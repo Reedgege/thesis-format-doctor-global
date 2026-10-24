@@ -175,7 +175,9 @@ def test_spec_page_only_info_not_fail(tmp_path):
 def test_reference_backfill(tmp_path):
     t = target_from_dict({"reference_style": "IEEE"}, source="user")
     assert t.reference_numbered is True
-    assert t.reference_hanging_indent_in == 0.0
+    # v2.3.100（C 批 D-16 / 裁定 C-10）：IEEE 悬挂 0.25″（官方模板实测），
+    # 原为 0.0（等于"不挂"→ 修正侧什么都没改 → 红杠永远不消失）。
+    assert t.reference_hanging_indent_in == 0.25
     assert t.resolution.get("reference_numbered") == "spec"
 
 

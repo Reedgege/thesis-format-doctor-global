@@ -13,6 +13,7 @@ MLA / Other 官方没有多级标题体系（heading_levels=0），必须保持�
 """
 from __future__ import annotations
 
+import pytest
 from docx import Document
 
 from src.engine.checker import run_check
@@ -25,7 +26,10 @@ def test_target_from_spec_carries_per_level_heading_formats():
     """APA / IEEE 的五级格式必须随目标画像一起出来。"""
     for key in ("APA", "APA-Student", "APA-Professional", "IEEE"):
         hf = target_from_spec(key).heading_formats
-        assert set(hf) == {1, 2, 3, 4, 5}, f"{key} 每级标题格式缺失：{sorted(hf)}"
+        # v2.3.100（C 批 D-11 / 裁定 Q-1）：IEEE 官方 ESM「There are four levels」，
+        # 故 IEEE 只定义 1-4 级；其余规范仍是 5 级。
+        _want = {1, 2, 3, 4} if key == "IEEE" else {1, 2, 3, 4, 5}
+        assert set(hf) == _want, f"{key} 每级标题格式缺失：{sorted(hf)}"
         assert all(isinstance(v, dict) for v in hf.values())
 
 
@@ -38,19 +42,34 @@ def test_mla_and_other_have_no_heading_levels():
 
 
 def test_ieee_heading_values_match_spec_table():
-    """IEEE：L1 居中+加粗+罗马编号+全大写；L2 大写字母；L3-L5 斜体+各级编号。"""
+    """IEEE：按官方 ESM + 会议模板 Heading1~4 样式（v2.3.100 重写，裁定 Q-1）。
+
+    ESM 原文：一级「Roman numerals, centered, small caps（无 bold）」；
+    二级「capital letters + periods, flush left, italic, upper and lowercase」；
+    三级「indented one em, run into the text, italic, followed by a colon」；
+    四级「indented two ems, lowercase letters, first letter capitalized」。
+    只有**四级**（"There are four levels of section headings"）。
+    """
     hf = target_from_spec("IEEE").heading_formats
+    assert set(hf) == {1, 2, 3, 4}
+    # L1：居中 + small caps（**不加粗**）+ 罗马编号
     assert hf[1]["alignment"] == "center"
-    assert hf[1]["bold"] is True
+    assert hf[1]["bold"] is False
+    assert hf[1]["small_caps"] is True
     assert hf[1]["number_prefix"] == "roman"
-    assert hf[1]["uppercase"] is True
+    assert hf[1]["uppercase"] is False
+    # L2：左对齐 + 斜体 + **不加粗** + 大写字母
     assert hf[2]["alignment"] == "left"
-    assert hf[2]["bold"] is True
+    assert hf[2]["bold"] is False
+    assert hf[2]["italic"] is True
     assert hf[2]["number_prefix"] == "upper_letter"
-    for lvl, prefix in ((3, "number_paren"), (4, "lower_letter"), (5, "lower_roman")):
+    # L3/L4：缩进 + 冒号接排（run-in）
+    for lvl, prefix, ind in ((3, "number_paren", 0.2), (4, "lower_letter", 0.35)):
         assert hf[lvl]["number_prefix"] == prefix
         assert hf[lvl]["italic"] is True
         assert hf[lvl]["alignment"] == "left"
+        assert hf[lvl]["run_in"] is True
+        assert hf[lvl]["indent_in"] == pytest.approx(ind)
 
 
 def test_apa_heading_values_match_spec_table():

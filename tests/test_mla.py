@@ -239,10 +239,18 @@ def test_mla_first_page_block_missing_info(tmp_path):
 
 # —— G5 块引用 ——
 def test_mla_block_quote_wrong_info(tmp_path):
+    """v2.3.100（E-0 / 裁定 D-09）：块引用缩进**停判**。
+
+    老板原话：「按你建议——[材料缺失]，代码里 0.5″ 硬编码停判（不降 info，直接不判），
+    等 MLA 手册条文到位再恢复。理由：无依据的规则判了就是误报。」
+    本轮 MLA 材料（8 份学生论文 + OWL 批注样例）里没有任何块引用缩进条文，
+    那句 0.5″ 是凭印象写的 → 按 P-3 整条撤掉，**不降级保留**。
+    """
     docx = tmp_path / "m.docx"
     _make_mla_doc(docx, block_quote_wrong=True)
     prof, findings = run_check(str(docx), target_from_spec("MLA"))
-    assert _sev(findings, "block_quote") == "info"
+    assert _sev(findings, "block_quote") is None, \
+        "块引用缩进已停判（材料缺失），不应再报"
 
 
 def test_mla_block_quote_absent_no_false_positive(tmp_path):

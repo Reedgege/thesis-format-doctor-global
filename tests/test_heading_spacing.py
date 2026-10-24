@@ -146,12 +146,20 @@ def test_describe_heading_mentions_apa_no_extra_space():
 
 
 def test_ieee_leaves_spacing_unspecified():
-    """IEEE 官方没规定标题段前段后磅值 → 必须留 None，不许臆造。"""
-    for lv in (1, 2, 3, 4, 5):
-        f = get_spec("IEEE").heading_formats[lv]
-        assert f.space_before_pt is None
-        assert f.space_after_pt is None
-        assert f.line_spacing is None
+    """IEEE 标题段前段后：L1/L2 取官方模板值，L3/L4 官方未规定 → 留 None。
+
+    v2.3.100（C 批 D-11 / 裁定 Q-1）：依据官方会议模板 Heading1/Heading2 样式
+    `<w:spacing w:before="8pt" w:after="4pt"/>` / `w:before="6pt" w:after="3pt"`。
+    Heading3/Heading4 模板未写段距 → 仍是 None，绝不臆造。
+    """
+    hf = get_spec("IEEE").heading_formats
+    assert set(hf) == {1, 2, 3, 4}
+    assert (hf[1].space_before_pt, hf[1].space_after_pt) == (8.0, 4.0)
+    assert (hf[2].space_before_pt, hf[2].space_after_pt) == (6.0, 3.0)
+    for lv in (3, 4):
+        assert hf[lv].space_before_pt is None
+        assert hf[lv].space_after_pt is None
+        assert hf[lv].line_spacing is None
 
 
 def test_apa_requires_no_extra_space_on_every_level():
@@ -368,9 +376,11 @@ def test_ieee_baseline_never_touches_heading_spacing(tmp_path):
     _, findings = run_check(paper, t)
     fix_docx(paper, out, t, findings=findings)
     # IEEE 会给一级标题补罗马数字编号并全大写（"I. INTRODUCTION"）→ 按样式取段
+    # v2.3.100（C 批 D-11 / 裁定 Q-1）：IEEE 一级标题的段前段后改由规范接管
+    # （模板 Heading1 样式 before=8pt / after=4pt），不再是"官方未规定、客户自留"。
     h = _h1_para(out).paragraph_format
-    assert h.space_before == Pt(24)
-    assert h.space_after == Pt(12)
+    assert h.space_before == Pt(8)
+    assert h.space_after == Pt(4)
 
 
 # ---------------------------------------------------------------------------

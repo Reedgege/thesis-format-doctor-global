@@ -179,6 +179,13 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "table_gap_pt", "label": "表格与正文的间距", "group": "page",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
      "help": "表格上方/下方与文字之间应留的空隙；APA=24 磅（12pt 正文的一条双倍行距）；留空=不规定"},
+    # v2.3.100（裁定 C-2）：table_gap 的硬下限与推荐比例（三档阈值的另两个参数）。
+    {"key": "table_gap_min_pt", "label": "表格间距硬下限", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
+     "help": "低于此值才判定为不合格；APA=12 磅（官方样例实测 12 磅按此放行）；留空=只按推荐值判"},
+    {"key": "table_gap_ratio", "label": "推荐值达成比例", "group": "page",
+     "type": "float", "default": "", "range": (0.0, 1.0),
+     "help": "实测达到推荐值的多少比例即算合格；APA=0.8（24 磅 × 0.8 = 19.2 磅）；留空=不判比例"},
 
     # —— 目录（TOC，v2.3.77）——
     # 🔴 目录条目是**域段落**：Word 更新目录(F9)时会用 TOC 1..9 样式整体重排，
@@ -436,6 +443,11 @@ class TargetProfile:
     # 「与任何文字之间额外空一条双倍行距」，12pt 正文即 24pt。此前没有任何维度管它，
     # 而「正文段前段后应为 0」还会把原文的 14pt 清掉 → 表格紧贴标题（老板截图）。
     table_gap_pt: Optional[float] = None
+    # v2.3.100（F-2 / 裁定 C-2）：table_gap 的三档阈值另两个参数（硬下限 / 推荐比例）。
+    table_gap_min_pt: Optional[float] = None
+    table_gap_ratio: Optional[float] = None
+    # v2.3.100（F-5 / 裁定 C-6）：byline（作者/单位/城市/邮箱）字号，IEEE = 11pt。
+    byline_size_pt: Optional[float] = None
     # —— 表格线（v2.3.85）——
     # "three_line" = 学术三线表（只留顶线 / 表头下线 / 底线，无竖线无内部横线）；
     # None = 不规定（不检查、不改动）。与 columns / paper_size 同属**结构维度**：
@@ -583,6 +595,10 @@ def target_from_spec(key: str) -> TargetProfile:
         resolution["table_lines"] = "spec"
     if getattr(spec, "table_gap_pt", None) is not None:
         resolution["table_gap_pt"] = "spec"
+    for _k in ("table_gap_min_pt", "table_gap_ratio", "byline_size_pt",
+               "reference_size_pt"):
+        if getattr(spec, _k, None) is not None:
+            resolution[_k] = "spec"
     # v2.3.69：把规范的**每级标题格式**一并带进目标画像。
     # 此前只带了 heading_levels（层级数），heading_formats 漏传，造成两处脱节：
     #   ① 手填问卷选 APA/IEEE 后「每级标题明细」表全空 —— 客户以为规范没要求；
@@ -621,6 +637,15 @@ def target_from_spec(key: str) -> TargetProfile:
         caption_position_figure=spec.caption_position_figure,
         table_lines=getattr(spec, "table_lines", None),
         table_gap_pt=getattr(spec, "table_gap_pt", None),
+        # v2.3.100（F-2 / F-5 / F-7）：这三个字段此前**没从 spec 带进 target**，
+        # 于是 spec 里明明写了值、checker 读 target 却拿到 None → 维度整段不判
+        # （"看起来改了、实际没生效"的又一例，四关之第③关）。
+        table_gap_min_pt=getattr(spec, "table_gap_min_pt", None),
+        table_gap_ratio=getattr(spec, "table_gap_ratio", None),
+        byline_size_pt=getattr(spec, "byline_size_pt", None),
+        # ⚠️ StyleSpec 的字段名是 ``reference_font_size_pt``（不是 reference_size_pt）——
+        # 我第一次读错了名字，拿到 None，维度整段不判（"看起来改了、实际没生效"）。
+        reference_size_pt=getattr(spec, "reference_font_size_pt", None),
         reference_style=ref.style_key,
         reference_hanging_indent_in=ref.hanging_indent_in,
         reference_numbered=ref.numbered,
@@ -692,7 +717,12 @@ HEADING_LEVEL_KEYS = ("alignment", "bold", "italic", "run_in", "indent", "indent
                       "font_family", "size_pt", "number_prefix", "uppercase",
                       "page_break_before",
                       # v2.3.75：段前 / 段后（磅）与行距倍数（三态，空=不规定）
-                      "space_before_pt", "space_after_pt", "line_spacing")
+                      "space_before_pt", "space_after_pt", "line_spacing",
+                      # v2.3.100（C 批 D-11 / 裁定 Q-1）：**小型大写**（三态）与
+                      # **接排收尾符号**（"." 句点 / ":" 冒号）。
+                      # ⚠️ 这两个字段不进白名单就会被**静默丢弃** —— 规范里写了、spec 里存了，
+                      # 传到 target 时没了 → 修正器拿不到 → 行为退回旧默认（已踩过）。
+                      "small_caps", "run_in_sep")
 
 _HEADING_ALIGN = ("left", "center", "right", "justify")
 _HEADING_PREFIX = ("number", "roman", "upper_letter", "lower_letter",
@@ -712,11 +742,15 @@ def _coerce_heading_level(raw: dict) -> dict:
             continue
         try:
             if k in ("bold", "italic", "run_in", "indent", "uppercase",
-                     "page_break_before"):
+                     "page_break_before", "small_caps"):
                 if isinstance(v, str):
                     out[k] = v.strip().lower() in ("1", "true", "yes", "y")
                 else:
                     out[k] = bool(v)
+            elif k == "run_in_sep":
+                _sep = str(v).strip()
+                if _sep in (".", ":"):
+                    out[k] = _sep
             elif k in ("indent_in", "size_pt", "space_before_pt", "space_after_pt",
                        "line_spacing"):
                 out[k] = float(v)

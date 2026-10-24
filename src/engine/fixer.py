@@ -51,6 +51,10 @@ from .docx_reader import (
     _norm_matter_title, _MATTER_TITLES, caption_block_top,
     # v2.3.98：表格与前后文字的间距（读段前/段后，认「行」单位）
     _spacing_pair_of_para,
+    # v2.3.100（F-2 / 裁定 C-2）：表格间距的「同页」判定（reader 与 fixer 共用）
+    _starts_new_page,
+    # v2.3.100（B 批收尾）：byline 段识别（正文格式修正要避开作者块）
+    _BYLINE_STYLE_KEYWORDS,
     PAPER_SIZES, describe_paper_size, detect_title_page,
     doc_title_index,
     _max_run_size_pt, _PSEUDO_HEADING_FORMAT_MIN_PT,
@@ -62,6 +66,8 @@ from .docx_reader import (
     split_body_soft_breaks,
     # v2.3.87：编号开头的纯文本标题行判定（不吃正文首行缩进）
     is_section_heading_line,
+    # v2.3.101：三线表幂等判定（与 docx_reader.sample_table_lines 同一口径）
+    _effective_border, _table_style_borders, _border_visible, _row_tc_prs,
 )
 from .questionnaire import TargetProfile, PAGE_NUMBER_LAYOUT
 from .specs import (MARGIN_DIMS, get_spec, resolve_spec, generic_heading_formats,
@@ -164,7 +170,14 @@ def _select_paragraphs(doc, ref_set: set, include_reference: bool = True,
     因 is_heading 的 13pt 阈值漏判而被 justify + 首行缩进污染）。
     """
     out: list = []
+    # v2.3.100（B 批收尾）：**byline 段（作者/单位/城市/邮箱）不参与正文格式修正**。
+    # 实测真实论文 × IEEE：作者块两段 11pt 被「正文字号 10pt」刷成 10pt，而复检按
+    # C-6 要求 byline 11pt → **一条永远点不掉的红杠**（报了改、改了还被自己刷掉）。
+    # byline 的字号由 Author/byline 样式或标题页流程独占，正文口径不能碰它。
+    _byline_ps = _byline_paragraph_elements(doc)
     for i, para in enumerate(doc.paragraphs):
+        if para._p in _byline_ps:
+            continue
         if heading_ps is not None:
             if para._p in heading_ps:
                 continue
@@ -175,6 +188,37 @@ def _select_paragraphs(doc, ref_set: set, include_reference: bool = True,
         if not include_reference and i in ref_set:
             continue
         out.append(para)
+    return out
+
+
+def _byline_paragraph_elements(doc) -> set:
+    """byline（作者信息块）段落的 w:p 元素集合（v2.3.100）。
+
+    与 reader 的 ``sample_byline`` 同一口径：Author/Affiliation/byline 样式段，
+    加上标题页探测到的作者段（detect_title_page 的 authors）。
+    找不到就返回空集 —— 绝不因为"猜这是作者块"就把客户正文踢出修正范围。
+    """
+    out: set = set()
+    try:
+        for para in doc.paragraphs:
+            if not (para.text or "").strip():
+                continue
+            try:
+                nm = (para.style.name or "").strip().lower()
+            except Exception:
+                continue
+            if any(nm == k or nm.startswith(k) for k in _BYLINE_STYLE_KEYWORDS):
+                out.add(para._p)
+    except Exception:
+        pass
+    if not out:
+        try:
+            tp = detect_title_page(doc) or {}
+            for idx in (tp.get("authors") or ()):
+                if 0 <= idx < len(doc.paragraphs):
+                    out.add(doc.paragraphs[idx]._p)
+        except Exception:
+            pass
     return out
 
 
@@ -215,6 +259,76 @@ def _abstract_body_style_indices(doc) -> list:
     if not body_idx:
         return []
     return abstract_body_style_indices(doc_paras, body_idx)
+
+
+def _apply_abstract_format(doc, size_pt=None, bold=None, alignment=None,
+                            space_after_pt=None) -> bool:
+    """摘要正文的**字号 / 加粗 / 对齐 / 段后**（C 批 D-08，IEEE 会议档）。
+
+    依据：官方会议模板 `Abstract` 样式 `<w:sz w:val="18"/>`（9pt）+ `<w:b/>` +
+    `jc=both` + `<w:spacing w:after="10pt"/>`。
+
+    只动摘要正文段（`_abstract_body_style_indices` 已排除 Keywords 行 —— 那是另一套
+    口径）。字号/加粗写在 **run 级**：模板是把它们写在样式里的，但客户文档未必如此，
+    写 run 级才能覆盖（"格式跟着段落走"原则：只写段落/字符格式，绝不写 styleId）。
+
+    ⚠️ 段落属性只写段落、run 属性只写 run —— 不越权去改样式定义。
+    """
+    try:
+        body_idx = _abstract_body_style_indices(doc)
+    except Exception:
+        return False
+    if not body_idx:
+        return False
+    paras = list(doc.paragraphs)
+    changed = False
+    for j in body_idx:
+        if not (0 <= j < len(paras)):
+            continue
+        p = paras[j]
+        if size_pt is not None:
+            for r in p.runs:
+                if not (r.text or "").strip():
+                    continue
+                cur = r.font.size
+                if cur is None or abs(float(cur.pt) - float(size_pt)) > 0.5:
+                    try:
+                        r.font.size = Pt(float(size_pt))
+                        changed = True
+                    except Exception:
+                        pass
+        if bold is not None:
+            for r in p.runs:
+                if not (r.text or "").strip():
+                    continue
+                if bool(r.font.bold) != bool(bold):
+                    try:
+                        r.font.bold = bool(bold)
+                        changed = True
+                    except Exception:
+                        pass
+        if alignment:
+            _want = _ALIGN_ENUM.get(str(alignment).lower())
+            if _want is not None and p.alignment != _want:
+                try:
+                    p.alignment = _want
+                    changed = True
+                except Exception:
+                    pass
+        if space_after_pt is not None:
+            pf = p.paragraph_format
+            cur = pf.space_after
+            try:
+                need = cur is None or abs(float(cur.pt) - float(space_after_pt)) > 0.5
+            except (TypeError, ValueError):
+                need = True
+            if need:
+                try:
+                    pf.space_after = Pt(float(space_after_pt))
+                    changed = True
+                except Exception:
+                    pass
+    return changed
 
 
 def _apply_abstract_indent(doc, indent_in: float) -> bool:
@@ -346,7 +460,116 @@ def _write_one_spacing(para, attr: str, val_pt: float) -> bool:
     return changed
 
 
-def _apply_table_gap(doc, gap_pt: float):
+def _apply_caption_typography(doc, label_bold: bool = False,
+                              title_italic: bool = False) -> dict:
+    """施加 APA caption 的字形：号段**粗体**、题段**斜体**（v2.3.100，E-2 / D-18）。
+
+    APA 7：图表号（"Table 1"）粗体，图表题（描述文字）斜体。
+    只改 run 的 ``w:b`` / ``w:i`` —— **不碰 w:rFonts、不碰字号**（那两项分别归
+    font / caption_size 维度，一个维度只一个 owner）。
+
+    「号段」= 纯标签段（"Table 1" / "Figure 1."）；「题段」= 紧跟其后的一段。
+    与 reader 的 ``sample_caption_typography`` 同一套判定（单一真相源），
+    否则会出现"检查说号段不粗、实际改到别处"。
+
+    返回 ``{"changed": bool, "labels": n, "titles": n}``。
+    """
+    out = {"changed": False, "labels": 0, "titles": 0}
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return out
+    try:
+        from src.engine.docx_reader import _CAPTION_PURE_LABEL_RE
+    except Exception:
+        try:
+            from .docx_reader import _CAPTION_PURE_LABEL_RE
+        except Exception:
+            return out
+    for i, p in enumerate(paras):
+        try:
+            if not is_caption_paragraph(p):
+                continue
+            text = (p.text or "").strip()
+        except Exception:
+            continue
+        if not _CAPTION_PURE_LABEL_RE.match(text):
+            continue
+        if label_bold:
+            for r in p.runs:
+                if not (r.text or "").strip():
+                    continue
+                if _is_comment_run(r):
+                    continue
+                if r.font.bold is not True:
+                    try:
+                        r.font.bold = True
+                        out["labels"] += 1
+                        out["changed"] = True
+                    except Exception:
+                        pass
+        if title_italic and i + 1 < len(paras):
+            nxt = paras[i + 1]
+            ntxt = (nxt.text or "").strip()
+            if not ntxt:
+                continue
+            try:
+                if is_caption_paragraph(nxt):
+                    continue          # 下一段也是号段 → 没有题段
+            except Exception:
+                pass
+            for r in nxt.runs:
+                if not (r.text or "").strip():
+                    continue
+                if _is_comment_run(r):
+                    continue
+                if r.font.italic is not True:
+                    try:
+                        r.font.italic = True
+                        out["titles"] += 1
+                        out["changed"] = True
+                    except Exception:
+                        pass
+    return out
+
+
+def _apply_mla_title_format(doc, index: int, clear_bold: bool = False,
+                            clear_italic: bool = False) -> dict:
+    """MLA 标题去粗 / 去斜（v2.3.100，E-6 / D-22）。
+
+    MLA 9：标题居中、**不加粗不加斜**。这里只改 run 的 ``w:b`` / ``w:i``，
+    **不碰对齐**（对齐要改就得先确定那确实是标题 —— 定位不确定时不该动客户排版）。
+
+    ``index`` 是 reader 的 ``sample_mla_title`` 给出的标题段下标；调用方保证
+    它是 certain=True（居中）才传进来 —— 不确定的一律不调本函数。
+    返回 ``{"changed": bool}``。
+    """
+    out = {"changed": False}
+    try:
+        paras = list(doc.paragraphs)
+    except Exception:
+        return out
+    if not (0 <= index < len(paras)):
+        return out
+    p = paras[index]
+    for r in p.runs:
+        if not (r.text or "").strip():
+            continue
+        if _is_comment_run(r):
+            continue
+        try:
+            if clear_bold and r.font.bold is not False:
+                r.font.bold = False
+                out["changed"] = True
+            if clear_italic and r.font.italic is not False:
+                r.font.italic = False
+                out["changed"] = True
+        except Exception:
+            continue
+    return out
+
+
+def _apply_table_gap(doc, gap_pt: float, min_pt: Optional[float] = None):
     """在每张表与**前后文字**之间留出至少 ``gap_pt`` 的空隙（v2.3.98）。
 
     APA 7（Publication Manual 7th, Tables and Figures）要求嵌入正文的表格「与任何
@@ -360,11 +583,24 @@ def _apply_table_gap(doc, gap_pt: float):
       · 邻居已是空段落 → 这条空行已经存在，不动；
       · 邻居是另一张表 / 没有元素 → 不判不改。
     🔴 不碰文字、**不插空段落**（插空段会把段落下标全体错位，是以前踩过的坑）。
+
+    v2.3.100（F-2 / 裁定 C-2）两条新约束：
+      ① **跨页侧不改**：邻接段带 `pageBreakBefore` 说明它与表格之间隔着分页，
+         这一侧写入 24pt 只是把客户已有的分页布局搞乱，且量出来的空隙没有意义；
+      ② **只在低于硬下限时才写**：``min_pt`` 给出"可接受"线（APA=12pt，官方样例实测
+         就是 12pt）。客户原文已经有 14pt 时，旧写法会把它刷成 24pt —— 那是替客户
+         放大留白，不是修正。现在 12pt ≤ 现有值 < 24pt 一律不碰。
     """
     try:
         want = float(gap_pt)
     except (TypeError, ValueError):
         return {"changed": False, "tables": 0, "paragraphs": 0}
+    floor = None
+    if min_pt is not None:
+        try:
+            floor = float(min_pt)
+        except (TypeError, ValueError):
+            floor = None
     try:
         from docx.text.paragraph import Paragraph
         body = doc.element.body
@@ -380,6 +616,9 @@ def _apply_table_gap(doc, gap_pt: float):
         tables += 1
         for j, side in ((i - 1, "space_after"), (i + 1, "space_before")):
             if j < 0 or j >= len(seq) or seq[j].tag != qn("w:p"):
+                continue
+            # v2.3.100（F-2 / 裁定 C-2）：跨页侧不改（pageBreakBefore = 新页第一段）
+            if _starts_new_page(seq[j]):
                 continue
             try:
                 para = Paragraph(seq[j], doc)
@@ -400,6 +639,10 @@ def _apply_table_gap(doc, gap_pt: float):
                 cur = _a if _attr == "space_after" else _b
                 if cur is not None and float(cur) >= want - 1e-6:
                     continue                    # 已经够宽，别动客户已有的更大留白
+                # v2.3.100（F-2 / 裁定 C-2）：**已达硬下限就不写**。
+                # 官方样例实测 12pt 是合规的；把它刷成 24pt 是替客户放大留白。
+                if floor is not None and cur is not None and float(cur) >= floor - 1e-6:
+                    continue
                 if _write_one_spacing(para, _attr, want):
                     touched += 1
             except Exception:
@@ -531,8 +774,49 @@ def _write_border(box, side: str, val: str, sz: int) -> None:
     box.append(el)
 
 
+def _tbl_is_three_line(doc, tbl) -> bool:
+    """与 docx_reader.sample_table_lines 同一口径：单表是否已是学术三线表。
+
+    修正器用它判断「还要不要改」——已经三线表的表跳过不写，保证第二遍零动作
+    （幂等）。单行/布局表（rows<2）无法形成表头线，按非三线表处理（由 checker 侧
+    直接排除，不判也不修）。
+    """
+    try:
+        rows = list(tbl.rows)
+    except Exception:
+        return False
+    if len(rows) < 2:
+        return False
+    try:
+        tblPr = tbl._tbl.tblPr
+    except Exception:
+        tblPr = None
+    style_box = _table_style_borders(doc, tbl)
+    first = _row_tc_prs(rows[0])
+    last = _row_tc_prs(rows[-1])
+    has_top = any(_border_visible(_effective_border(tblPr, style_box, p, "top"))
+                  for p in first)
+    has_bottom = any(_border_visible(_effective_border(tblPr, style_box, p, "bottom"))
+                     for p in last)
+    has_vertical = False
+    has_inside_h = False
+    for row in rows:
+        for p in _row_tc_prs(row):
+            if (_border_visible(_effective_border(tblPr, style_box, p, "left"))
+                    or _border_visible(_effective_border(tblPr, style_box, p, "right"))
+                    or _border_visible(_effective_border(tblPr, style_box, p, "insideV"))):
+                has_vertical = True
+            if _border_visible(_effective_border(tblPr, style_box, p, "insideH")):
+                has_inside_h = True
+    has_header_line = bool(first) and any(
+        _border_visible(_effective_border(tblPr, style_box, p, "bottom"))
+        for p in first)
+    return bool(has_top and has_bottom and not has_vertical
+                and not has_inside_h and has_header_line)
+
+
 def _apply_three_line_tables(doc) -> int:
-    """把所有表格改成学术三线表；返回处理过的表格数（0 = 没有表格，等于没改）。"""
+    """把所有表格改成学术三线表；返回处理过的表格数（0 = 没有表格/都已合规）。"""
     try:
         tables = list(doc.tables)
     except Exception:
@@ -541,9 +825,16 @@ def _apply_three_line_tables(doc) -> int:
     for tbl in tables:
         try:
             tblPr = tbl._tbl.tblPr
+            rows = list(tbl.rows)
         except Exception:
             continue
         if tblPr is None:
+            continue
+        # 单行/布局表（含 1×1 摘要框）不算数据表，跳过（与 checker 同一口径）。
+        if len(rows) < 2:
+            continue
+        # 已经是三线表 → 跳过，保证幂等（第二遍零动作）。
+        if _tbl_is_three_line(doc, tbl):
             continue
         # ① 表格级：顶线 / 底线 1.5 磅，四边竖线与内部横线一律 nil
         box = _ordered_child(tblPr, "w:tblBorders", _TBLPR_AFTER_BORDERS)
@@ -1385,6 +1676,34 @@ def _apply_font_and_size(page: dict, paras: list) -> bool:
     return changed
 
 
+def _effective_line_spacing(para):
+    """段落的**有效**行距（段落直接格式 → 样式链），读不到返回 None。
+
+    v2.3.100：只读 ``para.paragraph_format.line_spacing`` 时，样式里写着行距、
+    段落自身没写的那些段会读成 None → 每遍都判"需改" → **幂等缺陷**
+    （第二遍仍报改了行距）。写入一律落到段落，这里必须用同一口径读。
+    """
+    try:
+        v = para.paragraph_format.line_spacing
+        if v is not None:
+            return v
+    except Exception:
+        pass
+    try:
+        st = para.style
+    except Exception:
+        st = None
+    while st is not None:
+        try:
+            v = st.paragraph_format.line_spacing
+            if v is not None:
+                return v
+        except Exception:
+            pass
+        st = getattr(st, "base_style", None)
+    return None
+
+
 def _apply_line_spacing(page: dict, paras: list) -> bool:
     """设置行距（倍数制）。
 
@@ -1398,9 +1717,14 @@ def _apply_line_spacing(page: dict, paras: list) -> bool:
     # "line spacing set to X" —— 客户按批注去找改动会扑空（违背「让客户知道改了哪儿」）。
     changed = False
     for para in paras:
-        cur = para.paragraph_format.line_spacing
+        cur = _effective_line_spacing(para)
         try:
-            same = cur is not None and abs(float(cur) - sp) <= 1e-6
+            # v2.3.100：容差从 1e-6 放宽到 **0.01 倍**。
+            # 倍数行距在 OOXML 里以 twips 存（1/240 行），1.14 → 274 twips → 读回 1.14167，
+            # 与 1.14 差 0.0017 > 1e-6 → 旧容差判"不同" → **每跑一遍都重写一遍**，
+            # 第二遍仍报"改了行距"（幂等缺陷）。0.01 倍 ≪ 任何可感知差异，
+            # 又足以吸收 twips 量化误差。
+            same = cur is not None and abs(float(cur) - sp) <= 0.01
         except (TypeError, ValueError):
             same = False        # 固定值/最小值行距（Length）一律视为需要归一化为倍数制
         if not same:
@@ -2090,7 +2414,12 @@ def _format_heading_one(para, f, body_font, body_size):
                     changed = True
                 except Exception:
                     pass
-    if f.run_in and _ensure_trailing_period(para):
+    # 接排标题（run-in，APA L4 等）段尾补符号（句点/冒号）：这是「标题格式」的一部分，
+    # 不是正文内容的改写——与参考文献列表符号同理（老板 2026-10-21 拍板「符号归列表标记
+    # 允许换」的口径延伸）。作者署名被误加句点的问题已由 C2 在标题页识别阶段排除
+    # （署名段不进标题层级识别），此处无需再用 TEXT_IS_LOCKED 一刀切关掉，否则会把合规的
+    # 接排标题句点也一起吞掉（test_fixer L4 断言由此失败）。
+    if f.run_in and _ensure_trailing_period(para, _run_in_sep(f)):
         changed = True
     # 段前分页（v2.3.67）：三态。None=本级不规定（不碰）；True/False 直接写 pPr/pageBreakBefore。
     # 幂等靠 is 比较（paragraph_format.page_break_before 三态 True/False/None）。
@@ -2154,16 +2483,38 @@ def _drop_lines_spacing(para, ln_attr: str) -> bool:
         return False
 
 
-def _ensure_trailing_period(para) -> bool:
-    """接排标题(L4/L5)段尾补句点（若缺失）。只动最后一个纯文本 run 的 text。返回是否改动。"""
+def _run_in_sep(f) -> str:
+    """接排标题的段尾符号：规范给什么用什么（APA 句点 / IEEE 冒号）。
+
+    ⚠️ ``target.heading_formats`` 里存的是 **dict**（questionnaire 归一后的白名单字段），
+    而 ``resolve_spec`` 拿到的可能是 dataclass 对象 —— 两种都要认，否则
+    "规范写了冒号、修正却补句点"。
+    """
+    sep = None
+    if isinstance(f, dict):
+        sep = f.get("run_in_sep")
+    else:
+        sep = getattr(f, "run_in_sep", None)
+    return str(sep) if sep else "."
+
+
+def _ensure_trailing_period(para, sep: str = ".") -> bool:
+    """接排标题段尾补符号（缺什么补什么）。只动最后一个纯文本 run 的 text。
+
+    v2.3.100：符号由规范给 —— IEEE 的 L3/L4 是「冒号接排」（ESM 原文
+    "followed by a colon"），旧实现写死句点，会把 IEEE 标题改成 "1) Prior work. 正文"。
+    """
     runs = para.runs
     if not runs:
         return False
     last = runs[-1]
     cur = last.text or ""
-    if cur.rstrip().endswith("."):
+    tail = (sep or ".")
+    if cur.rstrip().endswith(tail):
         return False
-    last.text = (cur.rstrip() + ". ") if cur.endswith(" ") else (cur + ". ")
+    if cur.rstrip().endswith((".", ":", "?", "!")):
+        return False                      # 已有别的收尾符，不叠加
+    last.text = (cur.rstrip() + tail + " ") if cur.endswith(" ") else (cur + tail + " ")
     return True
 
 
@@ -3246,9 +3597,13 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
                           # 否则只填了段前段后时，标题页大标题会被卷进伪标题流程。
                           "title_page_space_before_pt", "title_page_space_after_pt")))
     tp = _detect_title_page(doc) if _need_title_page_probe else None
+    # 标题页块（标题/作者/单位/通讯）**永远**不参与章节标题判定——作者名被误判成
+    # run-in 标题会触发句点/冒号注入（TEXT_IS_LOCKED 红线）。这与「是否套用标题页版式」
+    # 无关：即便目标没声明 title_page 格式，作者块也绝不能当标题处理。
+    _tp_block = _detect_title_page(doc)
     tp_ps: set = set()
-    if tp:
-        for idx in [tp["title"], *tp["authors"]]:
+    if _tp_block:
+        for idx in [_tp_block["title"], *_tp_block["authors"]]:
             if 0 <= idx < len(doc.paragraphs):
                 tp_ps.add(doc.paragraphs[idx]._p)
 
@@ -3428,6 +3783,28 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             applied["block_quote_indent_in"] = 0.5
         summary["page"] = dict(page)
 
+    # v2.3.100（E-6 / D-22）：MLA 标题去粗 / 去斜（只改字形，不改对齐）。
+    if "mla_title_bold" in fix_dims or "mla_title_italic" in fix_dims:
+        _mi = getattr(prof, "mla_title_index", None)
+        if _mi is not None and bool(getattr(prof, "mla_title_certain", False)):
+            _mt = _apply_mla_title_format(
+                doc, int(_mi),
+                clear_bold="mla_title_bold" in fix_dims,
+                clear_italic="mla_title_italic" in fix_dims,
+            )
+            if _mt.get("changed"):
+                applied["mla_title_format"] = _mt
+
+    # v2.3.100（E-2 / D-18）：APA caption 字形（号段粗 / 题段斜）。
+    if "caption_label_bold" in fix_dims or "caption_title_italic" in fix_dims:
+        _ct = _apply_caption_typography(
+            doc,
+            label_bold="caption_label_bold" in fix_dims,
+            title_italic="caption_title_italic" in fix_dims,
+        )
+        if _ct.get("changed"):
+            applied["caption_typography"] = _ct
+
     # 栏数（结构性维度）：仅当 checker 绑定了 columns 修正时才施加（单一真相源）。
     # 它不属于 page 字典，故独立于上面的 if page: 块。
     if "columns" in fix_dims and _apply_columns(doc, target):
@@ -3485,6 +3862,23 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             applied["text_new_page"] = _txn_info
 
     # 摘要页特化（v2.3.67）：只有客户/学校/AI 显式要求时 checker 才绑 FixAction。
+    # v2.3.100（C 批 D-08）：摘要**格式**修正（字号/加粗/对齐/段后）。
+    # 只在 checker 明确挂了 abstract 的 FixAction 时才动手（check→fix 单一真相源）。
+    if "abstract" in fix_dims:
+        _abs_fix = {}
+        for _f in findings:
+            if getattr(_f, "dimension", "") == "abstract" and getattr(_f, "fix", None) is not None:
+                _v = getattr(_f.fix, "value", None)
+                if isinstance(_v, dict):
+                    _abs_fix = _v
+                    break
+        if _abs_fix and _apply_abstract_format(
+                doc,
+                size_pt=_abs_fix.get("size_pt"),
+                bold=_abs_fix.get("bold"),
+                alignment=_abs_fix.get("alignment"),
+                space_after_pt=_abs_fix.get("space_after_pt")):
+            applied["abstract"] = dict(_abs_fix)
     if "abstract_indent" in fix_dims and target.abstract_first_line_indent_in is not None:
         if _apply_abstract_indent(doc, target.abstract_first_line_indent_in):
             applied["abstract_first_line_indent_in"] = target.abstract_first_line_indent_in
@@ -3582,7 +3976,11 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
             applied["toc_heading_space_after_pt"] = _toc_sa
 
     # 字体白名单的「字体 → 字号」配对：逐 run 按各自字体改字号，不动 w:rFonts。
-    if "font_size_by_font" in fix_dims:
+    # v2.3.100（落地裁定 C-4）：font_size_by_font **不再自动修**。
+    # APA §2.19 是「字体 ↔ 字号」配对（TNR 12 / Calibri 11 …），而官方学生样例自己就是
+    # TNR 11pt。自动把客户的 TNR 11 刷成 12，等于替客户做字体决定；且刷完复检仍可能读回
+    # 继承值（表格/题注口径不同）→ 一条点不掉的红杠。现在只提示（checker 侧已降 info）。
+    if False and "font_size_by_font" in fix_dims:
         _pairs = getattr(spec, "font_allowlist_sizes", None) if spec is not None else None
         if not _pairs:
             try:
@@ -3655,7 +4053,12 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if _tg is None and spec_is_baseline(target):
             _tg = getattr(spec, "table_gap_pt", None)
         if _tg is not None:
-            _tg_info = _apply_table_gap(doc, float(_tg))
+            # v2.3.100（F-2 / 裁定 C-2）：把硬下限一起传下去 —— 已达下限的侧不写，
+            # 否则官方样例的 12pt 会被刷成 24pt（替客户放大留白）。
+            _tg_min = getattr(target, "table_gap_min_pt", None)
+            if _tg_min is None and spec_is_baseline(target):
+                _tg_min = getattr(spec, "table_gap_min_pt", None)
+            _tg_info = _apply_table_gap(doc, float(_tg), min_pt=_tg_min)
             if _tg_info.get("changed"):
                 applied["table_gap_pt"] = _tg_info
 
@@ -3725,6 +4128,7 @@ _DIM_LABELS = {
         "abstract_heading": "Abstract heading",
         "keywords": "Keywords line",
         "caption_size": "Caption font size",
+        "template_boilerplate": "Template guidance text",
         "caption_spacing": "Caption line spacing",
         "caption_space_before": "Caption space before",
         "caption_space_after": "Caption space after",
@@ -3766,6 +4170,7 @@ _DIM_LABELS = {
         "abstract_space_after": "摘要段后间距",
         "abstract_heading": "摘要标题格式",
         "keywords": "关键词行格式",
+        "template_boilerplate": "模板指导文字残留",
         "caption_size": "图表标题字号",
         "caption_spacing": "图表标题行距",
         "caption_space_before": "图表标题段前间距",

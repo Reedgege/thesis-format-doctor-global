@@ -1030,6 +1030,9 @@ Q_LABELS_EN = {
     "table_space_before_pt": "Table cell space before",
     "table_space_after_pt": "Table cell space after",
     "table_gap_pt": "Spacing between tables and the text",
+    # v2.3.100（F-2 / 裁定 C-2）：table_gap 的三档阈值另两个参数
+    "table_gap_min_pt": "Minimum spacing between tables and the text",
+    "table_gap_ratio": "Fraction of the recommended spacing that still passes",
     "toc_heading_space_before_pt": "Contents heading space before",
     "toc_heading_space_after_pt": "Contents heading space after",
     "toc_entry_space_before_pt": "Contents entry space before (check only)",
@@ -1098,6 +1101,13 @@ Q_HELP_EN = {
     "table_gap_pt": "Space kept between a table and the text above/below it. APA wants an "
                     "extra double-spaced line (24 pt for 12 pt text) so tables never touch "
                     "the surrounding paragraphs. Leave blank to skip",
+    # v2.3.100（F-2 / 裁定 C-2）：table_gap 的三档阈值另两个参数
+    "table_gap_min_pt": "Hard floor: only a gap BELOW this value is reported as a problem. "
+                        "APA's official samples use 12 pt, so 12 is the usual value. "
+                        "Leave blank to skip",
+    "table_gap_ratio": "A gap counts as acceptable once it reaches this fraction of the "
+                       "recommended value (APA uses 0.8, i.e. 24 x 0.8 = 19.2 pt). "
+                       "Leave blank to skip",
     "toc_heading_space_before_pt": "Space above the 'Contents' heading paragraph, in points. "
                                    "Leave blank to skip",
     "toc_heading_space_after_pt": "Space below the 'Contents' heading paragraph, in points. "

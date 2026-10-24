@@ -344,9 +344,10 @@ def test_fix_ieee_title_page_centers_and_bolds_title(tmp_path):
     target = target_from_spec("IEEE")
     fix_docx(str(src), str(out), target)
     doc = Document(str(out))
-    # 标题（p0）：居中 + 加粗
+    # 标题（p0）：居中 + **不加粗**
+    # v2.3.100（C 批 D-14 / 裁定 C-5）：IEEE 题名不加粗（官方模板 papertitle 样式无 <w:b/>）。
     assert doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
-    assert doc.paragraphs[0].runs[0].bold is True
+    assert doc.paragraphs[0].runs[0].bold is not True
     # 作者（p1）/ 单位（p2）：居中
     assert doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
     assert doc.paragraphs[2].alignment == WD_ALIGN_PARAGRAPH.CENTER
@@ -379,17 +380,20 @@ def test_fix_ieee_headings_numbered_and_bolded(tmp_path, legacy_text_transform):
     target = target_from_spec("IEEE")
     fix_docx(str(src), str(out), target)
     doc = Document(str(out))
-    # H1: I. INTRODUCTION — 居中 + 加粗 + 全大写
-    assert doc.paragraphs[0].text == "I. INTRODUCTION"
-    assert doc.paragraphs[0].runs[0].bold is True
+    # v2.3.100（C 批 D-11 / 裁定 Q-1 + P-2）：IEEE L1 = small caps **不加粗**，
+    # 且字符类改动只提示不执行 → 文本**不再被改成全大写**。
+    assert doc.paragraphs[0].text == "I. Introduction"
+    assert doc.paragraphs[0].runs[0].bold is not True
     assert doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
     # H2: A. Background — 左对齐 + 加粗 + 保留原大小写（不全大写）
     assert doc.paragraphs[1].text == "A. Background"
     assert doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.LEFT
     # H3: 1) Prior work（数字 + 右括号编号）
-    assert doc.paragraphs[2].text == "1) Prior work"
+    # v2.3.100（C 批 D-11 / 裁定 Q-1）：IEEE L3/L4 是**冒号接排**
+    # （ESM 原文 "followed by a colon … no line break"），不再是 APA 的句点。
+    assert doc.paragraphs[2].text.startswith("1) Prior work:")
     # 第二个 H1 → II. METHODS（罗马递增）
-    assert doc.paragraphs[3].text == "II. METHODS"
+    assert doc.paragraphs[3].text == "II. Methods"
     # 其下 H2 重置为 A. Sampling（不是 B.）
     assert doc.paragraphs[4].text == "A. Sampling"
 
@@ -404,8 +408,9 @@ def test_fix_ieee_headings_idempotent_on_rerun(tmp_path, legacy_text_transform):
     fix_docx(str(src), str(out1), target)
     fix_docx(str(out1), str(out2), target)          # 第二次跑在 out1 产物上
     doc = Document(str(out2))
-    assert doc.paragraphs[0].text == "I. INTRODUCTION"
-    assert doc.paragraphs[3].text == "II. METHODS"
+    assert doc.paragraphs[0].text == "I. Introduction"
+    # v2.3.100（裁定 Q-1 / P-2）：IEEE 标题的字符类（全大写）只提示不执行
+    assert doc.paragraphs[3].text == "II. Methods"
 
 
 def _make_ieee_apa_refs_doc(path):
@@ -503,11 +508,12 @@ def test_fix_ieee_realistic_bold_normal_headings_numbered(tmp_path, legacy_text_
     result = fix_docx(src, str(out), target_from_spec("IEEE"))
     assert result["headings_formatted"] >= 7, "12pt 加粗伪标题应被识别并格式化"
     texts = [p.text for p in Document(str(out)).paragraphs]
-    assert "I. INTRODUCTION" in texts
-    assert "II. LITERATURE REVIEW" in texts
+    assert "I. Introduction" in texts
+    assert "II. Literature Review" in texts
     # References 是后置部分：按 IEEE 惯例**不编号**，只套格式
-    assert "REFERENCES" in texts
-    assert not any(t.startswith("VII. REFERENCES") for t in texts)
+    # v2.3.100（裁定 Q-1 / P-2）：参考文献标题不再被转全大写
+    assert "References" in texts
+    assert not any(t.startswith("VII. References") for t in texts)
 
 
 def test_fix_ieee_realistic_doc_is_idempotent(tmp_path):
@@ -633,6 +639,6 @@ def test_ieee_title_page_never_numbered_as_section(tmp_path, legacy_text_transfo
     texts = [p.text for p in Document(str(out2)).paragraphs]
     assert texts[0] == "Sleep quality and cognitive performance in young adults", \
         f"标题页标题被当成章节标题改了：{texts[0]!r}"
-    assert "I. INTRODUCTION" in texts
-    assert "II. METHOD" in texts
+    assert "I. Introduction" in texts
+    assert "II. Method" in texts
     assert not any("I. I." in t or "II. I." in t for t in texts), "出现编号错位"

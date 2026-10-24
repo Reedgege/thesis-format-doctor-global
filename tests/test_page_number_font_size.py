@@ -343,28 +343,42 @@ def test_apa_allowlist_is_a_pair_table():
     assert size_for_font("宋体", APA_FONT_SIZES) is None      # 白名单外绝不猜
 
 
-def test_calibri_12pt_is_flagged_and_size_fixed(tmp_path):
-    """Calibri 12pt（APA 要 11pt）：旧版判合格；现在要报出来并**只改字号**。"""
+def test_calibri_12pt_is_flagged_but_not_autofixed(tmp_path):
+    """Calibri 12pt（APA §2.19 要 11pt）：**要报出来，但不自动改**。
+
+    v2.3.100（落地裁定 C-4）：APA §2.19 是「字体 ↔ 字号」配对，而**官方学生样例自己
+    就是 TNR 11pt**。旧实现按 warn 判 + 自动刷字号，等于把官方合规样例判红、还替客户
+    做字体决定。现在：严重度降为 info、不挂 FixAction、fixer 不动它。
+    """
     p = _base(tmp_path / "cal.docx", font="Calibri", size=12.0)
     target = target_from_spec("APA")
     prof, findings = checker.run_check(p, target)
     f = [x for x in findings if x.dimension == "font_size_by_font"]
-    assert f and f[0].severity == "warn"
+    assert f, "字号与字体配对不符仍要报出来"
+    assert f[0].severity == "info", f[0].severity
     assert "11" in f[0].expected
-    assert f[0].fix is not None
+    assert f[0].fix is None, "C-4：只提示，不挂修正动作"
+    # 提示语要把「换字体也能合规」说清楚（冻结文案）
+    assert "switching font" in f[0].actual.lower(), f[0].actual
+    # 🔴 C-4：**不再自动修** → 汇总批注里不该出现这条"改动"
     lines = _compute_changes(prof, target, lang="en", findings=findings)
-    assert any("Calibri" in ln and "11" in ln for ln in lines), lines
+    assert not any("Calibri" in ln and "11" in ln for ln in lines), lines
 
     out = tmp_path / "cal_out.docx"
     fix_docx(p, str(out), target, findings=findings)
     doc = Document(str(out))
     run = doc.paragraphs[0].runs[0]
-    assert run.font.size == Pt(11)
-    assert run.font.name == "Calibri", "字体被换了 —— 只该改字号"
+    # 🔴 C-4：字号一字不改，字体也不换
+    assert run.font.size == Pt(12)
+    assert run.font.name == "Calibri"
 
 
 def test_mixed_fonts_get_their_own_size(tmp_path):
-    """正文混用 TNR 与 Calibri：TNR 保 12pt、Calibri 改 11pt（各按自己的规范字号）。"""
+    """正文混用 TNR 与 Calibri：**分别报出**各自的规范字号（TNR 12 / Calibri 11）。
+
+    v2.3.100（裁定 C-4）：判定照旧分字体配对，但**不再自动刷字号** —— 旧断言要求
+    fixer 把 Calibri 12 改成 11，那正是「替客户做字体决定」+「官方样例被判红」的成因。
+    """
     doc = Document()
     for i in range(4):
         r = doc.add_paragraph().add_run("Times paragraph %d." % i)
@@ -379,14 +393,21 @@ def test_mixed_fonts_get_their_own_size(tmp_path):
 
     target = target_from_spec("APA")
     _, findings = checker.run_check(str(p), target)
+    # 判定：只点 Calibri 的字号（TNR 12 本就合规）
+    fbf = [x for x in findings if x.dimension == "font_size_by_font"]
+    assert fbf and fbf[0].severity == "info", [(x.dimension, x.severity) for x in fbf]
+    assert "Calibri" in fbf[0].expected and "11" in fbf[0].expected
+    assert "Times New Roman" not in fbf[0].expected, "TNR 12pt 合规，不该被点"
+
     out = tmp_path / "mixed_out.docx"
     fix_docx(str(p), str(out), target, findings=findings)
 
+    # 🔴 C-4：两种字号都保持原样（不自动修）
     d = Document(str(out))
     tnr = [r for para in d.paragraphs for r in para.runs if r.text.startswith("Times")]
     cal = [r for para in d.paragraphs for r in para.runs if r.text.startswith("Calibri")]
     assert all(r.font.size == Pt(12) for r in tnr), [(r.text, r.font.size) for r in tnr]
-    assert all(r.font.size == Pt(11) for r in cal), [(r.text, r.font.size) for r in cal]
+    assert all(r.font.size == Pt(12) for r in cal), [(r.text, r.font.size) for r in cal]
 
 
 def test_font_outside_allowlist_is_not_guessed(tmp_path):

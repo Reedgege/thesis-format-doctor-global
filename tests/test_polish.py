@@ -260,6 +260,14 @@ def test_preview_lists_only_real_changes(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_table_text_sampled(tmp_path):
+    """表格文字必须被采样，但**不许压过正文**（v2.3.100 改口径）。
+
+    旧断言要求「表格 Calibri 9pt 压过正文 TNR 12pt」—— 那正是「永远点不掉的红杠」的
+    成因：真实论文里表格 run 数常常多于正文 run（实测 80 vs 65），正文字号被判成
+    表格的 10pt，而修正只改正文 → 复检仍读 10 → 每遍都报、每遍都改不掉。
+    现在：表格照旧采样（table_paragraph_count 仍在），但正文字体/字号众数**以正文为准**，
+    表格只在「全文没有任何正文样本」时兜底（见下一个测试）。
+    """
     path = tmp_path / "t.docx"
     doc = Document()
     bp = doc.add_paragraph()
@@ -274,7 +282,24 @@ def test_table_text_sampled(tmp_path):
     doc.save(str(path))
     prof = read_docx(str(path))
     assert prof.table_paragraph_count >= 2, "表格单元格段落应被采样"
-    assert prof.font_family == "Calibri", "表格文字应计入字体统计"
+    # 正文有样本 → 以正文为准（表格不再压过正文）
+    assert prof.font_family == "Times New Roman"
+    assert prof.font_size_pt == pytest.approx(12.0)
+
+
+def test_table_text_used_when_no_body_sample(tmp_path):
+    """全文只有表格文字时，表格仍要兜底（不至于把字号读成 None）。"""
+    path = tmp_path / "t2.docx"
+    doc = Document()
+    tbl = doc.add_table(rows=1, cols=2)
+    for cell in tbl.rows[0].cells:
+        r = cell.paragraphs[0].add_run("Cell text")
+        r.font.name = "Calibri"
+        r.font.size = Pt(9)
+    doc.save(str(path))
+    prof = read_docx(str(path))
+    assert prof.table_paragraph_count >= 2
+    assert prof.font_family == "Calibri", "无正文样本时表格文字应兜底"
     assert prof.font_size_pt == pytest.approx(9.0)
 
 
@@ -332,6 +357,8 @@ def test_spec_body_layout_defaults():
     assert apa.page.space_after_pt == pytest.approx(0.0)
     ieee = get_spec("IEEE")
     assert ieee.page.body_alignment == "justify"
-    assert ieee.page.first_line_indent_in == pytest.approx(0.0)
+    # v2.3.100（C 批 D-13 / 裁定 Q-1）：IEEE 正文首行缩进 = 0.2″
+    # 依据：官方会议模板 BodyText 样式 `<w:ind w:firstLine="14.4pt"/>`
+    assert ieee.page.first_line_indent_in == pytest.approx(0.2)
     other = get_spec("Other")
     assert other.page.body_alignment is None

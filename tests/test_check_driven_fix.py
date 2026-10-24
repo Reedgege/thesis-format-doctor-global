@@ -248,7 +248,11 @@ def test_checker_reports_missing_heading_numbering(tmp_path, legacy_text_transfo
 
 
 def test_checker_reports_missing_uppercase_once_fixed(tmp_path, legacy_text_transform):
-    """IEEE 一级标题要求全大写：没大写要报，修完复检不再报（幂等）。"""
+    """IEEE 一级标题：**只提示、不改字**（P-2 文字锁死）。
+
+    v2.3.100（裁定 Q-1）：IEEE L1 改为 **small caps**（不是全大写），而字符类改动
+    一律只判定不执行 → 报告要指出"应小型大写"，但**客户原文不得被改写**。
+    """
     src = tmp_path / "caps.docx"
     doc = Document()
     doc.add_paragraph("I. Introduction", style="Heading 1")
@@ -257,12 +261,15 @@ def test_checker_reports_missing_uppercase_once_fixed(tmp_path, legacy_text_tran
     _, before = run_check(str(src), target)
     caps = [f for f in before if f.dimension == "heading"
             and f.message == "Level 1 heading format"]
-    assert caps and any("uppercase" in (f.expected + f.actual).lower() for f in caps), \
-        [(f.expected, f.actual) for f in caps]
+    assert caps, "应给出 L1 标题格式的判定"
+    # 字符类只提示：不得出现"把文本改成全大写"的修正动作
+    assert not any("uppercase" in (getattr(f, "fix", None).note or "").lower()
+                   for f in caps if getattr(f, "fix", None) is not None)
 
     out = tmp_path / "caps_out.docx"
     fix_docx(str(src), str(out), target, findings=before)
-    assert Document(str(out)).paragraphs[0].text.startswith("I. INTRODUCTION")
+    # 🔴 P-2：文字一字不改
+    assert Document(str(out)).paragraphs[0].text.startswith("I. Introduction")
     _, after = run_check(str(out), target)
     caps2 = [f for f in after if f.dimension == "heading"
              and f.message == "Level 1 heading format" and f.severity != "pass"]

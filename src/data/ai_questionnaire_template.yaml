@@ -68,9 +68,11 @@ _how_to_fill: |-
   requirement states it; otherwise omit it (do not infer it from the citation style).
   heading_formats is where the per-level heading requirements go. It is a map keyed by
   heading level (1 = top level). Each level accepts the same fields:
-    font_family, size_pt, bold, italic, uppercase, run_in, alignment, indent_in, number_prefix,
-    page_break_before, space_before_pt, space_after_pt, line_spacing
-  - bold / italic / uppercase / run_in / page_break_before are true or false. Omit any of them
+    font_family, size_pt, bold, italic, uppercase, small_caps, run_in, run_in_sep, alignment,
+    indent_in, number_prefix, page_break_before, space_before_pt, space_after_pt, line_spacing
+  - bold / italic / uppercase / small_caps / run_in / page_break_before are true or false. Omit any of them
+  - small_caps = set the heading in small capitals (IEEE level 1). run_in_sep = the punctuation
+    that ends a run-in heading: "." (period, APA) or ":" (colon, IEEE).
     when the requirement says nothing about that property for that level (do not guess).
   - space_before_pt / space_after_pt are the space above / below that heading level, in points
     (0 = explicitly no extra space). Omit them when the requirement says nothing.
@@ -215,7 +217,8 @@ fields:
     unit: ""
     note: >-
       Map of heading level (1 = top level) to that level's requirements. Fields per level:
-      font_family, size_pt, bold, italic, uppercase, run_in, alignment (left/center/right/justify),
+      font_family, size_pt, bold, italic, uppercase, small_caps, run_in, run_in_sep,
+      alignment (left/center/right/justify),
       indent_in (inches), number_prefix (number/roman/upper_letter/lower_letter/lower_roman/number_paren),
       page_break_before, space_before_pt, space_after_pt, line_spacing.
   - key: reference_style
@@ -423,6 +426,40 @@ fields:
     label: Gap between a table and the surrounding text
     unit: pt
     example: 24.0
+  # v2.3.100 (F-2 / ruling C-2): the other two thresholds of the table_gap triplet.
+  # The manual asks for 24 pt, but the official samples measure 0/12 pt - hence a 12 pt
+  # floor and 24 x 0.8 = 19.2 pt as the "recommended" line.
+  - key: table_gap_min_pt
+    label: Minimum acceptable gap between a table and the text
+    unit: pt
+    example: 12.0
+    note: >-
+      The hard floor: only gaps BELOW this value are reported as a problem. APA's official
+      samples use 12 pt, so report 12.0 when the requirement tolerates that. Omit when only
+      the recommended value should be enforced.
+  - key: table_gap_ratio
+    label: Fraction of the recommended gap that still passes
+    example: 0.8
+    note: >-
+      A gap counts as acceptable once it reaches this fraction of table_gap_pt. APA uses 0.8
+      (24 pt x 0.8 = 19.2 pt). Omit when no fractional pass line applies.
+  # v2.3.100 (F-2 / ruling C-2): the other two thresholds of the table_gap triplet.
+  # The manual asks for 24 pt, but the official samples measure 0/12 pt - hence a 12 pt
+  # floor and 24 x 0.8 = 19.2 pt as the "recommended" line.
+  - key: table_gap_min_pt
+    label: Minimum acceptable gap between a table and the text
+    unit: pt
+    example: 12.0
+    note: >-
+      The hard floor: only gaps BELOW this value are reported as a problem. APA's official
+      samples use 12 pt, so report 12.0 when the requirement tolerates that. Omit when only
+      the recommended value should be enforced.
+  - key: table_gap_ratio
+    label: Fraction of the recommended gap that still passes
+    example: 0.8
+    note: >-
+      A gap counts as acceptable once it reaches this fraction of table_gap_pt. APA uses 0.8
+      (24 pt x 0.8 = 19.2 pt). Omit when no fractional pass line applies.
     note: >-
       The empty space that must sit between a table and the text directly above / below it, in
       points. This is NOT the space inside the cells (that is table_space_before_pt /
@@ -548,4 +585,8 @@ example_filled:
   # table_space_before_pt: 0            # space above each paragraph INSIDE table cells
   # table_space_after_pt: 0             # space below each paragraph INSIDE table cells
   # table_gap_pt: 24.0                  # space between a table and the text above/below it
+  # table_gap_min_pt: 12.0              # hard floor; only gaps below this are reported (APA samples use 12)
+  # table_gap_ratio: 0.8                # gap passes once it reaches this fraction of table_gap_pt
+  # table_gap_min_pt: 12.0              # hard floor; only gaps below this are reported (APA samples use 12)
+  # table_gap_ratio: 0.8                # gap passes once it reaches this fraction of table_gap_pt
   # table_lines: three_line             # academic three-line tables (top/header/bottom rules only)

@@ -74,6 +74,10 @@ SPACING_TOL_FAIL = 0.15     # 倍
 SPACING_TOL_WARN = 0.1
 INDENT_TOL_FAIL = 0.12      # 英寸（正文首行缩进）
 INDENT_TOL_WARN = 0.06
+# v2.3.100（F 批 F-1 / 裁定 C-1）：Keywords 行缩进的**合格下限**。
+# APA §2.10 手册写 0.5″，但官方专业版样例实测 0.0″、design 模板实测 0.431″ ——
+# 锁 0.5″ 会把官方合规样例判红。故只要求"有缩进且 ≥0.4″"，不锁具体值。
+KEYWORDS_INDENT_MIN_IN = 0.4
 HEADER_TOL_FAIL = 0.12      # 英寸（页眉距页顶）
 HEADER_TOL_WARN = 0.06
 SPACE_TOL_FAIL = 1.5        # 磅（段后间距）
@@ -362,6 +366,19 @@ _ALIGN_WORD = {"left": "left-aligned", "center": "centered",
                "right": "right-aligned", "justify": "justified"}
 
 
+def _pt_txt(val) -> str:
+    """把磅值安全转成文本（D-06 修复）。
+
+    字号可能是 ``None``（全文字号靠样式继承、无显式 run 字号），此时旧代码
+    ``"%g" % None`` 会抛 ``TypeError``，**整份检查直接崩掉**——官方 APA 样例里
+    有 3 份就是这样。这里统一兜底为 ``unknown``，保证报告一定能生成。
+    """
+    try:
+        return "%g" % float(val)
+    except (TypeError, ValueError):
+        return "unknown"
+
+
 def _describe_abstract_heading(align, bold, italic) -> str:
     """摘要标题期望值 → 客户可读描述（"centered, bold"）。只写规定了的那几项。"""
     bits = []
@@ -455,7 +472,12 @@ def _describe_keywords_actual(prof, want: dict):
             bits.append("indent unreadable")
         else:
             bits.append("flush left" if gn <= 0.01 else "indented %g in" % gn)
-            if abs(gn - wn) > INDENT_TOL_WARN:
+            # 🔴 v2.3.100（F 批 F-1 / 落地裁定 C-1）：只判「**有缩进 ≥ 0.4″**」，
+            # **不锁死 0.5″**。依据：APA §2.10 手册写 0.5″，但**官方专业版样例实测
+            # 0.0″、design 模板实测 0.431″** —— 按 0.5″ 硬判等于把官方合规样例判红。
+            # 手册条文与官方样例冲突时，按"宁缺勿错"取下限（0.4″）作合格线，
+            # 写回值仍用规范值（fixer 侧不变），修完复检必然过。
+            if gn < KEYWORDS_INDENT_MIN_IN - INDENT_TOL_WARN:
                 bad = True
     return (", ".join(bits) or "—"), bad
 
@@ -1390,8 +1412,15 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # 覆盖 _check_reference 可能给出的 pass/info（例如已有 [3] 时整体被误判为「已合规」），
     # 否则 fixer 会因 fix_dims 不含 reference_numbered 而跳过编号，造成「该补却没补」。
     if target.reference_numbered and prof.reference_entries:
-        _missing = [t for t in prof.reference_entries
-                    if t.strip() and not _has_leading_number(t)]
+        # v2.3.100（C 批 D-16）：Word **自动编号**也算已编号。
+        # IEEE 官方会议模板的 references 样式用 `<w:numPr/>` 列表编号，条目文本里
+        # 根本没有 "[1]"，旧判定只看文本 → 官方模板 16/16 全被判"未编号"。
+        _auto_no = list(getattr(prof, "reference_entries_numbered", None) or [])
+        _missing = [
+            t for _i, t in enumerate(prof.reference_entries)
+            if t.strip() and not _has_leading_number(t)
+            and not (_i < len(_auto_no) and _auto_no[_i])
+        ]
         if _missing:
             ref_finding = Finding(
                 dimension="reference",
@@ -1399,6 +1428,19 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 message="Reference sequential numbering",
                 expected="Each reference entry should carry a sequential [n] code (e.g., [1], [2])",
                 actual=f"{len(_missing)} of {len(prof.reference_entries)} entries not numbered",
+                source=ref_source,
+            )
+        elif _auto_no and sum(1 for x in _auto_no if x) >= 2:
+            # v2.3.100（C 批 D-16）：条目由 Word **自动编号**（段落级或样式级 numPr）时，
+            # 文本里本就没有 "[n]"。_check_reference 的体例检查只看文本，会误报
+            # "[IEEE] No numbered [n] form detected" —— 官方 IEEE 模板就是这样被打红的。
+            # 自动编号已确认 ≥2 条即视为合规，覆盖体例检查的误报。
+            ref_finding = Finding(
+                dimension="reference",
+                severity="pass",
+                message="Reference sequential numbering",
+                expected="Entries numbered in order of citation",
+                actual=f"{len(prof.reference_entries)} entries, auto-numbered by Word list",
                 source=ref_source,
             )
     # 🔴 v2.3.95：反方向同样要判 —— 规范**明确不编号**（APA 7 §9.44：参考文献条目
@@ -1438,6 +1480,16 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         act_h = prof.reference_hanging_indent_in
         if act_h is None:
             sev_h, actual_h = "info", "Could not read (no reference section detected or no explicit indent)"
+        elif exp_h <= 0.01:
+            # v2.3.100（C 批 D-16 / 裁定 C-10）：`hanging_indent_in = 0` 的规范（IEEE）
+            # 语义不是"悬挂必须为 0"，而是「编号自成列、悬挂于条目正文之外」
+            # —— IEEE Reference Guide 原文 "numbers … form a column of their own,
+            # **hanging out beyond the body** of the reference"。
+            # 所以只要存在**正向悬挂**（编号比正文更靠左）即合规；0 才算不符。
+            if act_h > 0.1:
+                sev_h, actual_h = "pass", f'{act_h}″ (number column, hanging beyond the body)'
+            else:
+                sev_h, actual_h = "warn", f'{act_h}″ (no hanging: number column not separated)'
         else:
             diff = abs(act_h - exp_h)
             if diff <= REF_HANG_TOL_WARN:
@@ -1661,8 +1713,13 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         # 按「每种字体各自的众数字号」判，而不是只看全篇众数：
         # 正文里混用 Times New Roman（APA 要 12pt）与 Calibri（要 11pt）时，
         # 只看众数会把 Calibri 那几段彻底漏掉。
-        _fam_sizes = dict(getattr(prof, "font_size_by_family", None) or {})
-        if not _fam_sizes:
+        # 🔴 D-06：全文字号若都靠样式继承，font_size_by_family 会是空、font_size_pt 会是
+        # None。旧代码直接 {字体: None} 落到下面的 "%g" → TypeError，整份检查崩掉
+        # （官方 APA 样例 3 份实测崩溃）。这里**过滤掉 None**，宁可"读不到"也不崩。
+        _fam_sizes = {_k: _v for _k, _v in
+                      (getattr(prof, "font_size_by_family", None) or {}).items()
+                      if _v is not None}
+        if not _fam_sizes and prof.font_size_pt is not None:
             _fam_sizes = {prof.font_family: prof.font_size_pt}
         _outside = [f for f in _fam_sizes if f.lower() not in allowed]
         if _outside:
@@ -1670,7 +1727,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 dimension="font_allowlist", severity="info",
                 message="Body font (APA allowlist)",
                 expected="One of: " + ", ".join(
-                    f"{k} {v:g}pt" for k, v in allow_pairs.items()) if allow_pairs
+                    f"{k} {_pt_txt(v)}pt" for k, v in allow_pairs.items()) if allow_pairs
                 else "One of: " + ", ".join(apa_spec.font_allowlist),
                 actual=", ".join(_outside) + " (APA permits a range of readable fonts; "
                        "verify your school's requirement)",
@@ -1693,12 +1750,23 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                     font_size_by_font[_fam] = float(_want)
                     _cur_map[_fam] = float(_cur)
         if font_size_by_font:
+            # v2.3.100（落地裁定 C-4）：字号与 §2.19 白名单配对不符时**降为 info、不自动修**。
+            # 原因：APA §2.19 允许 6 款字体各自配对字号（TNR 12 / Calibri 11 / Arial 11 …），
+            # 而**官方学生样例自己就是 TNR 11pt** —— 按 warn 判等于把官方合规样例判红
+            # （实测 13 份里 5 份命中本维度）。规则保留（仍算不符），只把严重度降下来，
+            # 并明确告知客户「换字体就能合规」，让他自己选。
+            # 🔴 C-4：**不挂 FixAction**。旧实现挂了一个 value=整张 6 款字体配对表的
+            # FixAction，fixer 据此把客户字号刷成配对值 —— 那既替客户做了字体决定，
+            # 也正中「官方样例 TNR 11pt 被判红」。现在只提示，客户自己决定。
             findings.append(Finding(
-                dimension="font_size_by_font", severity="warn",
+                dimension="font_size_by_font", severity="info",
                 message="Body text size for "
                         + ("this font" if len(font_size_by_font) == 1 else "these fonts"),
                 expected=", ".join("%s %g pt" % (f, s) for f, s in font_size_by_font.items()),
-                actual=", ".join("%s %g pt" % (f, s) for f, s in _cur_map.items()),
+                actual=", ".join("%s %g pt" % (f, s) for f, s in _cur_map.items())
+                       + " (APA pairs each allowed font with a size, e.g. Times New Roman "
+                         "12 pt / Calibri, Arial or Georgia 11 pt; switching font is an "
+                         "option too)",
                 source="spec",
             ))
         elif not _outside:
@@ -1706,9 +1774,13 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 dimension="font_allowlist", severity="pass",
                 message="Body font (APA allowlist)",
                 expected="One of: " + ", ".join(
-                    f"{k} {v:g}pt" for k, v in allow_pairs.items()) if allow_pairs
+                    f"{k} {_pt_txt(v)}pt" for k, v in allow_pairs.items()) if allow_pairs
                 else "One of: " + ", ".join(apa_spec.font_allowlist),
-                actual=", ".join("%s %g pt" % (f, s) for f, s in _fam_sizes.items()),
+                # D-06：_fam_sizes 可能为空（字号全靠样式继承）→ 空字符串会让报告出现
+                # 一个没有 actual 的 pass 条目，客户看不懂。给明确兜底文案。
+                actual=(", ".join("%s %s pt" % (f, _pt_txt(s))
+                                  for f, s in _fam_sizes.items())
+                        or "font size is inherited from styles (no explicit run size)"),
                 source="spec",
             ))
 
@@ -2102,6 +2174,418 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 actual=f"{_cur_cap_size:g} pt",
                 source=_cap_size_origin,
             ))
+    # —— E-6 / D-22：MLA 论文标题的格式（v2.3.100）——
+    # MLA 9：标题**居中**、**不加粗、不加斜体**、不额外加空行（与正文同字号）。
+    # ⚠️ **只对 MLA 档判**（APA 标题是要加粗的，IEEE 有自己的口径）。
+    # ⚠️ 置信度分两级（reader 的 sample_mla_title）：
+    #   · certain=True（标题段居中）→ **可自动修**（去粗 / 去斜，改格式不改文字）；
+    #   · certain=False（客户没居中，只能靠"信息块之后第一段"猜）→ **只提示不自动改**，
+    #     因为那一段可能其实是正文首段，改错就是改坏客户的文档。
+    if str(getattr(target, "spec_key", "") or "").upper().startswith("MLA"):
+        _mi = getattr(prof, "mla_title_index", None)
+        if _mi is not None:
+            _mcertain = bool(getattr(prof, "mla_title_certain", False))
+            _mal = getattr(prof, "mla_title_alignment", None)
+            _mb = getattr(prof, "mla_title_bold", None)
+            _mit = getattr(prof, "mla_title_italic", None)
+            if _mb is True:
+                _f = Finding(
+                    dimension="mla_title_bold",
+                    severity="warn" if _mcertain else "info",
+                    message="MLA paper title: bold",
+                    expected="The MLA title is not bold",
+                    actual="The title paragraph is bold",
+                    source="spec",
+                )
+                if _mcertain:
+                    _f.fix = FixAction(dimension="mla_title_bold", value=False)
+                findings.append(_f)
+            if _mit is True:
+                _f = Finding(
+                    dimension="mla_title_italic",
+                    severity="warn" if _mcertain else "info",
+                    message="MLA paper title: italic",
+                    expected="The MLA title is not italic",
+                    actual="The title paragraph is italic",
+                    source="spec",
+                )
+                if _mcertain:
+                    _f.fix = FixAction(dimension="mla_title_italic", value=False)
+                findings.append(_f)
+            if not _mcertain:
+                findings.append(Finding(
+                    dimension="mla_title_alignment", severity="info",
+                    message="MLA paper title: placement and alignment",
+                    expected=("The title is centred and is neither bold nor italic; it sits "
+                              "after the upper-left name/instructor/course/date block"),
+                    actual=("Paragraph %s looks like the title (alignment: %s, bold: %s, "
+                            "italic: %s) - centre it yourself if that is the title"
+                            % (_mi, _mal, _mb, _mit)),
+                    source="doc",
+                ))
+
+    # —— E-2 / D-18：APA caption 的**字形**（v2.3.100）——
+    # APA 7：图表**号**（"Table 1"）**粗体**，**题**（描述）**斜体**。
+    # ⚠️ **只对 APA 档判**：IEEE 的 caption 用 small caps 且不斜体，MLA 不强制 ——
+    #   同一套规则套到 IEEE 上就是把官方模板判红（正是本轮一直在消灭的那类错）。
+    # 实测 6 份有 caption 的官方 APA 样例**全部合规**（号段粗、题段斜）→ 不会误判。
+    if str(getattr(target, "spec_key", "") or "").upper().startswith("APA"):
+        _cap_cnt = int(getattr(prof, "caption_typography_count", 0) or 0)
+        if _cap_cnt:
+            _lb = getattr(prof, "caption_label_bold", None)
+            if _lb is False:
+                _f = Finding(
+                    dimension="caption_label_bold", severity="warn",
+                    message="Caption label bold",
+                    expected="The figure/table number (e.g. 'Table 1') is bold",
+                    actual="The caption number is not bold",
+                    source="spec",
+                )
+                _f.fix = FixAction(dimension="caption_label_bold", value=True)
+                findings.append(_f)
+            _ti = getattr(prof, "caption_title_italic", None)
+            if _ti is False:
+                _f = Finding(
+                    dimension="caption_title_italic", severity="warn",
+                    message="Caption title italic",
+                    expected="The figure/table title is italic",
+                    actual="The caption title is not italic",
+                    source="spec",
+                )
+                _f.fix = FixAction(dimension="caption_title_italic", value=True)
+                findings.append(_f)
+
+    # —— E 批：MLA + APA 剩余的**只提示**观测（v2.3.100）——
+    # 🔴 全部 info、不挂 FixAction：涉及"改文字/改结构"的一律只提示。
+
+    # E-1（D-17）：正文页顶部重复了论文标题。
+    # ⚠️ 只做**中性提示**，绝不判它错 —— APA 稿的正文页顶部本来就要重复论文标题，
+    # 官方 APA 专业版样例自己就是这样（实测 body_title_repeat=True）。
+    # 若按"重复=问题"去判 warn，等于把官方合规样例判红（正是本轮一直在消灭的那类错）。
+    if getattr(prof, "body_title_repeat", False):
+        findings.append(Finding(
+            dimension="body_title_repeat", severity="info",
+            message="Paper title repeated on the first page of the text",
+            expected="Many styles repeat the title at the top of the first text page",
+            actual="The paper title also appears in the body - keep it only if your "
+                   "style asks for it",
+            source="doc",
+        ))
+
+    # E-3 / E-4（D-19 / D-20）：编号标题。APA 与 MLA 都不给章节标题编号
+    #（IEEE 才用罗马数字编号）→ 提示客户改，但**不代改**（改文字 = 越权）。
+    _nbh = list(getattr(prof, "numbered_body_heads", None) or [])
+    if _nbh:
+        findings.append(Finding(
+            dimension="numbered_body_heads", severity="info",
+            message="Numbered section headings",
+            expected="APA and MLA do not number section headings (only IEEE does)",
+            actual="%d numbered heading(s): %s" % (
+                len(_nbh), ", ".join(repr(x.get("text")) for x in _nbh[:4])),
+            source="spec",
+        ))
+
+    # E-5（D-21）：MLA 首页左上四行（姓名 / 教授 / 课程 / 日期）。
+    # ⚠️ **只增强既有 first_page_heading 的文案，不新增 finding** —— 既有维度是
+    # 「检测不到四行 → info 提示」，我若在"检测到"时再报一条，会与它语义相反
+    # （`test_mla_first_page_block_present_no_finding` 守护的正是"有信息块就不报"）。
+    # 读到的行数与内容放进既有那条的 actual 里，供客户核对缺了哪几项。
+
+    # E-7 / E-8（D-40 / D-41）：APA 专业版 Author Note 的位置与上标编号。
+    _an_idx = getattr(prof, "author_note_index", None)
+    if _an_idx is not None:
+        findings.append(Finding(
+            dimension="author_note_position", severity="info",
+            message="Author Note placement",
+            expected="The Author Note sits on the title page (APA professional papers)",
+            actual="An Author Note was found at paragraph %s" % _an_idx,
+            source="spec",
+        ))
+        _an_sup = getattr(prof, "author_note_has_superscript", None)
+        if _an_sup is False:
+            findings.append(Finding(
+                dimension="author_note_superscript", severity="info",
+                message="Author Note numbering",
+                expected="Author Note entries are marked with superscript numbers",
+                actual="No superscript marker was found in the Author Note",
+                source="spec",
+            ))
+
+    # —— D-2~D-11：IEEE 系列的**只提示**观测（v2.3.100）——
+    # 🔴 D 批门禁明确要求：「新增的 info 类维度不得产生任何 warn/fail」。
+    # 这十项要么涉及**改文字**（引用顺序、拼写、编号形态），要么只是"看有没有"，
+    # 一律 **info + 不挂 FixAction**：提示客户「IEEE 的口径是什么」，改不改他自己决定。
+    _spec_key_is_ieee = str(getattr(target, "spec_key", "") or "").upper().startswith("IEEE")
+    if getattr(spec, "expect_index_terms", False) or _spec_key_is_ieee:
+        # D-2：表/图标签形态（IEEE 表题用罗马数字大写「TABLE I」，图题用「Fig. N.」）
+        _caps = list(getattr(prof, "ieee_caption_labels", None) or [])
+        if _caps:
+            _bad_cap = []
+            for _c in _caps:
+                if _c.get("kind") == "table":
+                    if _c.get("numeral") != "roman" or not _c.get("uppercase"):
+                        _bad_cap.append("%r (IEEE table captions use Roman numerals, "
+                                        "e.g. 'TABLE I')" % _c.get("label"))
+                else:
+                    if _c.get("numeral") != "arabic":
+                        _bad_cap.append("%r (IEEE figure captions use 'Fig. N.')"
+                                        % _c.get("label"))
+            if _bad_cap:
+                findings.append(Finding(
+                    dimension="ieee_caption_label", severity="info",
+                    message="Table/figure caption labels",
+                    expected="Tables: 'TABLE I' (Roman numerals); figures: 'Fig. 1.'",
+                    actual="; ".join(_bad_cap[:4]),
+                    source="spec",
+                ))
+            # D-3：IEEE 表题末尾**不加句点**（ESM：表题描述末尾无句点）
+            _per = [c for c in _caps
+                    if c.get("kind") == "table" and c.get("ends_with_period")]
+            if _per:
+                findings.append(Finding(
+                    dimension="ieee_caption_period", severity="info",
+                    message="Table caption punctuation",
+                    expected="No full stop at the end of an IEEE table caption",
+                    actual="%d table caption(s) end with a period: %s" % (
+                        len(_per), ", ".join(repr(c.get("text")) for c in _per[:3])),
+                    source="spec",
+                ))
+
+        # D-4：图表在正文里首次引用必须按数字顺序
+        _pos = getattr(prof, "ieee_caption_position", None) or {}
+        if _pos.get("figure_ref_order_ok") is False:
+            findings.append(Finding(
+                dimension="ieee_figure_ref_order", severity="info",
+                message="Order of first references to figures",
+                expected="Figures are first mentioned in ascending number order",
+                actual="First mentions are not in ascending order",
+                source="spec",
+            ))
+
+        # D-5：首脚注（IEEE 惯例：首脚注不编号、用上标符号）
+        _ff = getattr(prof, "ieee_first_footnote", None) or {}
+        if _ff:
+            findings.append(Finding(
+                dimension="ieee_first_footnote", severity="info",
+                message="First footnote",
+                expected="The first footnote carries an unnumbered marker",
+                actual=("The first footnote is numbered"
+                       if _ff.get("numbered")
+                       else "The first footnote marker is not numbered"),
+                source="spec",
+            ))
+
+        # D-6 / D-7：致谢拼写与利益冲突声明的位置
+        _ack = getattr(prof, "ieee_acknowledgment", None) or {}
+        if _ack:
+            findings.append(Finding(
+                dimension="ieee_acknowledgment", severity="info",
+                message="Acknowledgment heading",
+                expected="IEEE uses 'Acknowledgment' (US spelling)",
+                actual="Found %r" % _ack.get("spelling"),
+                source="spec",
+            ))
+        _coi = getattr(prof, "ieee_coi", None) or {}
+        if _coi:
+            findings.append(Finding(
+                dimension="ieee_coi", severity="info",
+                message="Conflict of interest statement",
+                expected="A conflict-of-interest statement, placed near the end matter",
+                actual="Found a conflict-of-interest statement (paragraph %s)"
+                       % _coi.get("para"),
+                source="spec",
+            ))
+
+        # D-8：作者传记里姓名加粗
+        _bio = getattr(prof, "ieee_biography", None) or {}
+        if _bio and _bio.get("name_bold") is False:
+            findings.append(Finding(
+                dimension="ieee_biography", severity="info",
+                message="Biography entry",
+                expected="The author's name in a biography entry is bold",
+                actual="The name after the biography heading is not bold",
+                source="spec",
+            ))
+
+        # D-9：Index Terms 必须是摘要的**最后一段**
+        _it = getattr(prof, "ieee_index_terms", None) or {}
+        if _it:
+            if not _it.get("is_last_in_abstract"):
+                findings.append(Finding(
+                    dimension="ieee_index_terms", severity="info",
+                    message="Index Terms placement",
+                    expected="Index Terms form the last paragraph of the abstract",
+                    actual="The Index Terms paragraph is not the last one in the abstract",
+                    source="spec",
+                ))
+        else:
+            findings.append(Finding(
+                dimension="ieee_index_terms", severity="info",
+                message="Index Terms placement",
+                expected="Index Terms as the last paragraph of the abstract",
+                actual="No Index Terms paragraph was detected",
+                source="spec",
+            ))
+
+        # D-10：摘要里不得出现编号引用或编号公式
+        _aref = list(getattr(prof, "ieee_abstract_numbered_refs", None) or [])
+        if _aref:
+            findings.append(Finding(
+                dimension="ieee_abstract_numbered_refs", severity="info",
+                message="Numbered citations or equations in the abstract",
+                expected="The abstract carries no numbered citations or numbered equations",
+                actual="%d found: %s" % (
+                    len(_aref),
+                    ", ".join(repr(a.get("text")) for a in _aref[:4])),
+                source="spec",
+            ))
+
+        # D-11：IEEE 惯例章节标题用**复数**（Introduction / References）
+        _sing = list(getattr(prof, "ieee_numbered_singular_heads", None) or [])
+        if _sing:
+            findings.append(Finding(
+                dimension="ieee_singular_heads", severity="info",
+                message="Plural section headings",
+                expected="IEEE uses plural headings (e.g. 'Introduction', 'References')",
+                actual="Numbered singular heading(s): %s" % (
+                    ", ".join(repr(x.get("text")) for x in _sing[:4])),
+                source="spec",
+            ))
+
+    # —— F-9：三类「只提示、不改字」的引用 / 标点观测（裁定 C-12 C-13 C-14）——
+    # 🔴 三条全部 info、**绝不挂 FixAction**：改标点/改引用写法就是改客户的文字
+    #（P-2 文字锁死）。只告诉客户「IEEE 现在的口径是什么」，改不改由客户自己决定。
+
+    # C-12：文内连续引用里的 en dash。IEEE Reference Guide V3.28.2025 原文：
+    # 「Reference ranges in text **will not include an en dash** … '[1]–[4]' will now be
+    # '[1], [2], [3], [4]'」（Purdue OWL 的旧写法已作废）。
+    _en_dash = list(getattr(prof, "citation_range_en_dash", None) or [])
+    if _en_dash:
+        findings.append(Finding(
+            dimension="citation_range_style", severity="info",
+            message="Citation ranges in text",
+            expected=("IEEE no longer uses an en dash for a range of references: write "
+                      "[1], [2], [3], [4] instead of [1]-[4]"),
+            actual="%d range(s) with a dash: %s" % (
+                len(_en_dash),
+                "; ".join("%r (paragraph %s)" % (h.get("text"), h.get("para"))
+                          for h in _en_dash[:4])),
+            source="spec",
+        ))
+
+    # C-13：Jr. / Sr. / III 前面的逗号。REF 原文：「**Do not use commas** around Jr.,
+    # Sr., and III：Michael Smith Jr.」
+    _sfx = list(getattr(prof, "suffix_name_comma", None) or [])
+    if _sfx:
+        findings.append(Finding(
+            dimension="name_suffix_style", severity="info",
+            message="Name suffixes (Jr., Sr., III)",
+            expected="No comma before Jr., Sr., or III (e.g. 'Michael Smith Jr.')",
+            actual="%d occurrence(s) with a comma: %s" % (
+                len(_sfx),
+                "; ".join("%r (paragraph %s)" % (h.get("text"), h.get("para"))
+                          for h in _sfx[:4])),
+            source="spec",
+        ))
+
+    # C-14：公式编号**全文一致性**（ESM：形式随作者，但必须一致；数学指南另说
+    # 连字符/句点通常去掉 —— 两者不冲突的交集就是"一致"）。我们**只判混用**，
+    # 绝不判某种形式为错（ESM 明说 (1a)/(1.1)/(1-1) 都可）。
+    _eq_styles = list(getattr(prof, "equation_number_styles", None) or [])
+    if len(_eq_styles) > 1:
+        findings.append(Finding(
+            dimension="equation_number_style", severity="info",
+            message="Equation numbering style",
+            expected="One consistent style for all equation numbers",
+            actual="Mixed styles found: %s (IEEE asks for consistency, not one form)"
+                   % ", ".join(_eq_styles),
+            source="spec",
+        ))
+
+    # —— 官方模板**指导文字残留**（v2.3.100，D-1 / 裁定 C-11）——
+    # IEEE 官方会议模板下载页原文：「Please ensure that all guidance text is removed
+    # from your conference paper prior to submission… **Failure to remove template text
+    # from your paper may result in your paper not being published.**」
+    # 客户把模板直接交上去 = 论文不发表，而我们此前报"全部合规"——这是本轮最值钱的发现。
+    # 🔴 只报位置、**绝不挂 FixAction**：挂上"一键修正"就会去删客户的文字（越权 +
+    #    违反 P-2 文字锁死）。删除必须客户自己做。
+    _bp_hits = list(getattr(prof, "boilerplate_hits", None) or [])
+    if _bp_hits:
+        _bp_where = {"body": "body paragraph", "header": "header",
+                     "footer": "footer"}
+        _bp_list = "; ".join(
+            "%s %s: %r" % (_bp_where.get(h.get("where"), h.get("where")),
+                           h.get("index"), h.get("text"))
+            for h in _bp_hits[:6])
+        if len(_bp_hits) > 6:
+            _bp_list += "; …and %d more" % (len(_bp_hits) - 6)
+        findings.append(Finding(
+            dimension="template_boilerplate", severity="fail",
+            message="Template guidance text still in the document",
+            expected=("No template placeholder or guidance text (IEEE: 'Failure to "
+                      "remove template text … may result in your paper not being "
+                      "published')"),
+            actual="%d place(s): %s" % (len(_bp_hits), _bp_list),
+            source="spec",
+        ))
+    else:
+        findings.append(Finding(
+            dimension="template_boilerplate", severity="pass",
+            message="Template guidance text still in the document",
+            expected="No template placeholder or guidance text",
+            actual="None found",
+            source="spec",
+        ))
+
+    # —— byline（作者/单位/城市/邮箱）字号 + 结构（v2.3.100，F-5 / 裁定 C-6）——
+    # 只对**显式给出 byline 字号**的风格判（IEEE = 11pt，模板 `Author` 样式实测）。
+    # 结构（几行、缺不缺邮箱/单位）**只提示**：补行就是替客户写内容（P-2）。
+    _bl_size = getattr(target, "byline_size_pt", None)
+    if _bl_size is None and _fm_base:
+        _bl_size = getattr(_fm_spec, "byline_size_pt", None)
+    if _bl_size is not None:
+        _bl_origin = (target.resolution.get("byline_size_pt", "school")
+                      if getattr(target, "byline_size_pt", None) is not None else "spec")
+        _cur_bl = prof.byline_size_pt
+        _bl_lines = int(getattr(prof, "byline_line_count", 0) or 0)
+        if _cur_bl is None:
+            findings.append(Finding(
+                dimension="byline_size", severity="info",
+                message="Author block font size",
+                expected=f"{_bl_size:g} pt",
+                actual=("No author block detected (no Author/Affiliation style and no "
+                        "title-page author lines)"),
+                source=_bl_origin,
+            ))
+        elif abs(float(_cur_bl) - float(_bl_size)) > 0.01:
+            findings.append(Finding(
+                dimension="byline_size", severity="warn",
+                message="Author block font size",
+                expected=f"{_bl_size:g} pt",
+                actual=f"{_cur_bl:g} pt",
+                source=_bl_origin,
+            ))
+        else:
+            findings.append(Finding(
+                dimension="byline_size", severity="pass",
+                message="Author block font size",
+                expected=f"{_bl_size:g} pt",
+                actual=f"{_cur_bl:g} pt",
+                source=_bl_origin,
+            ))
+        # 结构只提示：IEEE 惯例四行（姓名 / 单位 / 城市+国家 / 邮箱或 ORCID）。
+        # 缺项**不代写**，只告诉客户去哪补。
+        if _bl_lines:
+            findings.append(Finding(
+                dimension="byline_structure", severity="info",
+                message="Author block contents",
+                expected=("Name / affiliation / city and country / e-mail or ORCID "
+                          "(IEEE convention)"),
+                actual=("%d author line(s) found; check that every author has all four "
+                        "parts" % _bl_lines),
+                source=_bl_origin,
+            ))
+
     # ② 行距（可修）
     if _cap_spacing is not None:
         _cap_spacing_origin = target.resolution.get("caption_line_spacing", "spec")
@@ -2259,8 +2743,24 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         _tg_origin = (target.resolution.get("table_gap_pt", "school")
                       if getattr(target, "table_gap_pt", None) is not None else "spec")
         _tg_msg = "Spacing between tables and the text"
+        # v2.3.100（F-2 / 裁定 C-2）：三档阈值。
+        #   · 硬下限 ``_tg_min``：低于它才 warn（可修）—— 默认取 min_pt，没配则退回推荐值；
+        #   · 推荐线 ``_tg_good`` = 推荐值 × ratio（默认 0.8）—— 达到它即算合格。
+        # 官方样例实测 12pt 落在 [12, 19.2) → pass，正合裁定「12pt 放行」。
+        _tg_min_spec = getattr(target, "table_gap_min_pt", None)
+        if _tg_min_spec is None and _fm_base:
+            _tg_min_spec = getattr(_fm_spec, "table_gap_min_pt", None)
+        _tg_ratio_spec = getattr(target, "table_gap_ratio", None)
+        if _tg_ratio_spec is None and _fm_base:
+            _tg_ratio_spec = getattr(_fm_spec, "table_gap_ratio", None)
+        _tg_min = float(_tg_min_spec) if _tg_min_spec is not None else float(_tg_want)
+        _tg_ratio = float(_tg_ratio_spec) if _tg_ratio_spec is not None else 1.0
+        _tg_good = float(_tg_want) * _tg_ratio
         _tg_exp = ("at least %g pt (one double-spaced line) above and below each table"
                    % float(_tg_want))
+        if _tg_min < float(_tg_want):
+            _tg_exp += ("; %g pt is accepted (below the recommended %g pt)"
+                        % (_tg_min, float(_tg_want)))
         _tg_samples = list(getattr(prof, "table_gap_samples", None) or [])
         if not _tg_samples:
             findings.append(Finding(
@@ -2271,26 +2771,46 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         else:
             _tg_short = []
             _tg_judged = 0
+            _tg_soft = []          # 达硬下限但没到推荐值 → 通过，附一句推荐
             for _s in _tg_samples:
                 _bits = []
-                for _side, _key, _blank in (("above", "before_pt", "before_blank"),
-                                            ("below", "after_pt", "after_blank")):
+                _soft_bits = []
+                for _side, _key, _blank, _same in (
+                        ("above", "before_pt", "before_blank", "before_same_page"),
+                        ("below", "after_pt", "after_blank", "after_same_page")):
+                    # v2.3.100（F-2 / 裁定 C-2）：**跨页侧不判**。表格在页顶/页底时，
+                    # 那一侧量出来的空隙其实跨了两页，判它毫无意义（且 docx 无绝对坐标，
+                    # 只能用邻接段 pageBreakBefore 近似 → 不确定时宁可不判）。
+                    if _s.get(_same) is False:
+                        continue
                     if _s.get(_blank):
                         continue            # 已有真空行 → 这一侧算够
                     _g = _s.get(_key)
                     if _g is None:
                         continue            # 这一侧不判（邻接表格/文档边界）
                     _tg_judged += 1
-                    if float(_g) + 1e-6 < float(_tg_want):
-                        _bits.append("%s %g pt" % (_side, float(_g)))
+                    _gv = float(_g)
+                    # 三档：< 硬下限 → warn（可修）；[下限, 推荐×比例) → pass+推荐提示；
+                    #        ≥ 推荐×比例 → pass。
+                    if _gv + 1e-6 < _tg_min:
+                        _bits.append("%s %g pt" % (_side, _gv))
+                    elif _gv + 1e-6 < _tg_good:
+                        _soft_bits.append("%s %g pt" % (_side, _gv))
                 if _bits:
                     _tg_short.append("Table %d: %s" % (_s.get("index", "?"),
                                                        ", ".join(_bits)))
+                elif _soft_bits:
+                    _tg_soft.append("Table %d: %s" % (_s.get("index", "?"),
+                                                      ", ".join(_soft_bits)))
             if not _tg_short and _tg_judged:
+                _act = "%d table(s), enough space around each" % len(_tg_samples)
+                if _tg_soft:
+                    _act += (" (%s — below the recommended %g pt, but acceptable)"
+                             % ("; ".join(_tg_soft), float(_tg_want)))
                 findings.append(Finding(
                     dimension="table_gap", severity="pass", message=_tg_msg,
                     expected=_tg_exp,
-                    actual="%d table(s), enough space around each" % len(_tg_samples),
+                    actual=_act,
                     source=_tg_origin,
                 ))
             elif not _tg_short:
@@ -2427,14 +2947,78 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     # —— 前置材料：按各自 tier 分流（学生/专业差异项，不混用）——
     # 专业版（expect_abstract / expect_author_note = True）才提示「应有」；
     # 学生版（均 False）不要求，仅在「多写了作者注」时温和提示非必需。
+    # v2.3.100（C 批 D-08 / 裁定 C-7）：当规范**显式规定了摘要版式**（IEEE 会议档给了
+    # abstract_font_size_pt 等）时，把"必须有摘要"升为 **hard**，并逐项判版式：
+    #   9pt + 加粗 + 两端对齐 + 段后 10pt（依据：模板 Abstract 样式
+    #   `<w:sz w:val="18"/>` + `<w:b/>` + `jc=both` + `<w:spacing w:after="10pt"/>`；
+    #   OWL「All papers must begin with an abstract」）。
+    # APA 专业版没有这些字号字段 → 仍是原来的 info，行为不变。
+    _abs_want = (
+        getattr(apa_spec, "abstract_font_size_pt", None),
+        getattr(apa_spec, "abstract_bold", None),
+        getattr(apa_spec, "abstract_alignment", None),
+        getattr(apa_spec, "abstract_space_after_pt", None),
+    )
+    _abs_hard = apa_spec.expect_abstract and any(v is not None for v in _abs_want)
     if apa_spec.expect_abstract and not prof.has_abstract:
         findings.append(Finding(
-            dimension="abstract", severity="info",
-            message="Abstract & Keywords",
-            expected="An Abstract with Keywords is required (APA Professional)",
+            dimension="abstract",
+            severity="fail" if _abs_hard else "info",
+            message="Abstract & Keywords" if not _abs_hard else "Abstract section",
+            expected=("An Abstract with Keywords is required (APA Professional)" if not _abs_hard
+                      else "An Abstract section is required"),
             actual="No Abstract section detected",
             source="spec",
         ))
+    elif _abs_hard and prof.has_abstract:
+        _w_sz, _w_bold, _w_al, _w_sa = _abs_want
+        _bad, _act = [], []
+        if _w_sz is not None:
+            _cur = getattr(prof, "abstract_font_size_pt", None)
+            if _cur is None:
+                _act.append("size could not be read")
+            elif abs(float(_cur) - float(_w_sz)) > 0.5:
+                _bad.append("size %g pt" % float(_cur))
+            _act.append("size %g pt" % float(_cur)) if _cur is not None else None
+        if _w_bold is not None:
+            _cur_b = getattr(prof, "abstract_bold", None)
+            if _cur_b is not None and bool(_cur_b) != bool(_w_bold):
+                _bad.append("bold" if _cur_b else "not bold")
+        if _w_al is not None:
+            _cur_al = getattr(prof, "abstract_alignment", None)
+            if _cur_al and _cur_al != _w_al:
+                _bad.append("%s-aligned" % _cur_al)
+        if _w_sa is not None:
+            _cur_sa = getattr(prof, "abstract_space_after_pt", None)
+            if _cur_sa is not None and abs(float(_cur_sa) - float(_w_sa)) > 0.5:
+                _bad.append("space after %g pt" % float(_cur_sa))
+        if _bad:
+            findings.append(Finding(
+                dimension="abstract", severity="warn",
+                message="Abstract format",
+                # v2.3.100（D-08）：挂 FixAction，把「规范要求」原样带给 fixer ——
+                # 不挂的话客户点「修正」这条红杠不会消失（检查说能改、实际没改）。
+                fix=FixAction(
+                    dimension="abstract",
+                    value={"size_pt": _w_sz, "bold": _w_bold,
+                           "alignment": _w_al, "space_after_pt": _w_sa},
+                    note=""),
+                expected=", ".join(filter(None, [
+                    ("%g pt" % float(_w_sz)) if _w_sz is not None else "",
+                    "bold" if _w_bold else ("not bold" if _w_bold is False else ""),
+                    str(_w_al) if _w_al else "",
+                    ("space after %g pt" % float(_w_sa)) if _w_sa is not None else ""])),
+                actual=", ".join(_bad),
+                source="spec",
+            ))
+        else:
+            findings.append(Finding(
+                dimension="abstract", severity="pass",
+                message="Abstract format",
+                expected="Abstract formatting as specified",
+                actual=", ".join(_act) or "matches",
+                source="spec",
+            ))
     if apa_spec.expect_author_note and not prof.has_author_note:
         findings.append(Finding(
             dimension="author_note", severity="info",
@@ -2546,25 +3130,27 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 ))
         # G2 首页信息块：标题之前应有左上对齐的 姓名/教授/课程/日期（双行距）共约 4 行
         if prof.title_text and prof.first_page_left_lines < 3:
+            _fpl_txt = list(getattr(prof, "first_page_left_texts", None) or [])
+            _why = ("Could not clearly detect the 4-line MLA heading block before the title"
+                    + (" (%d left-aligned line(s) detected: %s)"
+                       % (len(_fpl_txt),
+                          "; ".join(repr(t) for t in _fpl_txt[:4]))
+                       if _fpl_txt else ""))
             findings.append(Finding(
                 dimension="first_page_heading", severity="info",
                 message="First-page heading block",
                 expected="Upper left: your name, instructor, course, date (double-spaced)",
-                actual="Could not clearly detect the 4-line MLA heading block before the title",
+                actual=_why,
                 source="spec",
             ))
-        # G5 块引用：含引号且较长的段落应缩进 0.5″、不加引号（仅提示，避免误伤普通长段落）
-        bq = [c for c in prof.block_quote_candidates
-              if c["has_quote"] and (c["left_indent_in"] is None
-                                     or abs((c["left_indent_in"] or 0) - 0.5) > 0.15)]
-        if bq:
-            findings.append(Finding(
-                dimension="block_quote", severity="info",
-                message="Block quotation",
-                expected="Quotations longer than 4 lines should be block quotes (indent 0.5\" from left, no quotation marks)",
-                actual=f"{len(bq)} long quotation paragraph(s) not formatted as a block quote",
-                source="spec",
-            ))
+        # G5 块引用：**停判**（v2.3.100，E-0 / 裁定 D-09）。
+        # 🔴 老板原话：「按你建议——[材料缺失]，代码里 0.5″ 硬编码停判（不降 info，
+        # 直接不判），等 MLA 手册条文到位再恢复。理由：无依据的规则判了就是误报。」
+        # 本轮 MLA 材料（8 份学生论文 + OWL 带批注样例）里**没有任何块引用缩进条文**，
+        # 那句「0.5″」是我凭印象写的 —— 按 P-3「材料缺失一律标 [材料缺失]，不许造规则」，
+        # 这条判据整个撤掉（含 checker 的 finding 与 fixer 的修正值），不降级保留。
+        # 恢复条件：拿到 MLA Handbook 的块引用缩进条文后，把下面的代码原样加回。
+        pass
 
     # —— 把「需要修正」的 Finding 绑定 FixAction（check→fix 单一真相源）——
     # fixer 只消费带 fix 的 Finding，绝不再独立重算「要改什么」，从而确保
@@ -2646,8 +3232,9 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     if _txn_bind is not None and bool(getattr(_fm_prof, "has_abstract", False)) \
             and _txn_cur is not None and bool(_txn_cur) != bool(_txn_bind):
         _fix_value["text_new_page"] = bool(_txn_bind)
-    if bq:
-        _fix_value["block_quote"] = 0.5
+    # v2.3.100（E-0 / D-09）：块引用缩进**停判** → 不再给 fixer 传修正值。
+    # （原先恒为 0.5″，是无材料依据的硬编码；材料缺失，按 P-3 不许造规则。）
+    # _fix_value["block_quote"] = 0.5
     # 页码位置：**只有客户/学校/AI 显式要求时才动手**（来源 spec 时只提示）。
     # 理由与纸型一致 —— 国内学校普遍要「页脚居中」，把 APA 的 top-right 当硬要求去改，
     # 会把学生本来正确的页脚居中改成页眉右上。客户显式选了才改。
@@ -2662,10 +3249,12 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         # （_apply_page_number 会先写目标位置、再清另一处，绝不会出现两个页码）。
         # 保持「检查报了 → 修正就能改」，不留 v2.3.71 那类报了却修不了的缺口。
         _fix_value["page_number"] = _pn_pos
-    # 字体白名单的字号配对：值传**整张配对表**（不是单一字号）—— fixer 需要逐 run
-    # 按各自字体查自己的规范字号，正文混用 TNR 与 Calibri 时才能各改各的。
-    if font_size_by_font:
-        _fix_value["font_size_by_font"] = dict(allow_pairs)
+    # 🔴 v2.3.100（落地裁定 C-4）：**不再为 font_size_by_font 挂修正值**。
+    # 旧代码在这里把整张 6 款字体配对表塞进 _fix_value，fixer 据此逐 run 刷字号 ——
+    # 既替客户做了字体决定，也正中「官方学生样例 TNR 11pt 被判红」（13 份里 5 份命中）。
+    # 现在该维度只提示（checker 侧已降 info），_fix_value 不再给它传值。
+    # if font_size_by_font:
+    #     _fix_value["font_size_by_font"] = dict(allow_pairs)
     # 摘要页特化：**只有客户/学校/AI 显式要求时才动手**（来源 spec 时只提示）。
     # 理由与页码位置一致 —— 摘要是否缩进/另起一页，不同学校要求不同，APA 的
     # 「顶格 + 另起一页」只是典型值，不能替客户拍板去改摘要页。

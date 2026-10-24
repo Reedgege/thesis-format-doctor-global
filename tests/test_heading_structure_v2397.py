@@ -191,7 +191,9 @@ def test_references_still_gets_top_level_formatting(tmp_path, legacy_text_transf
     out = tmp_path / "r_out.docx"
     fix_docx(str(tmp_path / "r.docx"), str(out), target_from_spec("IEEE"))
     texts = [p.text for p in Document(str(out)).paragraphs]
-    assert "REFERENCES" in texts
+    # v2.3.100（裁定 Q-1 / P-2）：IEEE 标题的**字符类**（全大写）只提示不执行
+    # → 参考文献标题保持作者原样 "References"，不再被改成 "REFERENCES"。
+    assert "References" in texts
     assert not any(t.startswith("III. REFERENCES") for t in texts)
 
 

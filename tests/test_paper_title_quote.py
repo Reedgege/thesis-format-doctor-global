@@ -251,24 +251,26 @@ def test_title_page_template_values_are_read(tmp_path):
 # ③ 块引用（检查与修正同源）
 # ---------------------------------------------------------------------------
 
-def test_block_quote_reported_previewed_and_fixed(tmp_path):
-    """长引文：报告 → 预览 → 真缩进 0.5″ → 复检不再报。"""
+def test_block_quote_stopped_not_reported_not_fixed(tmp_path):
+    """v2.3.100（E-0 / 裁定 D-09）：块引用缩进**停判** —— 不报、不预览、不改。
+
+    本轮 MLA 材料里没有块引用缩进条文，那句 0.5″ 是凭印象写的 → 按 P-3 整条撤掉。
+    撤掉后必须**三样都不发生**：不报 finding、不进预览、文档不被改缩进。
+    """
     p = _doc_with_quotation(tmp_path / "q.docx")
     out = tmp_path / "q_out.docx"
     target = target_from_spec("MLA")
     prof, findings = checker.run_check(p, target)
-    f = [x for x in findings if x.dimension == "block_quote"]
-    assert f, "长引文应被识别"
-    assert f[0].fix is not None, "块引用必须绑定修正动作（旧版会改但不在检查结论里）"
+    assert not [x for x in findings if x.dimension == "block_quote"], \
+        "块引用缩进已停判（材料缺失），不应再报"
     lines = _compute_changes(prof, target, lang="en", findings=findings)
-    assert any("Block quotation" in ln for ln in lines), lines
+    assert not any("Block quotation" in ln for ln in lines), lines
 
     fix_docx(p, str(out), target, findings=findings)
     q = [x for x in Document(str(out)).paragraphs if "long quotation" in x.text][0]
-    assert q.paragraph_format.left_indent.inches == pytest.approx(0.5)
-
-    _, after = checker.run_check(str(out), target)
-    assert not [x for x in after if x.dimension == "block_quote"], "修完不该再报"
+    _li = q.paragraph_format.left_indent
+    assert _li is None or abs(_li.inches - 0.5) > 1e-6, \
+        "块引用缩进已停判，修正侧不该再动客户的缩进"
 
 
 def test_block_quote_no_false_preview_without_candidates(tmp_path):
