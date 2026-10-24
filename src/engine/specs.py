@@ -859,6 +859,51 @@ SPECS: dict[str, StyleSpec] = {
               "article format (conference & journal, e.g. IEEEtran two-column). Column layout and "
               "exact margins/font/size come from your school or IEEE template - follow it.",
     ),
+    # —— IEEE 期刊档（v2.3.101；裁定冻结 FRZ-2026-10-23-01 · P-1）——
+    # 🔴 定位：**不碰版式**。ESM（IEEE Editorial Style Manual）全文没有页边距 / 分栏规定，
+    #    作者也无从控制；各刊模板（Access 双栏 / Transactions / 多数刊初稿单栏）彼此不同，
+    #    硬写一套就是替客户拍板（违反「模板驱动」铁律）。故 page / columns / paper_size /
+    #    各级标题字形 / 参考文献字号一律留空 = 该档**不判**这些维度。
+    # ⚠️ PageLayout 的默认值是 1″ / TNR 12 / 双倍行距，ReferenceRule 的悬挂默认 0.5″ ——
+    #    必须显式写 None，否则"不碰版式"会破功。
+    # 只查 ESM 编辑规范：四级标题、摘要、Index Terms、图表标题位置、参考文献编号；
+    # 其余（首脚注 / 传记 / Acknowledgment / COI / 摘要内编号引用 / 公式编号一致性）
+    # 由 checker 的 IEEE 系列 **info 观测**统一覆盖（门控 spec_key.startswith("IEEE")），
+    # 一律只提示、不代写（P-2）。
+    "IEEE-Journal": StyleSpec(
+        key="IEEE-Journal",
+        name="IEEE Journal (editorial rules)",
+        page=PageLayout(None, None, None, None, None, None, None),   # 不碰版式
+        reference=ReferenceRule(
+            style_key="IEEE",              # 引用体例归 IEEE；与 spec key 是两件事
+            hanging_indent_in=None,        # 不碰版式：悬挂缩进随目标期刊模板
+            numbered=True,                 # ESM：顺序编码 [1]
+            order_hint='Sequential: [1] A. Author, "Title," Journal, vol., no., pp., Year.',
+            pattern_hint='[1] J. A. Smith, "Title," J. Name, vol. 1, no. 2, pp. 3-4, 2020.',
+            checks=("numbered_ref",),
+        ),
+        heading_levels=4,                  # ESM：四级标题（只判结构，不判字形）
+        columns=None,                      # 不碰版式
+        paper_size=None,                   # 不碰版式
+        heading_formats={},                # 不硬写各刊字形（Helvetica 10/9pt 随模板）
+        title_page=None,                   # 期刊无独立题名页：作者信息在首页左下脚注
+        expect_abstract=True,              # ESM：所有论文必须有摘要
+        expect_index_terms=True,           # ESM：必须有 Index Terms（字母序）
+        caption_position_table="top",      # IEEE 惯例：表题在表格上方
+        caption_position_figure="bottom",  # IEEE 惯例：图题在图下方
+        table_lines=None,                  # 不规定三线表（各刊自定）
+        front_matter_note="IEEE journal papers carry the author block in the FIRST-PAGE "
+                          "FOOTNOTE (affiliations, corresponding author, funding, DOI and the "
+                          "received/accepted dates), not under the title. This is a prompt "
+                          "only - footnote text is never rewritten.",
+        notes="Journal submission, editorial rules only. Checks the four ESM heading levels, "
+              "the abstract and Index Terms, table/figure caption placement and numbered [1] "
+              "references, and prompts on the first-page author footnote, biography, "
+              "Acknowledgment and conflict-of-interest statement. Page layout (margins, "
+              "columns, fonts, sizes) is deliberately NOT checked: the IEEE Editorial Style "
+              "Manual does not regulate it and it differs from journal to journal - follow "
+              "your target journal's own template.",
+    ),
     "Other": StyleSpec(
         key="Other",
         name="Other / Custom (upload your school template or fill the questionnaire)",
@@ -925,7 +970,8 @@ MARGIN_DIMS = (
 
 # 下拉框展示顺序（白名单单一来源，新增规范只需在此增加 key 并补 SPECS）。
 # APA 7th 拆成学生/专业两档；「APA」别名不进此列表（避免下拉出现三个 APA 条目）。
-SPEC_ORDER = ["APA-Student", "APA-Professional", "MLA", "IEEE-Conference", "Other"]
+SPEC_ORDER = ["APA-Student", "APA-Professional", "MLA",
+              "IEEE-Conference", "IEEE-Journal", "Other"]
 
 # 引用风格白名单（与 SPEC_ORDER 中可引用者保持一致）
 REFERENCE_STYLE_KEYS = ("APA", "MLA", "IEEE")
@@ -946,6 +992,7 @@ SPEC_DISPLAY = {
     "APA-Professional": "APA 7th - Professional (Word)",
     "MLA": "MLA 9th - Standard (Word)",
     "IEEE-Conference": "IEEE Conference (two-column)",
+    "IEEE-Journal": "IEEE Journal (editorial rules)",
     "IEEE": "IEEE Conference (two-column)",   # 旧 key 兼容别名（显示名同 IEEE-Conference）
 }
 

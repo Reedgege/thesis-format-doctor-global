@@ -1659,6 +1659,7 @@ class App:
             ("APA-Professional", "src_apa_pro"),
             ("MLA", "src_mla"),
             ("IEEE-Conference", "src_ieee"),
+            ("IEEE-Journal", "src_ieee_journal"),
             (None, "src_school"),
             (None, "src_manual"),
             (None, "src_ai"),

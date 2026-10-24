@@ -1140,8 +1140,12 @@ def test_export_ai_button_only_in_ai_mode(ui):
     assert _shown("src_ai") is True
 
 
-def test_source_dropdown_has_seven_exclusive_options(ui):
-    """来源下拉必须是 7 项，且每项唯一（互斥）。"""
+def test_source_dropdown_has_eight_exclusive_options(ui):
+    """来源下拉必须是 8 项、顺序固定，且每项显示文案唯一（互斥）。
+
+    v2.3.101：IEEE 拆档后新增 `IEEE-Journal`（Conference / Journal 各自独立一档），
+    故由 7 项增至 8 项。这里改成**逐项对齐**而不是只数字，防止"数量对了、项错了"。
+    """
     import copy
     import io
     import os
@@ -1153,12 +1157,15 @@ def test_source_dropdown_has_seven_exclusive_options(ui):
     assert m, "没找到 _source_map"
     keys = re.findall(r'"(\w+)"', m.group(1))
     src_keys = [k for k in keys if k.startswith("src_")]
-    assert len(src_keys) == 7, "来源下拉应为 7 项，实际 %d 项：%r" % (len(src_keys), src_keys)
-    assert len(set(src_keys)) == 7, "来源下拉有重复项：%r" % (src_keys,)
+    expected = ["src_apa_student", "src_apa_pro", "src_mla",
+                "src_ieee", "src_ieee_journal",
+                "src_school", "src_manual", "src_ai"]
+    assert src_keys == expected, "来源下拉应为 %d 项且顺序固定，实际 %r" % (len(expected), src_keys)
+    assert len(set(src_keys)) == len(expected), "来源下拉有重复项：%r" % (src_keys,)
     assert "src_manual" in src_keys and "src_ai" in src_keys
 
     shown = [ui.tr(k) for k in src_keys]
-    assert len(set(shown)) == 7, "两项显示同一个文案（客户分不清）：%r" % (shown,)
+    assert len(set(shown)) == len(expected), "两项显示同一个文案（客户分不清）：%r" % (shown,)
 
 
 def test_build_target_only_uses_inputs_of_current_source(ui):

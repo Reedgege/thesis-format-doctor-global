@@ -55,11 +55,12 @@ def test_reference_style_key_stays_ieee():
     assert SPECS["IEEE-Conference"].reference.style_key == "IEEE"
 
 
-def test_ieee_journal_is_not_selectable_yet():
-    """[待建] 档位在建成前不得出现在任何可选入口。"""
-    assert "IEEE-Journal" not in SPECS
-    assert "IEEE-Journal" not in SPEC_ORDER
-    assert all(s.key != "IEEE-Journal" for s in list_specs())
+def test_ieee_journal_is_a_separate_built_spec():
+    """v2.3.101：Journal 档已建成，与 Conference 并列、互不替代（不做双档并存 = 各自独立）。"""
+    assert "IEEE-Journal" in SPECS
+    assert "IEEE-Journal" in SPEC_ORDER
+    assert "IEEE-Journal" in [s.key for s in list_specs()]
+    assert SPECS["IEEE-Journal"] is not SPECS["IEEE-Conference"]
 
 
 def test_conference_params_survive_rename():
