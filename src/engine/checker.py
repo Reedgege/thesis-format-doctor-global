@@ -168,7 +168,7 @@ class Finding:
 
 def _cmp_margin(measured: Optional[float], expected: float) -> tuple[str, str]:
     if measured is None:
-        return "warn", "Could not read (document may have no section or be protected)"
+        return "info", "Could not read (document may have no section or be protected)"
     diff = abs(measured - expected)
     # Note: only the value itself is returned here; the report layer appends
     # "Expected: ... | Actual: ..." — so do NOT prepend "Actual" here
@@ -183,7 +183,7 @@ def _cmp_margin(measured: Optional[float], expected: float) -> tuple[str, str]:
 def _cmp_num(measured: Optional[float], expected: float,
              tol_fail: float, tol_warn: float, unit: str) -> tuple[str, str]:
     if measured is None:
-        return "warn", "Could not read (unable to determine this dimension from the document)"
+        return "info", "Could not read (unable to determine this dimension from the document)"
     diff = abs(measured - expected)
     if diff <= tol_warn:
         return "pass", f"{measured}{unit}"
@@ -809,7 +809,7 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
         origin = target.resolution.get("body_alignment", "spec")
         act_al = prof.body_alignment
         if act_al is None:
-            sev, actual = "warn", "Could not read (all paragraph alignment inherits from styles)"
+            sev, actual = "info", "Could not read (all paragraph alignment inherits from styles)"
         elif act_al == exp_al:
             sev, actual = "pass", ALIGN_LABEL.get(act_al, act_al)
         else:

@@ -929,6 +929,15 @@ def is_pseudo_heading(para, min_pt: Optional[float] = None) -> bool:
         return False
     if not runs:
         return False
+    # v2.3.104（F8 修复）：符号 / 数学字体（Cambria Math / Symbol / …）的段不是标题。
+    # 真实论文里用 Cambria Math 居中的公式（如 `MTTR = β₀ + … + ε`）整段加粗、短、
+    # 不以句读结尾，会被误判成伪标题并被加编号 + run-in 冒号 —— 违反文字锁死铁律
+    # （实测：输出变成 `... + ε: ` 并在段尾插批注）。公式段一律豁免。
+    if any(_is_symbol_font(_run_font_name(r)) for r in runs):
+        return False
+    # 兜底：用普通字体手打的公式行（含 `=` 且含希腊字母）同样不是标题形状。
+    if _looks_like_equation(text):
+        return False
     for r in runs:
         try:
             if r.bold is not True:
@@ -938,6 +947,21 @@ def is_pseudo_heading(para, min_pt: Optional[float] = None) -> bool:
     threshold = _PSEUDO_HEADING_MIN_PT if min_pt is None else min_pt
     sz = _max_run_size_pt(para)
     return sz is not None and sz >= threshold
+
+
+_GREEK_LETTERS = set(
+    "αβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"
+)
+
+
+def _looks_like_equation(text: str) -> bool:
+    """粗略识别「公式文本」（非 OMath、用普通字体手打的公式行）。
+
+    含 `=` 且含希腊字母（如 `β`/`ε`）即判定为公式 —— 标题段几乎不会同时出现
+    这两个特征，误伤正文 / 标题的风险极低；反过来公式是论文里最常见的
+    「居中加粗短段」伪标题误判源，必须挡掉（见 v2.3.104 F8）。
+    """
+    return "=" in text and any(ch in _GREEK_LETTERS for ch in text)
 
 
 def is_heading(para) -> bool:
@@ -988,6 +1012,10 @@ def is_section_heading_line(para) -> bool:
     if not text or len(text) > _PSEUDO_HEADING_MAX_LEN:
         return False
     if text.endswith(_SENTENCE_END):
+        return False
+    # v2.3.104：公式行（含 `=` 且含希腊字母）一律不是标题行，避免 `1. f(x) = β₀`
+    # 这类编号公式被当成章节标题行（见 _looks_like_equation）。
+    if _looks_like_equation(text):
         return False
     return bool(_SECTION_HEADING_RE.match(text))
 

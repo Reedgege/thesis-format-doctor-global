@@ -58,6 +58,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# 版本号单一来源：User-Agent 里的版本号随 VERSION 文件自动同步，不写死（F4）。
+from ..versioninfo import app_version
 from pathlib import Path
 
 # ---- 中台端点（生产配置；测试通过 monkeypatch 三个 _* 调用函数避开）----
@@ -78,7 +81,7 @@ LICENSE_FILE = Path.home() / ".paperformatpro" / "license.json"
 # 一次性迁移回退——读不到新路径时尝试旧路径，避免老用户升级后激活/试用状态丢失。
 LICENSE_FILE_LEGACY = Path.home() / ".thesis-format-doctor-global" / "license.json"
 
-_USER_AGENT = "Mozilla/5.0 PaperFormatPro/2.0"
+_USER_AGENT = f"Mozilla/5.0 PaperFormatPro/{app_version()}"
 
 # 启动一次性核验通过后的「内存可信标志」：置位后，本次会话内修正不再发心跳。
 # 用户决策：启动核对一次即可，有效状态就不再打扰网络（见 _require_fix_entitlement ②）。
