@@ -4506,21 +4506,28 @@ class App:
             # 不是「没检测到」，两者的处置完全相反：前者无需任何动作，后者要客户补。
             # 只有**客户真在规范下拉里选了内置规范**（spec_is_baseline）才敢这么说 ——
             # 走学校模板 / 手填 / AI 时读不到标题格式是真的缺信息，仍按原提示让客户补。
-            _h_sp, _h_lv = None, 0
+            _h_sp = None
             try:
                 _h_sp = checker.resolve_spec(target)
-                _h_lv = int(getattr(_h_sp, "heading_levels", 0) or 0)
             except Exception:
-                _h_sp, _h_lv = None, 0
+                _h_sp = None
+            # 🔴 v2.3.103（老板 2026-10-24 追问三条通道）：**先读 target.heading_levels**
+            # —— 那才是学校模板 / 手填 / AI 的真实输入。旧写法只读 resolve_spec 的层级数：
+            # 手填 / AI 没有 spec_key → resolve_spec 落 "Other" = 0，于是客户明明填了
+            # 「3 级」，弹窗照样说 "this source sets no heading levels"（自相矛盾）。
+            _h_lv = int(getattr(target, "heading_levels", 0) or 0)
+            if _h_lv <= 0:
+                _h_lv = int(getattr(_h_sp, "heading_levels", 0) or 0)
             _h_name = (getattr(_h_sp, "name", None) or target.spec_key or "")
             if spec_is_baseline(target) and _h_lv <= 0:
+                # 规范本身不要求分级标题（MLA 9th）：无需任何动作
                 tk.Label(inner,
                          text=tr("review_headings_not_required").format(name=_h_name),
                          bg=theme.SURFACE, fg=theme.TEXT_2,
                          font=F["F_HELP"], anchor="w", justify="left",
                          wraplength=int(620 * self._ui_scale())).pack(
                     fill="x", padx=12, pady=(0, 6))
-            elif spec_is_baseline(target) and _h_lv > 0:
+            elif _h_lv > 0 and spec_is_baseline(target):
                 # 🔴 v2.3.102（老板 2026-10-24 截图）：规范**要求** N 级标题，但**不规定
                 # 各级字形**（IEEE-Journal 按裁定「不碰版式」，格式交给目标期刊模板）。
                 # 以前这里落到 review_headings_missing → 说成 "this source sets no
@@ -4530,6 +4537,16 @@ class App:
                          text=tr("review_headings_levels_only").format(
                              name=_h_name, n=_h_lv),
                          bg=theme.SURFACE, fg=theme.TEXT_2,
+                         font=F["F_HELP"], anchor="w", justify="left",
+                         wraplength=int(620 * self._ui_scale())).pack(
+                    fill="x", padx=12, pady=(0, 6))
+            elif _h_lv > 0:
+                # 🔴 v2.3.103（老板 2026-10-24 追问三条通道）：手填 / AI / 模板给了
+                # **层级数**、但没给**各级明细**（heading_formats 为空）。这同样不是
+                # "没设层级" —— 只是各级格式待补，指路 Advanced options。
+                tk.Label(inner,
+                         text=tr("review_headings_levels_no_formats").format(n=_h_lv),
+                         bg=theme.SURFACE, fg=warn_fg,
                          font=F["F_HELP"], anchor="w", justify="left",
                          wraplength=int(620 * self._ui_scale())).pack(
                     fill="x", padx=12, pady=(0, 6))
@@ -4607,13 +4624,25 @@ class App:
         self._review_section(inner, tr("review_style"), theme.SECTION_GAP)
         try:
             spec = checker.resolve_spec(target)
-            style_lines = [
-                "Running head: %s" % (tr("review_enabled") if spec.running_head else tr("review_disabled")),
-                "Page number: %s" % (spec.page_number_position or "—"),
-                "References on new page: %s" % (tr("review_enabled") if spec.reference_new_page else tr("review_disabled")),
-                "Reference heading bold: %s" % (tr("review_enabled") if spec.reference_heading_bold else tr("review_disabled")),
-                "Font allowlist: %s" % (", ".join(spec.font_allowlist) if spec.font_allowlist else "—"),
-            ]
+            if spec_is_baseline(target):
+                style_lines = [
+                    "Running head: %s" % (tr("review_enabled") if spec.running_head else tr("review_disabled")),
+                    "Page number: %s" % (spec.page_number_position or "—"),
+                    "References on new page: %s" % (tr("review_enabled") if spec.reference_new_page else tr("review_disabled")),
+                    "Reference heading bold: %s" % (tr("review_enabled") if spec.reference_heading_bold else tr("review_disabled")),
+                    "Font allowlist: %s" % (", ".join(spec.font_allowlist) if spec.font_allowlist else "—"),
+                ]
+            else:
+                # 🔴 v2.3.103（老板 2026-10-24 追问三条通道）：学校模板 / 手填 / AI
+                # **没有内置规范基线**。即使手填里选了「引用按 APA」，也只有**参考文献**
+                # 归 APA；页面 / 标题层级仍由客户自己的输入决定（checker 用
+                # spec_is_baseline 门控）。这里若照旧摊开 APA 全套
+                # （Page number: top-right / References on new page: On …），
+                # 客户会以为页面也要按 APA 改 —— 与 v2.3.72 那个事故同一性质。
+                style_lines = [
+                    "Page / heading rules: from your own inputs (no built-in style)",
+                    "Reference list style: %s (references only)" % (target.reference_style or "—"),
+                ]
         except Exception:
             style_lines = [tr("review_missing")]
         for ln in style_lines:

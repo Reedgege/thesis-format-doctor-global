@@ -1212,6 +1212,56 @@ def test_confirm_dialog_shows_dash_and_levels_only_for_journal(ui):
         "columns=None 的当前选中值不是「不规定」，而是 %r" % (col_combo[0].get(),)
 
 
+def test_confirm_dialog_manual_levels_without_formats(ui):
+    """🔴 v2.3.103（老板 2026-10-24 追问三条通道）：手填给了 3 级、没给各级明细时，
+    弹窗必须说「3 heading levels are set」，不能再说「sets no heading levels」。
+
+    三条通道（学校模板 / 手填 / AI）共用同一个复核弹窗；手填 / AI 没有 spec_key，
+    旧实现只读 resolve_spec 的层级数（落 "Other"=0）→ 客户填了 3 级也被说成没设层级。
+    """
+    import tkinter as tk
+
+    from src.engine.questionnaire import build_target
+
+    ui._close_popups()
+    target = build_target(None, questionnaire={"heading_levels": "3"})
+    assert target.heading_levels == 3
+    ui._confirm_dialog(target)
+    ui.root.update_idletasks()
+
+    win = ui._popups[-1]
+    blob = "\n".join(str(w.cget("text")) for w in _descendants(win, tk.Label))
+    assert "3 heading levels are set" in blob, \
+        "手填 3 级却没被显示出来，实际：\n%s" % blob
+    assert "sets no heading levels" not in blob, \
+        "手填 3 级仍被说成『不设标题层级』（自相矛盾）"
+
+
+def test_confirm_dialog_manual_does_not_show_spec_page_rules(ui):
+    """🔴 v2.3.103（老板 2026-10-24 追问三条通道）：手填只选了「引用按 APA」时，
+    复核弹窗的 Style Rules 不能摊开 APA 全套页面规则。
+
+    引擎用 `spec_is_baseline` 门控：没有 spec_key 时页面/标题**不按** APA 走，
+    只有参考文献归 APA。摊开全套会让客户以为页码/分页也要按 APA 改
+    —— 与 v2.3.72「手填 + 引用选 IEEE → 标题被改成 I./A./B.」同一性质。
+    """
+    import tkinter as tk
+
+    from src.engine.questionnaire import build_target
+
+    ui._close_popups()
+    target = build_target(None, questionnaire={"reference_style": "APA"})
+    ui._confirm_dialog(target)
+    ui.root.update_idletasks()
+
+    win = ui._popups[-1]
+    blob = "\n".join(str(w.cget("text")) for w in _descendants(win, tk.Label))
+    assert "Page / heading rules: from your own inputs" in blob, blob
+    assert "Reference list style: APA (references only)" in blob
+    assert "Page number: top-right" not in blob, "把 APA 的页码规则摊给了手填通道"
+    assert "References on new page: On" not in blob, "把 APA 的分页规则摊给了手填通道"
+
+
 def test_build_target_only_uses_inputs_of_current_source(ui):
     """目标画像只能取**当前来源**的输入，别的通道不许在背后生效。
 

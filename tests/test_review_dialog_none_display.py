@@ -73,3 +73,27 @@ def test_mla_still_hits_not_required_branch():
     t = target_from_spec("MLA")
     assert spec_is_baseline(t) is True
     assert int(getattr(get_spec(t.spec_key), "heading_levels", 0) or 0) == 0
+
+
+# —— ③ 三条通道（学校模板 / 手填 / AI）共用同一处，必须都读 target.heading_levels ——
+
+def test_manual_channel_keeps_heading_levels():
+    """手填的 heading_levels 必须落到 target。
+
+    v2.3.103（老板 2026-10-24 追问三条通道）：复核弹窗以前只读 resolve_spec 的层级数，
+    手填没有 spec_key → 落 "Other"=0 → 客户填了 3 级也被说成「没设标题层级」。
+    """
+    from src.engine.questionnaire import build_target
+
+    t = build_target(None, questionnaire={"heading_levels": "3"})
+    assert t.heading_levels == 3
+    assert not (t.heading_formats or {}), "只填层级数，不该凭空生成各级明细"
+
+
+def test_manual_channel_explicit_columns_survives():
+    """手填里真的选了单栏，就必须是 1（别把「—」修成"永不写回"）。"""
+    from src.engine.questionnaire import build_target
+
+    t = build_target(None, questionnaire={"columns": "1"})
+    assert t.columns == 1
+

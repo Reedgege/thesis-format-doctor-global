@@ -643,6 +643,12 @@ STRINGS: dict = {
         "review_headings_levels_only":
             "{name} requires {n} heading levels, but does not dictate each level's "
             "size / alignment / numbering — your target template does. Nothing to fill in here.",
+        # v2.3.103（老板 2026-10-24 追问三条通道）：手填 / AI 已经给了层级数、
+        # 但没填各级明细（heading_formats 为空）。以前也落到 review_headings_missing
+        # → 说成 "this source sets no heading levels"，与 target.heading_levels=N 矛盾。
+        "review_headings_levels_no_formats":
+            "{n} heading levels are set, but their per-level formatting is not. "
+            "Fill in the per-level details under Advanced options if you need them.",
         "review_lvl": "Level",
         "review_align": "Align",
         "review_bold": "Bold",
@@ -751,6 +757,12 @@ STRINGS: dict = {
         "review_headings_levels_only":
             "{name} requires {n} heading levels, but does not dictate each level's "
             "size / alignment / numbering — your target template does. Nothing to fill in here.",
+        # v2.3.103（老板 2026-10-24 追问三条通道）：手填 / AI 已经给了层级数、
+        # 但没填各级明细（heading_formats 为空）。以前也落到 review_headings_missing
+        # → 说成 "this source sets no heading levels"，与 target.heading_levels=N 矛盾。
+        "review_headings_levels_no_formats":
+            "{n} heading levels are set, but their per-level formatting is not. "
+            "Fill in the per-level details under Advanced options if you need them.",
         "review_lvl": "Level",
         "review_align": "Align",
         "review_bold": "Bold",
