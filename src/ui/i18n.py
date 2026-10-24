@@ -636,6 +636,13 @@ STRINGS: dict = {
         "review_headings_missing":
             "Not detected — this source sets no heading levels. If your school "
             "requires them, fill them in under Advanced options.",
+        # v2.3.102（老板 2026-10-24 截图）：规范**要求**分级标题、但**不规定各级字形**
+        # （IEEE-Journal 按裁定「不碰版式」，各级格式交给目标期刊模板）。
+        # 以前这里复用 review_headings_missing → 说成 "this source sets no heading levels"，
+        # 与事实相反（Journal 是 heading_levels=4），客户会以为自己要补标题层级。
+        "review_headings_levels_only":
+            "{name} requires {n} heading levels, but does not dictate each level's "
+            "size / alignment / numbering — your target template does. Nothing to fill in here.",
         "review_lvl": "Level",
         "review_align": "Align",
         "review_bold": "Bold",
@@ -737,6 +744,13 @@ STRINGS: dict = {
         "review_headings_missing":
             "Not detected — this source sets no heading levels. If your school "
             "requires them, fill them in under Advanced options.",
+        # v2.3.102（老板 2026-10-24 截图）：规范**要求**分级标题、但**不规定各级字形**
+        # （IEEE-Journal 按裁定「不碰版式」，各级格式交给目标期刊模板）。
+        # 以前这里复用 review_headings_missing → 说成 "this source sets no heading levels"，
+        # 与事实相反（Journal 是 heading_levels=4），客户会以为自己要补标题层级。
+        "review_headings_levels_only":
+            "{name} requires {n} heading levels, but does not dictate each level's "
+            "size / alignment / numbering — your target template does. Nothing to fill in here.",
         "review_lvl": "Level",
         "review_align": "Align",
         "review_bold": "Bold",

@@ -190,6 +190,33 @@ def _opt_val(opts, disp):
 # 展示名统一取自 engine.specs.spec_display（与报告共用单一来源）。
 _spec_display = spec_display
 
+
+def _columns_display_value(columns, none_txt, one_txt, two_txt):
+    """栏数 → 复核弹窗下拉的显示名（纯函数，便于 headless 单测）。
+
+    🔴 v2.3.102（老板 2026-10-24 截图）：``None`` = 该来源**不规定**栏数
+    （如 IEEE-Journal 按裁定「不碰版式」）→ 必须显示「—」。
+    绝不能默认成 "Single column"：既在说谎，又会在确认时把 None 静默升级成
+    「强制单栏」，双栏期刊论文一检查就报"应为单栏"。
+    """
+    if columns is None:
+        return none_txt
+    try:
+        return two_txt if int(columns) == 2 else one_txt
+    except (TypeError, ValueError):
+        return none_txt
+
+
+def _columns_edit_value(display, none_txt, two_txt):
+    """下拉显示名 → ``apply_page_overrides`` 的原始值（纯函数）。
+
+    「—」必须回**空串**：``apply_page_overrides`` 只把空串当"未改动"；
+    传 "1" 会把 ``target.columns`` 从 None 改写成 1 并把 resolution 升级为 user。
+    """
+    if display == none_txt:
+        return ""
+    return "2" if display == two_txt else "1"
+
 # 字段行左侧的小圆徽标：v2.3.17 起由 IconBadge 内部自动查找对应 PNG 图片；
 # 这里的名字仍是设计稿线描图标名，映射表在 src/ui/icon_loader.ICON_NAME_MAP。
 # row_paper_title 单独用 "paper"，以便与左卡大标题 "doc" -> your_documents 区分。
@@ -3967,7 +3994,7 @@ class App:
         # —— 邮箱（选填）——
         tk.Label(body, text=tr("fb_email"), bg=theme.SURFACE, fg=theme.TEXT,
                  font=F["F_LABEL"], anchor="w").pack(fill="x", pady=(14, 4))
-        email_var = tk.StringVar()
+        email_var = tk.StringVar(master=win)
         ttk.Entry(body, textvariable=email_var, width=48,
                   font=F["F_BODY"]).pack(fill="x")
         tk.Label(body, text=tr("fb_email_hint"), bg=theme.SURFACE, fg=theme.TEXT_3,
@@ -3987,7 +4014,7 @@ class App:
                  wraplength=480).pack(fill="x", pady=(10, 0))
 
         # —— 行内状态（成功绿 / 错误红，不弹窗打断）——
-        status_var = tk.StringVar(value="")
+        status_var = tk.StringVar(master=win, value="")
         status_lbl = tk.Label(body, textvariable=status_var, bg=theme.SURFACE,
                               fg=theme.ERROR, font=F["F_FOOT"], anchor="w",
                               wraplength=480)
@@ -4070,7 +4097,7 @@ class App:
         act.pack(fill="x", pady=(12, 0))
         tk.Label(act.inner, text=tr("up_act_label"), bg=theme.SURFACE_SOFT,
                  fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w").pack(fill="x")
-        code_var = tk.StringVar()
+        code_var = tk.StringVar(master=win)
         ttk.Entry(act.inner, textvariable=code_var, width=40,
                   font=F["F_BODY"]).pack(fill="x", pady=(8, 0))
         tk.Label(act.inner, text=tr("act_online_hint"), bg=theme.SURFACE_SOFT,
@@ -4112,7 +4139,7 @@ class App:
 
         head = tk.Frame(parent, bg=theme.SURFACE, cursor="hand2")
         head.pack(fill="x", pady=(12, 0))
-        marker = tk.StringVar(value="[+]")
+        marker = tk.StringVar(master=win, value="[+]")
         mark_lbl = tk.Label(head, textvariable=marker, bg=theme.SURFACE, fg=theme.TEXT_2,
                  font=F["F_LABEL"], width=3, anchor="w")
         mark_lbl.pack(side="left")
@@ -4123,7 +4150,7 @@ class App:
         pane = tk.Frame(parent, bg=theme.SURFACE)
 
         # 机器码
-        mc_var = tk.StringVar(value=lic._machine_fingerprint())
+        mc_var = tk.StringVar(master=win, value=lic._machine_fingerprint())
         mc_card = RoundCard(pane, radius=10, fill=theme.SURFACE_SOFT,
                             border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
         mc_card.pack(fill="x", pady=(8, 0))
@@ -4152,7 +4179,7 @@ class App:
         off_card.pack(fill="x", pady=(8, 0))
         tk.Label(off_card.inner, text=tr("act_offline_label"), bg=theme.SURFACE_SOFT,
                  fg=theme.PRIMARY_HOVER, font=F["F_SMALL_B"], anchor="w").pack(fill="x")
-        off_var = tk.StringVar()
+        off_var = tk.StringVar(master=win)
         ttk.Entry(off_card.inner, textvariable=off_var, width=40,
                   font=F["F_MONO"]).pack(fill="x", pady=(6, 0))
         tk.Label(off_card.inner, text=tr("act_offline_hint"), bg=theme.SURFACE_SOFT,
@@ -4380,7 +4407,10 @@ class App:
             val = target.page.get(key)
             tk.Label(cell, text=label_en.get(key, key), bg=theme.SURFACE, fg=theme.TEXT_2,
                      font=F["F_FOOT"], anchor="w").pack(fill="x")
-            var = tk.StringVar(value=("" if val is None else str(val)))
+            # ⚠️ 必须显式 master：不给就走 tkinter 的"默认 root"。全量测试 / 多次开窗时
+            # 进程里先后建过又销毁过别的 Tk，变量会挂到已死掉的解释器上 →
+            # 下拉/输入框显示**空白**（手工问卷那边早就踩过并注释过同一个坑）。
+            var = tk.StringVar(master=win, value=("" if val is None else str(val)))
             ent = tk.Entry(cell, textvariable=var, font=F["F_BODY"], width=14,
                           bg=theme.SURFACE, fg=theme.TEXT,
                           highlightbackground=theme.BORDER, highlightthickness=1)
@@ -4394,17 +4424,22 @@ class App:
         # 用「显示名 ↔ 数值」显式映射，不把展示文案反解析成数字（i18n 文案改动也不会解析失败）。
         one_txt = tr("review_one_column")
         two_txt = tr("review_two_column")
-        _cur_cols = 2 if target.columns == 2 else 1
-        columns_var = tk.StringVar(value=(two_txt if _cur_cols == 2 else one_txt))
+        _none_txt = tr("q_none")
+        # 🔴 v2.3.102（老板 2026-10-24 截图）：columns=None 是「该来源不规定栏数」
+        # （如 IEEE-Journal 按裁定不碰版式），绝不能默认显示成 "Single column"：
+        # ① 那是在说谎；② 确认时会把 "1" 发给 apply_page_overrides，而它只把
+        # **空串**当"未改动" → None 被静默升级成「强制单栏」，双栏期刊论文一检查就报错。
+        _cols_disp = _columns_display_value(target.columns, _none_txt, one_txt, two_txt)
+        columns_var = tk.StringVar(master=win, value=_cols_disp)
         col_row = tk.Frame(inner, bg=theme.SURFACE)
         col_row.pack(fill="x", padx=12, pady=(4, 8))
         tk.Label(col_row, text=tr("review_columns"), bg=theme.SURFACE, fg=theme.TEXT_2,
                  font=F["F_FOOT"], anchor="w").pack(side="left", padx=(0, 8))
         ttk.Combobox(col_row, textvariable=columns_var, state="readonly", width=18,
-                     values=[one_txt, two_txt]).pack(side="left")
+                     values=[_none_txt, one_txt, two_txt]).pack(side="left")
 
         # 纸张大小（通用维度：北美 Letter / 欧洲与中国 A4）：与引用规范无关，单独一行。
-        paper_var = tk.StringVar(value=(target.paper_size or tr("q_none")))
+        paper_var = tk.StringVar(master=win, value=(target.paper_size or tr("q_none")))
         tk.Label(col_row, text=tr("review_paper_size"), bg=theme.SURFACE, fg=theme.TEXT_2,
                  font=F["F_FOOT"], anchor="w").pack(side="left", padx=(18, 8))
         ttk.Combobox(col_row, textvariable=paper_var, state="readonly", width=14,
@@ -4415,7 +4450,7 @@ class App:
         # 单独一行：与栏数/纸型挤同一行会把三项都挤窄（本轮之前的裁字教训）。
         pn_row = tk.Frame(inner, bg=theme.SURFACE)
         pn_row.pack(fill="x", padx=12, pady=(0, 8))
-        pn_var = tk.StringVar(value=(target.page_number_position or tr("q_none")))
+        pn_var = tk.StringVar(master=win, value=(target.page_number_position or tr("q_none")))
         tk.Label(pn_row, text=tr("review_page_number"), bg=theme.SURFACE, fg=theme.TEXT_2,
                  font=F["F_FOOT"], anchor="w").pack(side="left", padx=(0, 8))
         ttk.Combobox(pn_row, textvariable=pn_var, state="readonly", width=18,
@@ -4477,10 +4512,23 @@ class App:
                 _h_lv = int(getattr(_h_sp, "heading_levels", 0) or 0)
             except Exception:
                 _h_sp, _h_lv = None, 0
+            _h_name = (getattr(_h_sp, "name", None) or target.spec_key or "")
             if spec_is_baseline(target) and _h_lv <= 0:
                 tk.Label(inner,
-                         text=tr("review_headings_not_required").format(
-                             name=(getattr(_h_sp, "name", None) or target.spec_key or "")),
+                         text=tr("review_headings_not_required").format(name=_h_name),
+                         bg=theme.SURFACE, fg=theme.TEXT_2,
+                         font=F["F_HELP"], anchor="w", justify="left",
+                         wraplength=int(620 * self._ui_scale())).pack(
+                    fill="x", padx=12, pady=(0, 6))
+            elif spec_is_baseline(target) and _h_lv > 0:
+                # 🔴 v2.3.102（老板 2026-10-24 截图）：规范**要求** N 级标题，但**不规定
+                # 各级字形**（IEEE-Journal 按裁定「不碰版式」，格式交给目标期刊模板）。
+                # 以前这里落到 review_headings_missing → 说成 "this source sets no
+                # heading levels"，与事实相反（Journal 是 heading_levels=4），
+                # 客户会以为要自己去 Advanced options 补标题层级。
+                tk.Label(inner,
+                         text=tr("review_headings_levels_only").format(
+                             name=_h_name, n=_h_lv),
                          bg=theme.SURFACE, fg=theme.TEXT_2,
                          font=F["F_HELP"], anchor="w", justify="left",
                          wraplength=int(620 * self._ui_scale())).pack(
@@ -4576,8 +4624,9 @@ class App:
             # 仅把用户真正改动过的 Page Layout 字段写回 target（其余保持原 resolution，
             # 避免把规范软参考误升级为硬规则）——逻辑在 engine.apply_page_overrides，headless 可测。
             edits = {key: var.get() for key, var in page_vars.items()}
-            # 栏数：显示名 → 数值；仅当与当前 target.columns 不同才写回（逻辑在 apply_page_overrides）
-            edits["columns"] = "2" if columns_var.get() == two_txt else "1"
+            # 栏数：显示名 → 数值；「—」= 不规定 → 回**空串**（apply_page_overrides 视为
+            # "未改动"、保持 None）。绝不能让"不规定"被静默升级成"强制单栏"（v2.3.102）。
+            edits["columns"] = _columns_edit_value(columns_var.get(), _none_txt, two_txt)
             # 纸张大小：「—」= 不规定（apply_page_overrides 会清空并取消检查）
             edits["paper_size"] = paper_var.get()
             # 页码位置：同上，「—」= 不规定；白名单外的值 apply_page_overrides 会丢弃

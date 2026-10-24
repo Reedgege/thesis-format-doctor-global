@@ -762,9 +762,13 @@ def test_run_opens_review_dialog_with_columns(ui, tmp_path):
 
     one = i18n.t(ui.lang, "review_one_column")
     two = i18n.t(ui.lang, "review_two_column")
+    # v2.3.102：栏数下拉新增「—」= 该来源不规定栏数（如 IEEE-Journal 不碰版式）。
+    # 不能只给单栏/双栏两项——否则 columns=None 会被默认显示成单栏、确认时静默升级。
+    none_txt = i18n.t(ui.lang, "q_none")
     combos = _descendants(win, ttk.Combobox)
     values = [tuple(str(v) for v in c.cget("values")) for c in combos]
-    assert (one, two) in values, "复核弹窗没提供栏数下拉（单栏/双栏）：%r" % (values,)
+    assert (none_txt, one, two) in values, \
+        "复核弹窗没提供栏数下拉（不规定/单栏/双栏）：%r" % (values,)
 
     ui._close_popups()
     assert not ui._popups
@@ -1166,6 +1170,46 @@ def test_source_dropdown_has_eight_exclusive_options(ui):
 
     shown = [ui.tr(k) for k in src_keys]
     assert len(set(shown)) == len(expected), "两项显示同一个文案（客户分不清）：%r" % (shown,)
+
+
+def test_confirm_dialog_shows_dash_and_levels_only_for_journal(ui):
+    """🔴 v2.3.102（老板 2026-10-24 截图）：真把复核弹窗建出来，检查两处。
+
+    IEEE-Journal 按裁定「不碰版式」：columns=None、heading_formats={}、heading_levels=4。
+      · Columns 必须显示「—」（不规定），**不能**显示 "Single column"；
+      · Headings 必须说「要求 4 级标题、各级字形由模板决定」，
+        **不能**说 "this source sets no heading levels"（与事实相反）。
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    from src.engine.questionnaire import target_from_spec
+    from src.ui import i18n
+
+    ui._close_popups()          # 清掉其他用例可能遗留的弹窗，只看这一张
+    ui._confirm_dialog(target_from_spec("IEEE-Journal"))
+    ui.root.update_idletasks()
+
+    win = ui._popups[-1]
+    labels = [str(w.cget("text")) for w in _descendants(win, tk.Label)]
+
+    blob = "\n".join(labels)
+    assert "requires 4 heading levels" in blob, \
+        "Headings 区没走 levels_only 分支，实际：\n%s" % blob
+    assert "sets no heading levels" not in blob, \
+        "Headings 区仍在说『不设标题层级』（与 heading_levels=4 矛盾）"
+
+    # 栏数下拉：三项（不规定 / 单栏 / 双栏），且 columns=None 时当前值必须是「不规定」
+    none_txt = i18n.t(ui.lang, "q_none")
+    want = (none_txt, i18n.t(ui.lang, "review_one_column"),
+            i18n.t(ui.lang, "review_two_column"))
+    combos = _descendants(win, ttk.Combobox)
+    col_combo = [c for c in combos
+                 if tuple(str(v) for v in c.cget("values")) == want]
+    assert col_combo, "栏数下拉应是 (不规定/单栏/双栏)，实际：%r" % (
+        [tuple(str(v) for v in c.cget("values")) for c in combos],)
+    assert str(col_combo[0].get()) == none_txt, \
+        "columns=None 的当前选中值不是「不规定」，而是 %r" % (col_combo[0].get(),)
 
 
 def test_build_target_only_uses_inputs_of_current_source(ui):
