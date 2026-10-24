@@ -50,6 +50,8 @@ jobs:
           name: pytest-log-${{ github.run_id }}
           path: pytest-log.txt
           if-no-files-found: warn
+          # 这份日志只在「用例红」时有价值，90 天默认保留纯属占配额。
+          retention-days: 1
 
       # 把失败用例变成 **workflow 注解**（v2.3.89）。
       # 为什么加这一步：构件和 job logs 都要鉴权才能下，而注解走
@@ -215,6 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
 
@@ -269,3 +272,22 @@ jobs:
           files: release/*
           generate_release_notes: true
           allow_override: true
+
+      # Release 资产已挂好，本次 run 的构件当场回收。
+      # 为什么必须回收：构件只是「跨 job 传包」的中转（Release 资产不占 Actions 的
+      # 500MB artifact 配额），但默认仍会留到过期。同一天连打多个 tag 时，多个 run
+      # 的构件同时在场会把配额撑爆 → 下次 upload-artifact 直接报
+      # "Artifact storage quota has been hit"，整个 Release 发不出来。
+      - name: Recycle artifacts (Release 已有资产)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].id' 2>/dev/null || true)
+          for id in $ids; do
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" && echo "recycled artifact $id"
+          done
+          left=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.total_count' 2>/dev/null || echo '?')
+          echo "artifacts left in this run: $left"
