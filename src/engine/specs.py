@@ -796,9 +796,9 @@ SPECS: dict[str, StyleSpec] = {
               "First-page heading block (name / instructor / course / date) sits in the upper left, double-spaced. "
               "Numbered headings are not required (use a consistent format of your own).",
     ),
-    "IEEE": StyleSpec(
-        key="IEEE",
-        name="IEEE - Standard Two-Column (Word)",
+    "IEEE-Conference": StyleSpec(
+        key="IEEE-Conference",
+        name="IEEE Conference (two-column)",
         # 🔴 v2.3.100（C 批 D-07/D-13）：整套按**官方会议模板正文节**的 sectPr / 样式值。
         # 模板实测（`conference-template-*.docx`，2024-07-16 版）：
         #   正文节 `<w:pgMar w:top="54pt" w:bottom="72pt" w:left="45.35pt" w:right="45.35pt"/>`
@@ -878,6 +878,14 @@ SPECS: dict[str, StyleSpec] = {
     ),
 }
 
+# 「IEEE」保留为**旧 key 兼容别名**（与上方 "APA" → "APA-Student" 同一套路）：
+#   裁定冻结 FRZ-2026-10-23-01 · P-1：现有单档 IEEE 改名/迁移为 IEEE-Conference；
+#   IEEE-Journal 属 [待建]（材料其实已在 `_smoke/IEEE_journal_Access_template.docx`，
+#   是 IEEE Access 官方模板；建成前不得被任何输入通道选中）。
+#   保留别名的原因：旧配置 / `reference_style="IEEE"` 的兜底解析（resolve_spec）
+#   仍会拿 "IEEE" 去 get_spec()；没有别名会静默落到 "Other"（什么都不修）。
+SPECS["IEEE"] = SPECS["IEEE-Conference"]
+
 # ---------------------------------------------------------------------------
 # 正文段落级排版典型值（单一真相）：(对齐方式, 首行缩进英寸, 段前磅, 段后磅)
 # 说明：均为「该风格典型文稿」的兜底参考，检查时 spec 来源会降级为 info；
@@ -891,7 +899,7 @@ _BODY_LAYOUT: dict[str, tuple] = {
     "APA-Student":     ("left",    0.5,  0.0,  0.0),
     "APA-Professional": ("left",   0.5,  0.0,  0.0),
     "MLA":     ("left",    0.5,  0.0,  0.0),
-    "IEEE":    ("justify", 0.2,  0.0,  0.0),
+    "IEEE-Conference": ("justify", 0.2,  0.0,  0.0),
     "Other":   (None,      None, None, None),
 }
 
@@ -917,7 +925,7 @@ MARGIN_DIMS = (
 
 # 下拉框展示顺序（白名单单一来源，新增规范只需在此增加 key 并补 SPECS）。
 # APA 7th 拆成学生/专业两档；「APA」别名不进此列表（避免下拉出现三个 APA 条目）。
-SPEC_ORDER = ["APA-Student", "APA-Professional", "MLA", "IEEE", "Other"]
+SPEC_ORDER = ["APA-Student", "APA-Professional", "MLA", "IEEE-Conference", "Other"]
 
 # 引用风格白名单（与 SPEC_ORDER 中可引用者保持一致）
 REFERENCE_STYLE_KEYS = ("APA", "MLA", "IEEE")
@@ -937,7 +945,8 @@ SPEC_DISPLAY = {
     "APA-Student": "APA 7th - Student (Word)",
     "APA-Professional": "APA 7th - Professional (Word)",
     "MLA": "MLA 9th - Standard (Word)",
-    "IEEE": "IEEE - Standard Two-Column (Word)",
+    "IEEE-Conference": "IEEE Conference (two-column)",
+    "IEEE": "IEEE Conference (two-column)",   # 旧 key 兼容别名（显示名同 IEEE-Conference）
 }
 
 

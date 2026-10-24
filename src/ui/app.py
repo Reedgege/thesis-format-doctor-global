@@ -1658,7 +1658,7 @@ class App:
             ("APA-Student", "src_apa_student"),
             ("APA-Professional", "src_apa_pro"),
             ("MLA", "src_mla"),
-            ("IEEE", "src_ieee"),
+            ("IEEE-Conference", "src_ieee"),
             (None, "src_school"),
             (None, "src_manual"),
             (None, "src_ai"),
