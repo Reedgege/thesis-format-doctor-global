@@ -164,11 +164,18 @@ def test_i18n_buy_email_present():
         assert "up_buy_email" in i18n.STRINGS[lang], f"{lang} 缺 up_buy_email"
 
 
-def test_revoked_copy_mentions_buy_again():
-    en = i18n.STRINGS["en"]["trial_revoked"].lower()
-    zh = i18n.STRINGS["zh"]["trial_revoked"]
-    assert "buy" in en, f"英文停用文案要提到重新购买：{en!r}"
-    assert "再次购买" in zh or "购买" in zh, f"中文停用文案要提到购买：{zh!r}"
+def test_revoked_copy_and_buy_pathway():
+    """停用态：状态文案保持简洁（2026-10-25 老板定为 "License expired or revoked"，
+    去掉「重新输码 / 再买」的堆砌——长文案曾把同行 Upgrade 按钮挤到文字截断）；
+    「重新购买」通路改由相邻 Upgrade 按钮 + 弹窗内 Buy / Email us to buy 承接
+    （按钮显隐由本文件其它用例覆盖，这里锁文案本体与购买入口字符串仍在）。"""
+    assert i18n.STRINGS["en"]["trial_revoked"] == "License expired or revoked", \
+        f"英文停用文案应精简，实得 {i18n.STRINGS['en']['trial_revoked']!r}"
+    assert i18n.STRINGS["zh"]["trial_revoked"] == "授权已过期或已撤销", \
+        f"中文停用文案应精简，实得 {i18n.STRINGS['zh']['trial_revoked']!r}"
+    for lang in ("en", "zh"):
+        assert "up_buy" in i18n.STRINGS[lang], f"{lang} 缺 up_buy 购买入口"
+        assert "up_buy_email" in i18n.STRINGS[lang], f"{lang} 缺 up_buy_email 邮件入口"
 
 
 def test_gate_revoked_copy_mentions_buy_again():

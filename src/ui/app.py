@@ -2321,12 +2321,16 @@ class App:
         row.pack(fill="x", pady=(theme.SECTION_GAP, 0))
         self._commercial_row = row
         self._trial_lbl = tk.Label(row, text="", bg=theme.SURFACE,
-                                   fg=theme.TEXT_2, font=F["F_HELP"], anchor="w")
-        self._trial_lbl.pack(side="left")
+                                   fg=theme.TEXT_2, font=F["F_HELP"], anchor="w",
+                                   justify="left")
+        # fill+expand：状态文案吃掉 Upgrade 按钮之外的剩余宽度，按钮宽度由 pack 保证
+        # 不被挤压（配合 _bind_commercial_wrap 的动态换行，见其 docstring）。
+        self._trial_lbl.pack(side="left", fill="x", expand=True)
         self._upgrade_btn = RoundButton(
             row, text=self.tr("btn_upgrade"), command=self._upgrade_dialog,
             style="secondary", font=F["F_BTN_S"], height=28, padx=12)
         self._upgrade_btn.pack(side="right")
+        self._bind_commercial_wrap()
         self._refresh_commercial()
 
     def _refresh_commercial(self):
@@ -2401,6 +2405,66 @@ class App:
             self._upgrade_btn.set_visible(upgrade_visible)
         except Exception:
             pass
+
+    def _bind_commercial_wrap(self):
+        """商业区状态文案动态换行：换行上限 = 行宽 − Upgrade 按钮的**适配宽** − 间隙。
+
+        ``_trial_lbl`` 若干态文案很长：revoked 曾达 66 字符；四档里
+        ``lic_exp_soon``「%s · expires %s (renew soon)」、``lic_exp_expired``
+        「%s expired — renew or buy again」、``lic_times_exhausted``
+        「%s used up — buy another pack」铺开也都有 ~40+ 字符。若不给 label
+        收口 wraplength，``side="left"`` 的长文案按自然宽度请求，会把右侧
+        ``side="right"`` 的 Upgrade 按钮挤窄 —— 按钮文字 "Upgrade to
+        continue →" 被裁得只剩开头（2026-10-25 用户截图取证；到期/次数用完态同理）。
+
+        修法：把 wraplength 钉到「行宽 − 按钮适配宽(``_fit_width``) − 间隙」，
+        按钮宽度由 pack 保证永不被挤压，长文案在剩余宽度里自动换行。**必须按按钮
+        适配宽预留，而非标签实占宽**——标签实占宽本身已含被挤掉的缺口，照它算会
+        自我循环、按钮照旧被挤（首版踩过，已用真渲染冒烟取证）。按钮隐藏
+        （lifetime 已授权态）时不预留，文案吃满整行。防重入 / 延后首帧 / 销毁取消
+        沿用 ``_auto_wrap`` 的成熟套路。
+        """
+        lbl = self._trial_lbl
+        row = self._commercial_row
+        btn = self._upgrade_btn
+        state = {"wl": None, "busy": False}
+
+        def _apply(_e=None):
+            if state["busy"]:
+                return
+            try:
+                row_w = row.winfo_width()
+            except Exception:
+                return
+            # 预留宽度按按钮的**意图显隐** ``_visible`` 判断（由 set_visible 维护）——
+            # winfo_ismapped 在布局时序里会瞬时返回 0，不可靠（首版踩过）。
+            try:
+                reserve = (btn._fit_width() + 12) if getattr(btn, "_visible", True) else 0
+            except Exception:
+                reserve = 0
+            w = row_w - reserve
+            # 只挡构建期 1px 占位（w 会变负）；不放 winfo_viewable 早退——label 的
+            # <Configure> 常常只在搭建期触发一次且那时尚未映射，早退会让我们永远接不到
+            # 真实行宽（按钮一直被挤）。拿到真实行宽就设，after(30) 再校正 deiconify 后
+            # 的最终宽度，后续 resize / 按钮显隐都由 label <Configure> 接着收口。
+            if w <= 20 or w == state["wl"]:
+                return
+            state["wl"] = w
+            state["busy"] = True
+            try:
+                lbl.configure(wraplength=max(40, w))
+            finally:
+                state["busy"] = False
+
+        lbl.bind("<Configure>", _apply, add="+")
+        aid = lbl.after(30, _apply)
+
+        def _cancel(_e=None):
+            try:
+                lbl.after_cancel(aid)
+            except Exception:
+                pass
+        lbl.bind("<Destroy>", _cancel, add="+")
 
     def _set_step(self, index: int):
         """0=Prepare / 1=Check / 2=Fix / 3=三步全部完成。
@@ -4094,7 +4158,7 @@ class App:
         """升级 / 购买 / 激活 合并弹窗（规格 COMMERCIAL UI）。
 
         设计（老板 2026-10-01 定）：
-        - 顶部一行 SKU 信息（终身 / 月付），让客户买前就看清价格；
+        - 顶部一行 SKU 信息（次卡/季卡/年卡/终身 四档现价，与官网 pricing.html 对齐），让客户买前就看清价格；
         - 一个「购买」按钮直接开官网 pricing 页（价格单一来源在 store.js，app 不写死）；
         - 在线激活码输入框**直接放在弹窗主区域**（默认可见），客户买前就知道码填哪儿、
           买后粘贴即激活，无需再开第二个弹窗；
@@ -4118,12 +4182,14 @@ class App:
                  font=F["F_SMALL"], anchor="w", justify="left",
                  wraplength=520).pack(fill="x")
 
-        # SKU 一行（终身 / 月付）
+        # SKU 一行（四档现价；须与官网 pricing.html / store.js 单一来源保持一致，
+        # 官网改价时这里同步改，否则客户在 app 里看到的就是旧价）
         sku = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
                         border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
         sku.pack(fill="x", pady=(12, 0))
         tk.Label(sku.inner, text=tr("up_sku_line"), bg=theme.SURFACE_SOFT,
-                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w").pack(fill="x")
+                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w",
+                 justify="left", wraplength=520).pack(fill="x")
 
         # 购买按钮（开官网 pricing 页）
         RoundButton(body, text=tr("up_buy"), command=self._open_buy,

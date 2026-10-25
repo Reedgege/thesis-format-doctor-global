@@ -579,8 +579,19 @@ class RoundButton(tk.Frame):
                 else:
                     draw_icon(cv, self._icon, cx - tw / 2.0 - 15, cy, 16, fg, 2)
                     cx += 8
+            # 换行上限：画布横向放得下整行时留 2px 余量。自适配按钮的
+            # ``w - 2*padx`` 恰好等于文字实测宽，边界取整会把末词/箭头挤到第二行、
+            # 再被固定高度裁掉（商业区 Upgrade 按钮 "Upgrade to continue →" 的箭头
+            # 被截断即此因）；放不下时才保留原换行上限。
+            try:
+                _nat = int(tkfont.Font(font=self._font).measure(self._text))
+            except Exception:
+                _nat = len(self._text) * 8
+            _wrap = w - 2 * self._padx
+            if w >= _nat + 4:
+                _wrap = max(_wrap, _nat + 2)
             cv.create_text(cx, cy, text=self._text, fill=fg,
-                           font=self._font, width=max(40, w - 2 * self._padx))
+                           font=self._font, width=max(40, _wrap))
         except Exception:
             pass
 

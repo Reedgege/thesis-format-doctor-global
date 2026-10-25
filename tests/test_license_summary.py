@@ -60,7 +60,10 @@ def test_times_normal_no_warn(patch_state):
 
 def test_quarterly_warn_within_7_days(patch_state):
     now = int(time.time() * 1000)
-    patch_state(_state(kind=lic.KIND_QUARTERLY, expires_at=now + 5 * 86400000))
+    # +60s 缓冲：days_left = (exp - now_ms)//86400000，license_summary 内部现取
+    # now_ms（比本行 now 晚几毫秒）。若不设缓冲，5 天整的边界会被这几毫秒压低成 4
+    # （同一毫秒才侥幸=5）→ 间歇性 flaky。留 60s 余量后稳定=5，仍落在 ≤7 天 warn 内。
+    patch_state(_state(kind=lic.KIND_QUARTERLY, expires_at=now + 5 * 86400000 + 60000))
     s = lic.license_summary()
     assert s["days_left"] == 5
     assert s["warn"] is True

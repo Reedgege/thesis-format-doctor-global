@@ -10,16 +10,16 @@
 用法
 ----
     # 1) CI 产物下载到本地某目录后：
-    python tools/package_release.py --artifacts <目录> --version 2.3.106
+    python tools/package_release.py --artifacts <目录> --version 2.3.107
     #    → 生成改名后的 4 个文件 + 打印体积/SHA256 表格 + 打印可直接粘进
     #      download.html 的 <tr> 行
 
     # 2) 顺带传 R2（需 CLOUDFLARE_API_TOKEN 环境变量）：
-    python tools/package_release.py --artifacts <目录> --version 2.3.106 --upload-r2
+    python tools/package_release.py --artifacts <目录> --version 2.3.107 --upload-r2
     #    → 用 wrangler r2 object put 传到 paperformatpro 桶的 downloads/<ver>/
 
     # 3) 校验站点上的 SHA256 表与本地产物是否一致：
-    python tools/package_release.py --artifacts <目录> --version 2.3.106 --check-site <站点目录>
+    python tools/package_release.py --artifacts <目录> --version 2.3.107 --check-site <站点目录>
 
 只用标准库；调用 wrangler 走 subprocess。
 """
@@ -196,7 +196,7 @@ def check_site(site_dir: str, rows: list) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="发版打包助手")
     ap.add_argument("--artifacts", required=True, help="CI 产物所在目录")
-    ap.add_argument("--version", required=True, help="版本号，如 2.3.106")
+    ap.add_argument("--version", required=True, help="版本号，如 2.3.107")
     ap.add_argument("--out", help="改名后文件的输出目录（默认 <artifacts>/_staged_<ver>）")
     ap.add_argument("--upload-r2", action="store_true", help="传 R2（需 CLOUDFLARE_API_TOKEN）")
     ap.add_argument("--check-site", help="顺带校验站点 download.html 的 SHA256 表")
