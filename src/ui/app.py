@@ -1224,6 +1224,11 @@ class App:
         if res.get("locked"):
             self._set_status(tr("gate_revoked"), "err")
             self._set_bar("err")
+            # 🔴 必须先刷新商业区（老板 2026-10-25 报）：状态行与 Upgrade 按钮是在
+            # 界面搭建时按**本地缓存**渲染的（那时心跳还没跑），不刷新就会一直显示
+            # "Licensed · unlimited checks"，而实际码已被后台停用。刷新后状态行变成
+            # "已过期或已撤销"，Upgrade 按钮也重新出现（客户有再次购买的入口）。
+            self._refresh_commercial()
             # 直接打开合并的升级/激活窗（含激活码输入框）
             self._upgrade_dialog()
             return
@@ -4087,6 +4092,14 @@ class App:
                     style="primary", font=F["F_BTN"], height=38,
                     padx=18).pack(fill="x", pady=(12, 0))
 
+        # 邮件购买（老板 2026-10-25 加）：海外站在线结算当前是暂停态，pricing 页的
+        # 购买按钮置灰 —— 只给一个点过去也买不了的入口 = 死路。邮件是当下真正
+        # 能成交的通路（国内版弹窗同样带"扫码购买 + 客服"引导，见 tfd-desktop
+        # 的 _handle_revoked）。所以这里并列给出邮件入口。
+        RoundButton(body, text=tr("up_buy_email"), command=self._open_buy_email,
+                    style="secondary", font=F["F_BTN_S"], height=32,
+                    padx=14).pack(fill="x", pady=(8, 0))
+
         tk.Label(body, text=tr("up_note"), bg=theme.SURFACE, fg=theme.TEXT_3,
                  font=F["F_FOOT"], anchor="w", justify="left",
                  wraplength=520).pack(fill="x", pady=(8, 0))
@@ -4129,6 +4142,14 @@ class App:
         """「购买」按钮：开官网 pricing 页（价格单一来源在 store.js，app 不写死）。"""
         try:
             webbrowser.open(i18n.BRAND_BUY_URL)
+        except Exception:
+            pass
+
+    def _open_buy_email(self):
+        """「邮件购买」按钮：直接写信给我们（在线结算暂停时的唯一即时通路）。"""
+        subject = "PaperFormat Pro — activation code"
+        try:
+            webbrowser.open(f"mailto:{i18n.BRAND_EMAIL}?subject={subject}")
         except Exception:
             pass
 
@@ -4903,6 +4924,8 @@ class App:
         if gate_no_go:
             reason = (gate or {}).get("reason")
             if reason in ("revoked", "needs_reactivation", "trial_exhausted"):
+                # 同上：状态行要跟着变成"已撤销"，并露出 Upgrade 入口
+                self._refresh_commercial()
                 self._upgrade_dialog()
             else:
                 messagebox.showwarning(tr("msg_need_activation_title"), gate_no_go)

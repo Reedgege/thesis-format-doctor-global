@@ -75,6 +75,10 @@ class _FixStub:
     def _upgrade_dialog(self, *a, **k):
         self.calls.append(("upgrade", a, k))
 
+    # 授权不足时必须刷新商业区（老板 2026-10-25 报：码被停用后状态行还显示"已授权"）
+    def _refresh_commercial(self, *a, **k):
+        self.calls.append(("commercial", a, k))
+
     # v2.3.83：_run_fix 在弹原生对话框（确认/另存为/完成）前后要抓/还原显示状态，
     # 防「保存后窗口变小、字变清楚且退不回去」（见 src/ui/dpi.py）。stub 必须镜像。
     def _snap_display(self, *a, **k):

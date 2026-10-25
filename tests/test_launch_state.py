@@ -46,6 +46,10 @@ class _LaunchStub:
     def _upgrade_dialog(self, *a, **k):
         self.calls.append(("upgrade", a, k))
 
+    def _refresh_commercial(self, *a, **k):
+        # 启动核验判定吊销时必须刷新商业区（老板 2026-10-25 报的状态行不同步）
+        self.calls.append(("commercial", a, k))
+
     def _show_update_banner(self, *a, **k):
         self.calls.append(("banner", a, k))
 
