@@ -67,16 +67,28 @@ _KIND_RE = {
 
 
 def find_artifacts(src: str) -> dict:
-    """在目录里找出 4 个 CI 产物（认原始名，也认已改名的）。"""
+    """在目录里找出 4 个 CI 产物。
+
+    🔴 保险：**优先取原始名**（paperformatpro-windows.zip）。
+    目录里若同时躺着上一版改过名的件（paperformatpro-windows-v2.3.104.zip），
+    绝不能误取旧的——发出去的包版本对不上，客户装的是旧版。
+    原始名不存在时才退而接受带版本号的件。
+    """
+    files = [fn for fn in os.listdir(src)
+             if os.path.isfile(os.path.join(src, fn))]
     found = {}
-    for fn in os.listdir(src):
-        p = os.path.join(src, fn)
-        if not os.path.isfile(p):
+    for orig, pat in _KIND_RE.items():
+        exact = [fn for fn in files if fn == orig]
+        if exact:
+            found[orig] = os.path.join(src, exact[0])
             continue
-        for orig, pat in _KIND_RE.items():
-            if pat.match(fn):
-                found[orig] = p
-                break
+        variants = [fn for fn in files if pat.match(fn)]
+        if len(variants) == 1:
+            found[orig] = os.path.join(src, variants[0])
+        elif len(variants) > 1:
+            raise SystemExit(
+                f"目录里有多个 {orig} 的候选：{variants}\n"
+                f"为避免发错版本，请只保留本次构建的那一个。")
     return found
 
 

@@ -349,6 +349,15 @@ STRINGS: dict = {
         "trial_licensed_monthly": "Licensed · monthly plan",
         "trial_licensed_monthly_exp": "Licensed · monthly · expires %s",
         "trial_revoked": "License expired or revoked — re-enter your code or buy again",
+        # 四档授权（times/quarterly/annual/lifetime）状态行文案；%s 由 license_summary 注入
+        "lic_times_left": "%s · %s checks left",
+        "lic_times_left_one": "%s · %s check left",
+        "lic_times_exhausted": "%s used up — buy another pack",
+        "lic_exp": "%s · expires %s",
+        "lic_exp_soon": "%s · expires %s (renew soon)",
+        "lic_exp_soon_nd": "%s · renews soon",
+        "lic_exp_expired": "%s expired — renew or buy again",
+        "lic_exp_nd": "%s",
         # v2.3.16：授权层 gate 的 reason → 本地图文案（严禁直接显示 license 层硬编码中文）
         "gate_trial": "First free trial (up to %s fix)",
         "gate_activated": "Activated",
@@ -804,6 +813,15 @@ STRINGS: dict = {
         "trial_licensed_monthly": "已授权 · 月卡",
         "trial_licensed_monthly_exp": "已授权 · 月卡 · %s 到期",
         "trial_revoked": "授权已过期或已撤销 —— 请重新输入激活码，或再次购买",
+        # 四档授权状态行文案（与英文一一对应）；%s 由 license_summary 注入
+        "lic_times_left": "%s · 还剩 %s 次",
+        "lic_times_left_one": "%s · 还剩 %s 次",
+        "lic_times_exhausted": "%s 已用完 —— 请再购买一包",
+        "lic_exp": "%s · %s 到期",
+        "lic_exp_soon": "%s · %s 即将到期（请续费）",
+        "lic_exp_soon_nd": "%s · 即将续费",
+        "lic_exp_expired": "%s 已到期 —— 请续费或再次购买",
+        "lic_exp_nd": "%s",
         # v2.3.16：授权层 gate 的 reason → 本地图文案（严禁直接显示 license 层硬编码中文）
         "gate_trial": "首次免费试用（共 %s 次修正）",
         "gate_activated": "已激活",

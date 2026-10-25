@@ -413,13 +413,18 @@ def _fmt_expiry(value):
     保证英文界面在任何操作系统上都不会冒出中文月份。
 
     兼容多种来源格式：Unix 时间戳（int/float）、ISO 8601（含 ``Z`` 后缀）、纯日期。
-    解析失败一律返回 ``None``，调用方退化成不带日期的 ''Licensed · monthly''。
+    解析失败一律返回 ``None``，调用方退化成不带日期的授权文案。
     """
     if not value:
         return None
     if isinstance(value, (int, float)):
         try:
-            dt = datetime.fromtimestamp(value)
+            v = float(value)
+            # 毫秒时间戳（Unix epoch ms）：秒级上限约 1.7e9，值 > 1e11 必为毫秒，先除 1000，
+            # 否则 datetime.fromtimestamp 会因数值过大抛异常被吞 → 状态行退化成无日期。
+            if v > 1e11:
+                v = v / 1000.0
+            dt = datetime.fromtimestamp(v)
             return "%s %d, %d" % (_MONTHS_EN[dt.month - 1], dt.day, dt.year)
         except Exception:
             return None
@@ -2325,34 +2330,67 @@ class App:
         self._refresh_commercial()
 
     def _refresh_commercial(self):
-        """按 license 的**只读**状态刷新试用行文案与升级按钮显隐（任何异常都退回中性文案）。
+        """按 license 的**只读**状态刷新状态行文案与升级按钮显隐（任何异常都退回中性文案）。
 
-        状态分档：revoked（过期/撤销）→ 已激活且 kind=monthly（月卡）/ lifetime（终身）→
-        试用未用 → 试用已用完。月卡与终身卡都是付费用户，不显示「Upgrade to continue」；
-        只有试用或授权异常（含撤销/过期）才显示升级入口。所有权益判断只读 ``lic.status()``，
-        UI 不碰任何计数。
+        核心分档只读 ``lic.status()``（与授权停用回归测试 ``test_revoked_state_sync`` 一致，
+        该测试 monkeypatch 的就是 ``lic.status``）；四档授权（times/quarterly/annual/lifetime）
+        的剩余次数 / 剩余天数 / 预警 / 耗尽等**数值细节**再补一份 ``lic.license_summary()``。
+
+        规则：
+        - revoked：显示撤销文案 + 露 Upgrade；
+        - 未激活：试用剩余（limit - used）/ 已用完 + 露 Upgrade；
+        - lifetime：已授权·不限次，隐藏 Upgrade；
+        - times 次卡：显示剩余次数；≤1 次或已用完 → 露 Upgrade（加购）；
+        - quarterly/annual/monthly 定时卡：显示到期日；≤7 天或已过期 → 露 Upgrade（续费/再买）。
         """
         tr = self.tr
         text = tr("trial_none")
         upgrade_visible = True
         try:
             st = lic.status()
+            summ = lic.license_summary()  # 四档数值细节（剩余次数/天数/预警/耗尽）
             limit = int(st.get("trial_limit") or 1)
             if st.get("revoked"):
                 text = tr("trial_revoked")
+                upgrade_visible = True
             elif st.get("activated"):
-                kind = st.get("kind") or "lifetime"
-                if kind == "monthly":
+                kind = st.get("kind") or lic.KIND_LIFETIME
+                label = summ.get("kind_label") or tr("trial_licensed")
+                if kind == lic.KIND_LIFETIME:
+                    text = tr("trial_licensed")
+                    upgrade_visible = False
+                elif kind == lic.KIND_TIMES:
+                    left = summ.get("uses_left")
+                    if left is not None and left <= 0:
+                        text = tr("lic_times_exhausted", label)
+                        upgrade_visible = True
+                    elif left is not None and left <= 1:
+                        text = tr("lic_times_left_one", label, left)
+                        upgrade_visible = True  # 低额度加购提示
+                    else:
+                        text = tr("lic_times_left", label, left) if left is not None else tr("trial_licensed")
+                        upgrade_visible = False
+                elif kind in (lic.KIND_QUARTERLY, lic.KIND_ANNUAL, "monthly"):
                     exp = _fmt_expiry(st.get("expires_at"))
-                    text = tr("trial_licensed_monthly_exp", exp) if exp else tr("trial_licensed_monthly")
+                    if summ.get("exhausted"):
+                        text = tr("lic_exp_expired", label)
+                        upgrade_visible = True
+                    elif summ.get("warn"):
+                        text = tr("lic_exp_soon", label, exp) if exp else tr("lic_exp_soon_nd", label)
+                        upgrade_visible = True  # 近到期软提醒（续费/再买）
+                    else:
+                        text = tr("lic_exp", label, exp) if exp else tr("lic_exp_nd", label)
+                        upgrade_visible = False
                 else:
                     text = tr("trial_licensed")
-                upgrade_visible = False
+                    upgrade_visible = False
             elif not st.get("trial_fix_used"):
                 left = max(0, limit)
                 text = tr("trial_fix_one", left) if left == 1 else tr("trial_fix_many", left)
+                upgrade_visible = True
             else:
                 text = tr("trial_none")
+                upgrade_visible = True
         except Exception:
             pass
         try:
@@ -4979,6 +5017,7 @@ class App:
         self._sync_ui()                      # 主按钮 → Review changes，三步全部打勾
         self._set_status(tr("state_fixed"), "ok", spec=("state_fixed", ()))
         self._set_bar("ok")
+        self._refresh_commercial()           # 扣次后刷新状态行（次卡剩余次数 / 近到期提示）
         # 展示**扣减后**的状态（gate['message'] 是扣减前的，会显示成「首次免费试用」）
         messagebox.showinfo(tr("msg_fix_done_title"),
                             "%s\n%s\n\n%s" % (tr("msg_fix_done_before_file"), out,

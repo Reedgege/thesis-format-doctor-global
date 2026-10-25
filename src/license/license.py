@@ -13,6 +13,10 @@
 - ``POST /api/activate``   {product, code, machine_code}
       → {ok:true, type, expires_at, status, uses_total, uses_used}
       | {ok:false, error: "invalid_code"|"revoked"|"expired"|"already_used"|"missing_fields"}
+      （type ∈ times/quarterly/annual/lifetime；expires_at 为毫秒；times 卡回 uses_total/uses_used）
+- ``POST /api/consume``    {product, code, machine_code, dry_run, uses_used?}
+      → 次卡计次（中台为准）：dry_run=true 仅预检；false 真扣，uses_used 为绝对已用次数（服务端取 max，幂等）
+      → {ok:true, uses_total, uses_used} | {ok:false, error:"exhausted"|...}
 - ``POST /api/heartbeat``  {product, code, machine_code}
       → {ok:true, status: "active"|"revoked"|"expired", expires_at,
          latest_version?, download_url?, min_version?}
@@ -67,9 +71,19 @@ from pathlib import Path
 API_BASE = "https://api.reedskill.com"
 PRODUCT = "global"        # 海外版产品 id（中台 ensureProduct 自动建行）
 TRIAL_FIX_LIMIT = 1       # 修正：1 次免费试用（产品模型 B：查免费、修正 1 次免费、之后付费）
+
+# 授权类型（kind）取值：与中台 /api/activate 回的 type 字段对齐。
+# 单位约定：expires_at 一律**毫秒**（Unix epoch ms），与国内版 + 共用 Worker 一致；
+# 切勿直接转发 Paddle 的秒级时间戳，否则期限差 1000 倍。
+KIND_TIMES = "times"          # 次卡：按次计费，uses_total/uses_used 有效
+KIND_QUARTERLY = "quarterly"  # 季卡：一次付费 90 天，expires_at = 激活时刻 + 90d(ms)
+KIND_ANNUAL = "annual"        # 年卡：订阅循环，expires_at 由心跳写回（续费自动延长）
+KIND_LIFETIME = "lifetime"    # 终身：无期限
+
 _P_ACTIVATE = "/api/activate"
 _P_HEARTBEAT = "/api/heartbeat"
 _P_TRIAL = "/api/trial"
+_P_CONSUME = "/api/consume"   # 次卡计次（中台为准，dry_run 预检 / 真扣）
 
 # 本地状态文件路径。
 # 优先级：环境变量 TFD_LICENSE_FILE > 模块常量 LICENSE_FILE > 用户家目录下默认。
@@ -251,12 +265,20 @@ def _default_state() -> dict:
         "activated": False,
         "code": None,
         "kind": None,
+        # expires_at：到期时间戳（毫秒，Unix epoch ms）。季卡/年卡有效；终身/试用为 None。
         "expires_at": None,
         "trial_fix_used": False,
         "revoked": False,
         "offline": False,
         "machine": _machine_fingerprint(),
         "last_heartbeat": 0,
+        # —— 次卡（按次计费）专有字段 ——
+        # uses_total: 总次数（次卡=2；非次卡为 None 表示「无限/不适用」）
+        # uses_used: 已用次数（本地乐观推进；中台 /api/consume 为准）
+        # owed: 本地欠账户数（扣次失败/离线时记一笔，下次联网 pay_owed 补扣）
+        "uses_total": None,
+        "uses_used": 0,
+        "owed": 0,
     }
 
 
@@ -435,12 +457,30 @@ def _safe_heartbeat(code, machine) -> dict | None:
         return None
 
 
+def _sync_from_heartbeat(state: dict, hb: dict) -> None:
+    """心跳 active 时，把服务端下发的过期时间 / 计次写回本地（不落盘，调用方负责 save）。
+
+    - expires_at（毫秒）：年卡续费后服务端下发新值 → 本地自动延长；
+    - times 次卡：以服务端 uses_total/uses_used 为准，结清欠账（防多机不同步）。
+    """
+    if hb.get("expires_at"):
+        state["expires_at"] = hb["expires_at"]
+    if state.get("kind") == KIND_TIMES:
+        if hb.get("uses_total") is not None:
+            state["uses_total"] = hb["uses_total"]
+        if hb.get("uses_used") is not None:
+            state["uses_used"] = hb["uses_used"]
+            if hb.get("uses_used", 0) >= (hb.get("uses_total") or 0):
+                state["owed"] = 0
+
+
 def _apply_heartbeat_revocation(state: dict, fp: str) -> bool:
     """对在线激活码做一次心跳吊销核对。返回 True 表示已被锁（revoked/expired）。
 
     方向 A：撤销即时生效——后台一停用，下次启动或下次点修正即锁。
     fail-soft：网络不可达（_safe_heartbeat 返回 None）不锁、不报错（离线宽限）。
-    服务器可达且仍 active 时刷新本地 last_heartbeat（便于诊断与兜底窗口）。
+    服务器可达且仍 active 时刷新本地 last_heartbeat，并写回服务端下发的
+    expires_at / 计次（年卡续费自动延长、次卡多机同步）。
     """
     hb = _safe_heartbeat(state.get("code"), fp)
     if hb and hb.get("status") in ("revoked", "expired"):
@@ -451,8 +491,9 @@ def _apply_heartbeat_revocation(state: dict, fp: str) -> bool:
         except Exception:
             pass
         return True
-    if hb:  # 可达且 active：刷新戳
+    if hb:  # 可达且 active：刷新戳 + 写回服务端下发字段
         state["last_heartbeat"] = int(time.time())
+        _sync_from_heartbeat(state, hb)
         try:
             save_state(state)
         except Exception:
@@ -465,6 +506,62 @@ def _safe_trial_sync(machine: str, claim: bool = False) -> dict | None:
         return _trial_sync(machine, claim)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# 次卡（按次计费）计次：中台 /api/consume 为准，本地 owed 账本兜底防离线白嫖
+# ---------------------------------------------------------------------------
+MAX_OWED = 5  # 本地欠账上限：超过则视为异常（仍 fail-closed，待联网补扣失败才锁）
+
+
+def _consume_use(dry_run: bool = False) -> dict | None:
+    """向中台登记 / 预检一次次卡消耗。返回服务端响应或 None（网络不可达）。
+
+    dry_run=True  → 只预检不真扣（修正前门禁用）；
+    dry_run=False → 真扣：上报绝对已用次数（幂等，服务端取 max），
+                   避免补扣 / 多机场景重复计数。
+    """
+    state = load_state()
+    if not state.get("code"):
+        return None
+    payload = {
+        "product": PRODUCT,
+        "code": state.get("code"),
+        "machine_code": _machine_fingerprint(),
+        "dry_run": bool(dry_run),
+    }
+    if not dry_run:
+        payload["uses_used"] = state.get("uses_used") or 0
+    try:
+        return _post(_P_CONSUME, payload, timeout=5)
+    except Exception:
+        return None
+
+
+def pay_owed() -> None:
+    """联网恢复后，把本地 owed 欠账户数一次性补扣到中台（次卡）。绝不抛异常。
+
+    发送绝对 uses_used（含所有乐观推进 + 欠账），服务端取 max → 幂等；
+    成功则本地 owed 清零、uses_used 以服务端为准。失败保留欠账，下次再补。
+    """
+    try:
+        state = load_state()
+        if state.get("kind") != KIND_TIMES or not state.get("code"):
+            return
+        if (state.get("owed") or 0) <= 0:
+            return
+        res = _consume_use(dry_run=False)
+        if res and res.get("ok"):
+            state = load_state()
+            if res.get("uses_used") is not None:
+                state["uses_used"] = res["uses_used"]
+            state["owed"] = 0
+            try:
+                save_state(state)
+            except Exception:
+                pass
+    except Exception:
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -567,8 +664,24 @@ def activate(code: str) -> dict:
     state = load_state()
     state["activated"] = True
     state["code"] = code
-    state["kind"] = res.get("type") or res.get("kind") or "lifetime"
-    state["expires_at"] = res.get("expires_at")
+    state["kind"] = res.get("type") or res.get("kind") or KIND_LIFETIME
+    # 到期时间（毫秒，Unix epoch ms）：以中台下发的 expires_at 为准；
+    # 过渡期服务端若未下发，季/年卡按 kind 兜底推导，避免本地永远不过期
+    # （年卡续费后由心跳写回新 expires_at，见 refresh_license_on_launch）。
+    if state["kind"] in (KIND_QUARTERLY, KIND_ANNUAL):
+        srv_exp = res.get("expires_at")
+        if srv_exp:
+            state["expires_at"] = srv_exp
+        else:
+            dur_ms = (90 if state["kind"] == KIND_QUARTERLY else 365) * 24 * 3600 * 1000
+            state["expires_at"] = int(time.time() * 1000) + dur_ms
+    else:
+        # 终身 / 次卡：无绝对到期（次卡靠 uses_used 计次，不靠时间）
+        state["expires_at"] = res.get("expires_at")
+    # 次卡：按次计费字段，以中台为准；兜底 2 次 / 0 已用
+    if state["kind"] == KIND_TIMES:
+        state["uses_total"] = res.get("uses_total") if res.get("uses_total") is not None else 2
+        state["uses_used"] = res.get("uses_used") or 0
     state["revoked"] = False
     state["machine"] = _machine_fingerprint()
     state["last_heartbeat"] = int(time.time())
@@ -679,6 +792,53 @@ def _entitlement_on_error(e: Exception) -> dict:
             "remaining_trial": 0}
 
 
+def _local_expiry_reason(state: dict) -> str | None:
+    """本地有效期 / 计次强制（fail-closed）。返回锁定 reason 或 None。
+
+    - lifetime：无期限 → None
+    - times（次卡）：uses_used >= uses_total → "uses_exhausted"（离线也拦，
+      与中台 /api/consume 为准，本地 owed 账本兜底防离线白嫖）
+    - quarterly / annual：expires_at（毫秒）已过 → "expired"
+      （年卡续费后心跳写回新 expires_at，故联网用户不会误锁）
+    """
+    kind = state.get("kind")
+    if kind == KIND_TIMES:
+        total = state.get("uses_total")
+        used = state.get("uses_used") or 0
+        if total is not None and used >= total:
+            return "uses_exhausted"
+        return None
+    if kind in (KIND_QUARTERLY, KIND_ANNUAL):
+        exp = state.get("expires_at")
+        if exp and int(time.time() * 1000) > exp:
+            return "expired"
+        return None
+    return None
+
+
+_EXPIRY_MSG = {
+    "expired": "Your license has expired. Please renew to continue fixing.",
+    "uses_exhausted": "Your fix pack is used up. Please purchase a new pack to continue fixing.",
+}
+
+
+def _times_precheck_reason(state: dict) -> str | None:
+    """次卡修正前服务端配额预检（dry_run）。返回 "uses_exhausted" 或 None。
+
+    - 网络不可达（res None）→ 离线宽限，不拦（本地 uses_used 已拦满额）；
+    - 服务端明确不 ok（如 exhausted / 多机已用完）→ 拦；
+    - 其余 → 放行。
+    """
+    if state.get("kind") != KIND_TIMES:
+        return None
+    res = _consume_use(dry_run=True)
+    if res is None:
+        return None
+    if not res.get("ok"):
+        return "uses_exhausted"
+    return None
+
+
 def _require_fix_entitlement() -> dict:
     global _launch_verified_active
     state = load_state()
@@ -758,6 +918,18 @@ def _require_fix_entitlement() -> dict:
     #    服务器明确 revoked/expired 才锁；网络不可达（_safe_heartbeat 返回 None）
     #    走离线宽限、不锁。离线激活码已在 ①-b 提前返回，不会到这里。
     if state.get("activated"):
+        # ② 本地有效期 / 计次强制（fail-closed，离线也拦）
+        _exp_reason = _local_expiry_reason(state)
+        if _exp_reason:
+            return {"allowed": False, "reason": _exp_reason,
+                    "message": _EXPIRY_MSG.get(_exp_reason, "License no longer valid."),
+                    "remaining_trial": 0}
+        # 次卡：修正前服务端配额预检（dry_run，离线宽限不拦）
+        _q_reason = _times_precheck_reason(state)
+        if _q_reason:
+            return {"allowed": False, "reason": _q_reason,
+                    "message": _EXPIRY_MSG.get(_q_reason, "License no longer valid."),
+                    "remaining_trial": 0}
         if _launch_verified_active:
             return {"allowed": True, "reason": "activated",
                     "message": f"Activated ({state.get('kind') or 'lifetime'})",
@@ -766,6 +938,7 @@ def _require_fix_entitlement() -> dict:
             return {"allowed": False, "reason": "revoked",
                     "message": "Your license has been revoked or expired. Please re-enter your activation code.",
                     "remaining_trial": 0}
+        # 心跳已核对（active，已带回可能刷新的 expires_at）→ 本地有效期 / 计次强制
         _launch_verified_active = True
         return {"allowed": True, "reason": "activated",
                 "message": f"Activated ({state.get('kind') or 'lifetime'})",
@@ -843,13 +1016,15 @@ def refresh_license_on_launch() -> dict:
                 "locked": True, "offline": False,
                 "network_unreachable": False,
                 "version": _version_info_from(hb, version)}
-    # active
+    # active：写回服务端下发的过期时间 / 计次（年卡续费自动延长、次卡多机同步）
     state["last_heartbeat"] = int(time.time())
+    _sync_from_heartbeat(state, hb)
     try:
         save_state(state)
     except Exception:
         pass
     _launch_verified_active = True
+    pay_owed()  # 联网恢复：次卡欠账补扣（绝不抛异常）
     return {"checked": True, "activated": True, "revoked": False,
             "locked": False, "offline": False,
             "network_unreachable": False,
@@ -857,10 +1032,12 @@ def refresh_license_on_launch() -> dict:
 
 
 def record_fix_used() -> bool:
-    """修正成功后调用：标记试用已用 + 中台登记（仅未激活用户）。
+    """修正成功后调用：试用计次 / 次卡扣次 + 欠账兜底。绝不抛异常。返回是否落盘成功。
 
-    **绝不抛异常**（否则会出现「修正稿已生成但未计次」，用户可反复白嫖）。
-    返回是否成功落盘。已激活用户（启动已核验过、修正时不再联网）跳过中台登记。
+    - 未激活：试用标记 + 中台登记（原逻辑）；
+    - 次卡（times）：乐观推进本地 uses_used，再上报中台真扣；上报成功以服务端为准并
+      结清 owed 欠账，失败/离线记 owed，下次联网由 pay_owed() 补扣（中台为准，防离线白嫖）；
+    - 其他已激活（lifetime / 季 / 年）：无计次，跳过。
     """
     ok = True
     state = None
@@ -868,6 +1045,17 @@ def record_fix_used() -> bool:
         state = load_state()
         if not state.get("activated"):
             state["trial_fix_used"] = True
+        elif state.get("kind") == KIND_TIMES:
+            # 先乐观推进本地计数，再上报；上报成功以服务端为准并结清欠账
+            state["uses_used"] = (state.get("uses_used") or 0) + 1
+            res = _consume_use(dry_run=False)
+            if res and res.get("ok"):
+                if res.get("uses_used") is not None:
+                    state["uses_used"] = res["uses_used"]
+                state["owed"] = 0
+            else:
+                # 网络不可达 / 服务端异常：记欠账，下次联网补扣
+                state["owed"] = (state.get("owed") or 0) + 1
         save_state(state)
     except Exception:
         ok = False
@@ -885,6 +1073,14 @@ def post_fix_message(gate: dict, counted: bool = True) -> str:
     if not counted:
         return "Trial count write failed (this fix still succeeded, but please note)."
     if gate.get("reason") == "activated":
+        s = load_state()
+        if s.get("kind") == KIND_TIMES:
+            total = s.get("uses_total")
+            used = s.get("uses_used") or 0
+            left = (total - used) if total is not None else None
+            if left is not None and left <= 0:
+                return "Two-use pack used up. Please purchase a new pack to continue fixing."
+            return f"Two-use pack · {left} fix(es) left."
         return f"Activated ({gate.get('kind') or 'lifetime'}), you can continue fixing without limits."
     return (f"Free trial quota exhausted ({TRIAL_FIX_LIMIT}/{TRIAL_FIX_LIMIT}); "
             f"next fix requires an activation code.")
@@ -904,3 +1100,60 @@ def status() -> dict:
         "machine": s.get("machine") or _machine_fingerprint(),
         "trial_limit": TRIAL_FIX_LIMIT,
     }
+
+
+# 授权类型对外展示标签（全英文，海外版零中文）。
+_KIND_LABELS = {
+    KIND_TIMES: "Two-use pack",
+    KIND_QUARTERLY: "3-month pass",
+    KIND_ANNUAL: "Annual plan",
+    KIND_LIFETIME: "Lifetime license",
+}
+
+
+def license_summary() -> dict:
+    """供 GUI 展示的授权摘要：类型标签、剩余天数 / 剩余次数、预警与耗尽标志。
+
+    阈值（与国内版对齐）：
+    - 季 / 年卡：剩余 ≤ 0 天 → exhausted；≤ 7 天 → warn（近到期软提醒）；
+    - 次卡：剩余 ≤ 0 次 → exhausted；≤ 1 次 → warn（低额度加购提示）。
+    """
+    s = load_state()
+    kind = s.get("kind")
+    now_ms = int(time.time() * 1000)
+    out = {
+        "activated": bool(s.get("activated")),
+        "kind": kind,
+        "kind_label": _KIND_LABELS.get(kind, "Free trial"),
+        "offline": bool(s.get("offline")),
+        "revoked": bool(s.get("revoked")),
+        "trial_fix_used": bool(s.get("trial_fix_used")),
+        "expires_at": s.get("expires_at"),
+        "days_left": None,
+        "uses_total": s.get("uses_total"),
+        "uses_used": s.get("uses_used") or 0,
+        "uses_left": None,
+        "owed": s.get("owed") or 0,
+        "warn": False,       # 临近到期 / 仅剩 1 次
+        "exhausted": False,  # 已到期 / 次数用尽
+    }
+    if kind in (KIND_QUARTERLY, KIND_ANNUAL):
+        exp = s.get("expires_at")
+        if exp:
+            days = (exp - now_ms) // 86400000
+            out["days_left"] = days
+            if days <= 0:
+                out["exhausted"] = True
+            elif days <= 7:
+                out["warn"] = True
+    elif kind == KIND_TIMES:
+        total = s.get("uses_total")
+        used = s.get("uses_used") or 0
+        if total is not None:
+            left = total - used
+            out["uses_left"] = left
+            if left <= 0:
+                out["exhausted"] = True
+            elif left <= 1:
+                out["warn"] = True
+    return out
