@@ -443,6 +443,55 @@ def _fmt_expiry(value):
     return None
 
 
+# ---------------------------------------------------------------------------
+# 价格（升级弹窗 SKU 行）
+# ---------------------------------------------------------------------------
+# 价格单一来源 = 服务端 prices.json（见 i18n.BRAND_PRICES_URL，放在 R2 上，
+# 老板可自行改价上传，无需重新打包软件）。拉取失败 / 离线时回退到这个内置值
+# （与当前官网四档价一致）。两者结构同构：{"currency","tiers":[{name_key,price,was?,hot?}]}。
+DEFAULT_PRICES = {
+    "currency": "USD",
+    "tiers": [
+        {"name_key": "up_tier_two", "price": "$5.99"},
+        {"name_key": "up_tier_quarter", "price": "$39"},
+        {"name_key": "up_tier_annual", "price": "$79"},
+        {"name_key": "up_tier_lifetime", "price": "$149", "was": "$199", "hot": True},
+    ],
+}
+
+
+def _load_prices():
+    """拉取服务端价格（prices.json）。失败 / 非预期结构返回 None，调用方回退内置值。"""
+    try:
+        req = urllib.request.Request(
+            i18n.BRAND_PRICES_URL, headers={"User-Agent": "PaperFormatPro"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if isinstance(data, dict) and data.get("tiers"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_and_render_prices(txt, render):
+    """后台拉取价格，成功后在主线程用最新数据重渲染 SKU 行（弹窗秒开、不阻塞）。"""
+    def _job():
+        data = _load_prices()
+        if not data:
+            return
+        try:
+            if not txt.winfo_exists():
+                return
+            txt.after(0, lambda: render(data))
+        except Exception:
+            pass
+    try:
+        threading.Thread(target=_job, daemon=True).start()
+    except Exception:
+        pass
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -4182,37 +4231,64 @@ class App:
                  font=F["F_SMALL"], anchor="w", justify="left",
                  wraplength=520).pack(fill="x")
 
-        # SKU 一行（四档现价；须与官网 pricing.html / store.js 单一来源保持一致，
-        # 官网改价时这里同步改，否则客户在 app 里看到的就是旧价）。
-        # 特惠价用鲜艳珊瑚红高亮、原价划线，突出「现在买最划算」。
+        # SKU 一行（四档现价，单行；特惠价珊瑚红高亮、原价划线）。
+        # 价格单一来源 = 服务端 prices.json（i18n.BRAND_PRICES_URL），改价只改服务端、不动软件；
+        # 拉取失败 / 离线时回退内置 DEFAULT_PRICES。用 Text 富文本（彩色 + 划线），
+        # 宽度不够时自动换行且不被右缘裁掉（2026-10-26 老板截图取证截断已修）。
         sku = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
                         border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
         sku.pack(fill="x", pady=(12, 0))
-        sku_row = tk.Frame(sku.inner, bg=theme.SURFACE_SOFT)
-        sku_row.pack(fill="x", pady=2)
-
-        def _seg(text, fg, overstrike=False, padx=0):
-            fnt = F["F_LABEL"]
-            if overstrike:
-                fnt = fnt.copy()
-                fnt.config(overstrike=1)
-            tk.Label(sku_row, text=text, bg=theme.SURFACE_SOFT, fg=fg,
-                     font=fnt, anchor="w").pack(side="left", padx=padx)
-
         SKU_HOT = "#E8453C"  # 特惠价高亮（珊瑚红，与青绿主色形成对比）
-        _seg(tr("up_tier_two"), theme.PRIMARY_HOVER)
-        _seg(" ($5.99)", theme.TEXT_2)
-        _seg("  ·  ", theme.TEXT_3)
-        _seg(tr("up_tier_quarter"), theme.PRIMARY_HOVER)
-        _seg(" ($39)", theme.TEXT_2)
-        _seg("  ·  ", theme.TEXT_3)
-        _seg(tr("up_tier_annual"), theme.PRIMARY_HOVER)
-        _seg(" ($79)", theme.TEXT_2)
-        _seg("  ·  ", theme.TEXT_3)
-        _seg(tr("up_tier_lifetime") + " (", theme.PRIMARY_HOVER)
-        _seg("$149", SKU_HOT)
-        _seg(" $199", theme.TEXT_3, overstrike=True)
-        _seg(")", theme.PRIMARY_HOVER)
+        sku_txt = tk.Text(sku.inner, bg=theme.SURFACE_SOFT,
+                          fg=theme.PRIMARY_HOVER, font=F["F_FOOT"],
+                          relief="flat", bd=0, highlightthickness=0,
+                          wrap="word", cursor="arrow", height=1,
+                          spacing1=1, spacing3=1)
+        sku_txt.pack(fill="x")
+        sku_txt.tag_configure("hot", foreground=SKU_HOT)
+        sku_txt.tag_configure("muted", foreground=theme.TEXT_2)
+        sku_txt.tag_configure("sep", foreground=theme.TEXT_3)
+        sku_txt.tag_configure("old", foreground=theme.TEXT_3, overstrike=1)
+
+        def _render_sku(prices):
+            # prices: {"tiers":[{name_key|name, price, was?, hot?}]}
+            try:
+                sku_txt.configure(state="normal")
+                sku_txt.delete("1.0", "end")
+                for i, t in enumerate((prices or {}).get("tiers", [])):
+                    if i:
+                        sku_txt.insert("end", " · ", "sep")
+                    name = t.get("name") or (tr(t["name_key"]) if t.get("name_key") else "")
+                    sku_txt.insert("end", name)
+                    price = t.get("price")
+                    if price:
+                        was = t.get("was")
+                        if was and t.get("hot"):
+                            sku_txt.insert("end", " (")
+                            sku_txt.insert("end", price, "hot")
+                            sku_txt.insert("end", " " + was, "old")
+                            sku_txt.insert("end", ")")
+                        else:
+                            sku_txt.insert("end", f" ({price})", "muted")
+                sku_txt.configure(state="disabled")
+                n = max(1, int(float(sku_txt.index("end"))))
+                if sku_txt.cget("height") != n:
+                    sku_txt.configure(height=n)
+            except Exception:
+                pass
+
+        def _fit_sku_height(_e=None):
+            # 宽度变化时重算行数（正常单行；极窄才折行，且永不裁切）
+            try:
+                n = max(1, int(float(sku_txt.index("end"))))
+                if sku_txt.cget("height") != n:
+                    sku_txt.configure(height=n)
+            except Exception:
+                pass
+
+        sku_txt.bind("<Configure>", _fit_sku_height, add="+")
+        _render_sku(DEFAULT_PRICES)            # 先用内置值秒开
+        _fetch_and_render_prices(sku_txt, _render_sku)  # 后台拉服务端价，成功则覆盖
 
         # 购买按钮（开官网 pricing 页）
         RoundButton(body, text=tr("up_buy"), command=self._open_buy,

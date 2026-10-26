@@ -1,0 +1,9 @@
+{
+  "currency": "USD",
+  "tiers": [
+    { "name_key": "up_tier_two",      "price": "$5.99" },
+    { "name_key": "up_tier_quarter",  "price": "$39" },
+    { "name_key": "up_tier_annual",   "price": "$79" },
+    { "name_key": "up_tier_lifetime", "price": "$149", "was": "$199", "hot": true }
+  ]
+}
