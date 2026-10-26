@@ -4183,26 +4183,41 @@ class App:
                  wraplength=520).pack(fill="x")
 
         # SKU 一行（四档现价；须与官网 pricing.html / store.js 单一来源保持一致，
-        # 官网改价时这里同步改，否则客户在 app 里看到的就是旧价）
+        # 官网改价时这里同步改，否则客户在 app 里看到的就是旧价）。
+        # 特惠价用鲜艳珊瑚红高亮、原价划线，突出「现在买最划算」。
         sku = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
                         border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
         sku.pack(fill="x", pady=(12, 0))
-        tk.Label(sku.inner, text=tr("up_sku_line"), bg=theme.SURFACE_SOFT,
-                 fg=theme.PRIMARY_HOVER, font=F["F_LABEL"], anchor="w",
-                 justify="left", wraplength=520).pack(fill="x")
+        sku_row = tk.Frame(sku.inner, bg=theme.SURFACE_SOFT)
+        sku_row.pack(fill="x", pady=2)
+
+        def _seg(text, fg, overstrike=False, padx=0):
+            fnt = F["F_LABEL"]
+            if overstrike:
+                fnt = fnt.copy()
+                fnt.config(overstrike=1)
+            tk.Label(sku_row, text=text, bg=theme.SURFACE_SOFT, fg=fg,
+                     font=fnt, anchor="w").pack(side="left", padx=padx)
+
+        SKU_HOT = "#E8453C"  # 特惠价高亮（珊瑚红，与青绿主色形成对比）
+        _seg(tr("up_tier_two"), theme.PRIMARY_HOVER)
+        _seg(" ($5.99)", theme.TEXT_2)
+        _seg("  ·  ", theme.TEXT_3)
+        _seg(tr("up_tier_quarter"), theme.PRIMARY_HOVER)
+        _seg(" ($39)", theme.TEXT_2)
+        _seg("  ·  ", theme.TEXT_3)
+        _seg(tr("up_tier_annual"), theme.PRIMARY_HOVER)
+        _seg(" ($79)", theme.TEXT_2)
+        _seg("  ·  ", theme.TEXT_3)
+        _seg(tr("up_tier_lifetime") + " (", theme.PRIMARY_HOVER)
+        _seg("$149", SKU_HOT)
+        _seg(" $199", theme.TEXT_3, overstrike=True)
+        _seg(")", theme.PRIMARY_HOVER)
 
         # 购买按钮（开官网 pricing 页）
         RoundButton(body, text=tr("up_buy"), command=self._open_buy,
                     style="primary", font=F["F_BTN"], height=38,
                     padx=18).pack(fill="x", pady=(12, 0))
-
-        # 邮件购买（老板 2026-10-25 加）：海外站在线结算当前是暂停态，pricing 页的
-        # 购买按钮置灰 —— 只给一个点过去也买不了的入口 = 死路。邮件是当下真正
-        # 能成交的通路（国内版弹窗同样带"扫码购买 + 客服"引导，见 tfd-desktop
-        # 的 _handle_revoked）。所以这里并列给出邮件入口。
-        RoundButton(body, text=tr("up_buy_email"), command=self._open_buy_email,
-                    style="secondary", font=F["F_BTN_S"], height=32,
-                    padx=14).pack(fill="x", pady=(8, 0))
 
         tk.Label(body, text=tr("up_note"), bg=theme.SURFACE, fg=theme.TEXT_3,
                  font=F["F_FOOT"], anchor="w", justify="left",
@@ -4246,14 +4261,6 @@ class App:
         """「购买」按钮：开官网 pricing 页（价格单一来源在 store.js，app 不写死）。"""
         try:
             webbrowser.open(i18n.BRAND_BUY_URL)
-        except Exception:
-            pass
-
-    def _open_buy_email(self):
-        """「邮件购买」按钮：直接写信给我们（在线结算暂停时的唯一即时通路）。"""
-        subject = "PaperFormat Pro — activation code"
-        try:
-            webbrowser.open(f"mailto:{i18n.BRAND_EMAIL}?subject={subject}")
         except Exception:
             pass
 

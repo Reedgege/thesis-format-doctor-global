@@ -14,7 +14,8 @@
     ① 启动核验判定 locked 时，必须刷新商业区；
     ② `_refresh_commercial` 在 revoked 态：文案 = "已过期或已撤销"，Upgrade 按钮**可见**；
        在 activated 态：文案 = "已授权"，Upgrade 按钮隐藏（付费用户不该被推销升级）；
-    ③ i18n 新键 `up_buy_email` 两套语言都在（邮件购买 = 海外站在线结算暂停时的唯一通路）。
+    ③ 购买入口：两套语言都有 `up_buy`（Buy 按钮，开官网 pricing 页）；
+       原 `up_buy_email`（邮件购买）按老板 2026-10-26 意已移除，这里锁其不再存在。
 """
 
 from __future__ import annotations
@@ -157,17 +158,19 @@ def test_refresh_commercial_trial_shows_upgrade(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# ③ 文案：必须能"重新购买"，且两套语言都有邮件购买入口
+# ③ 文案：购买入口（Buy 按钮开官网 pricing 页）；邮件购买入口已移除
 # ---------------------------------------------------------------------------
-def test_i18n_buy_email_present():
+def test_i18n_buy_pathway_present():
     for lang in ("en", "zh"):
-        assert "up_buy_email" in i18n.STRINGS[lang], f"{lang} 缺 up_buy_email"
+        assert "up_buy" in i18n.STRINGS[lang], f"{lang} 缺 up_buy 购买入口"
+        assert "up_buy_email" not in i18n.STRINGS[lang], \
+            f"{lang} 不应再有 up_buy_email（老板 2026-10-26 已移除邮件购买按钮）"
 
 
 def test_revoked_copy_and_buy_pathway():
     """停用态：状态文案保持简洁（2026-10-25 老板定为 "License expired or revoked"，
     去掉「重新输码 / 再买」的堆砌——长文案曾把同行 Upgrade 按钮挤到文字截断）；
-    「重新购买」通路改由相邻 Upgrade 按钮 + 弹窗内 Buy / Email us to buy 承接
+    「重新购买」通路由相邻 Upgrade 按钮 + 弹窗内 Buy（开官网 pricing 页）承接
     （按钮显隐由本文件其它用例覆盖，这里锁文案本体与购买入口字符串仍在）。"""
     assert i18n.STRINGS["en"]["trial_revoked"] == "License expired or revoked", \
         f"英文停用文案应精简，实得 {i18n.STRINGS['en']['trial_revoked']!r}"
@@ -175,7 +178,8 @@ def test_revoked_copy_and_buy_pathway():
         f"中文停用文案应精简，实得 {i18n.STRINGS['zh']['trial_revoked']!r}"
     for lang in ("en", "zh"):
         assert "up_buy" in i18n.STRINGS[lang], f"{lang} 缺 up_buy 购买入口"
-        assert "up_buy_email" in i18n.STRINGS[lang], f"{lang} 缺 up_buy_email 邮件入口"
+        assert "up_buy_email" not in i18n.STRINGS[lang], \
+            f"{lang} 不应再有 up_buy_email 邮件入口"
 
 
 def test_gate_revoked_copy_mentions_buy_again():

@@ -62,3 +62,5 @@ assets/_test2*.png
 assets/_desktop_*.png
 assets/_titlebar_shot.png
 tools/_*.py
+# 发版对账临时产物（含真机构件哈希/体积清单），绝不进仓
+_audit/
