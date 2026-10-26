@@ -39,6 +39,7 @@ import re
 import queue
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 import traceback
 import urllib.error
 import urllib.parse
@@ -4231,8 +4232,31 @@ class App:
         # 一展开就冲到 1100px 以上 —— Close 按钮排在 _inner 末尾，展开后
         # 客户得滚到最底才能关（右上角 ✕ 虽在，但不该逼客户去找）。
         # 置 sticky 后 Close 固定在窗口右下角，折叠展开都纹丝不动。
-        win = ModalShell(self.root, tr("up_title"), width=600, height=720,
-                         sticky_actions=True)
+        # 弹窗宽度按"最宽档名单行放得下"倒推（老板 2026-10-26：档名不许换行）。
+        # 为什么要算：档名用 10pt 粗体，字号是**磅**、随系统 DPI 放大；
+        # 而窗口宽度是**像素**、不随 DPI 变。本机 150% 缩放下 10pt 的
+        # "3-Month Pass" 实测 130px，600 宽的弹窗摊到每档只剩约 118px → 必然折行。
+        # 所以按当前字体实测最宽档名，反推每档需要的宽度，再 min 600 兜底。
+        def _sku_dialog_width():
+            try:
+                f = F["F_LABEL"]           # 档名字体（10pt 粗体）
+                labels = []
+                for t in DEFAULT_PRICES["tiers"]:
+                    if t.get("name"):
+                        labels.append(t["name"])
+                    elif t.get("name_key"):
+                        labels.append(tr(t["name_key"]))
+                longest = max(f.measure(s) for s in labels if s)
+                # 每档 = 档名 + 左右各 8px 透气；档间 6px × 3；弹窗内距 + 卡片内距约 78px
+                need = 4 * (longest + 8 + 8) + 6 * 3 + 78 + 10
+                return int(max(600, need))
+            except Exception:
+                return 600
+
+        win_w = _sku_dialog_width()   # 供 ModalShell 与末尾 _fit_modal 共用（别各写一个数）
+        win = ModalShell(self.root, tr("up_title"), width=win_w,
+                         height=720, sticky_actions=True)
+
         self._track(win)
         body = win.content
 
@@ -4240,65 +4264,77 @@ class App:
                  font=F["F_SMALL"], anchor="w", justify="left",
                  wraplength=520).pack(fill="x")
 
-        # SKU 一行（四档现价，单行；特惠价珊瑚红高亮、原价划线）。
-        # 价格单一来源 = 中台 GET /api/prices（i18n.BRAND_PRICES_URL），后台 PUT /api/admin/prices
-        # 改价即时生效、不动软件不重部署中台；拉取失败 / 离线时回退内置 DEFAULT_PRICES。
-        # 用 Text 富文本（彩色 + 划线），
-        # 宽度不够时自动换行且不被右缘裁掉（2026-10-26 老板截图取证截断已修）。
+        # SKU 一行（四档现价）：方案 B —— 四档各自成横向小胶囊、等宽铺满浅色框
+        # （2026-10-26 老板选 B：比单行富文本更像"价格货架"，每档一目了然）。
+        # 价格单一来源 = 中台 GET /api/prices（i18n.BRAND_PRICES_URL），后台
+        # PUT /api/admin/upgrade-prices 改价即时生效、不动软件不重部署中台；
+        # 拉取失败 / 离线时回退内置 DEFAULT_PRICES。
+        # 终身档（hot）红框高亮，特惠价珊瑚红、原价划线灰。
+        # 等宽靠 grid 的 uniform="sku" 保证（pack+expand 会因各档名称宽度不同而不等宽）。
         sku = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
-                        border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
+                        border=theme.INFO_BORDER, shadow=False, padx=14, pady=10)
         sku.pack(fill="x", pady=(12, 0))
         SKU_HOT = "#E8453C"  # 特惠价高亮（珊瑚红，与青绿主色形成对比）
-        sku_txt = tk.Text(sku.inner, bg=theme.SURFACE_SOFT,
-                          fg=theme.PRIMARY_HOVER, font=F["F_FOOT"],
-                          relief="flat", bd=0, highlightthickness=0,
-                          wrap="word", cursor="arrow", height=1,
-                          spacing1=1, spacing3=1)
-        sku_txt.pack(fill="x")
-        sku_txt.tag_configure("hot", foreground=SKU_HOT)
-        sku_txt.tag_configure("muted", foreground=theme.TEXT_2)
-        sku_txt.tag_configure("sep", foreground=theme.TEXT_3)
-        sku_txt.tag_configure("old", foreground=theme.TEXT_3, overstrike=1)
+        sku_row = tk.Frame(sku.inner, bg=theme.SURFACE_SOFT)
+        sku_row.pack(fill="x")
+        sku_chips: list = []  # 复用：每次重渲染清掉重建
+        # 原价划线专用字体（tkinter 的 Label 没有 overstrike 选项，得独立字体对象）
+        sku_old_font = tkfont.Font(root=self.root,
+                                   family=F["F_FOOT"].cget("family"),
+                                   size=F["F_FOOT"].cget("size"), overstrike=1)
 
         def _render_sku(prices):
             # prices: {"tiers":[{name_key|name, price, was?, hot?}]}
             try:
-                sku_txt.configure(state="normal")
-                sku_txt.delete("1.0", "end")
-                for i, t in enumerate((prices or {}).get("tiers", [])):
-                    if i:
-                        sku_txt.insert("end", " · ", "sep")
+                tiers = (prices or {}).get("tiers", [])
+                if not tiers:
+                    return
+                for c in sku_chips:
+                    c.destroy()
+                sku_chips.clear()
+                n = len(tiers)
+                # 先按实际档位数设列权重（uniform 保证严格等宽）；
+                # 多余列归零，免得后台改成 3 档时右缘留一条空列。
+                for i in range(max(n, 8)):
+                    if i < n:
+                        sku_row.columnconfigure(i, weight=1, uniform="sku")
+                    else:
+                        sku_row.columnconfigure(i, weight=0, uniform="")
+                for i, t in enumerate(tiers):
                     name = t.get("name") or (tr(t["name_key"]) if t.get("name_key") else "")
-                    sku_txt.insert("end", name)
-                    price = t.get("price")
-                    if price:
-                        was = t.get("was")
-                        if was and t.get("hot"):
-                            sku_txt.insert("end", " (")
-                            sku_txt.insert("end", price, "hot")
-                            sku_txt.insert("end", " " + was, "old")
-                            sku_txt.insert("end", ")")
-                        else:
-                            sku_txt.insert("end", f" ({price})", "muted")
-                sku_txt.configure(state="disabled")
-                n = max(1, int(float(sku_txt.index("end"))))
-                if sku_txt.cget("height") != n:
-                    sku_txt.configure(height=n)
+                    price = t.get("price") or ""
+                    was = t.get("was")
+                    hot = bool(t.get("hot"))
+                    feat = hot  # 特惠档（终身）红框高亮
+                    chip = tk.Frame(
+                        sku_row, bg=theme.SURFACE, bd=0,
+                        highlightbackground=(SKU_HOT if feat else theme.BORDER),
+                        highlightcolor=(SKU_HOT if feat else theme.BORDER),
+                        highlightthickness=1)
+                    chip.grid(row=0, column=i, sticky="nsew",
+                              padx=3, pady=2)
+                    # 档名**单行不折行**（老板 2026-10-26「不要让他换行」）：
+                    # wraplength=0 关闭自动换行 + height=1 固定一行；
+                    # 放得下由 _sku_dialog_width() 按最宽档名倒推弹窗宽度来保证。
+                    tk.Label(chip, text=name, bg=theme.SURFACE, fg=theme.PRIMARY,
+                             font=F["F_LABEL"], anchor="center", height=1,
+                             wraplength=0).pack(pady=(7, 2))
+                    pr = tk.Frame(chip, bg=theme.SURFACE)
+                    pr.pack(pady=(0, 6))
+                    if was and hot:
+                        tk.Label(pr, text=price, bg=theme.SURFACE, fg=SKU_HOT,
+                                 font=F["F_LABEL"]).pack(side="left")
+                        tk.Label(pr, text=" " + was, bg=theme.SURFACE, fg=theme.TEXT_3,
+                                 font=sku_old_font).pack(side="left")
+                    else:
+                        tk.Label(pr, text=price, bg=theme.SURFACE, fg=theme.TEXT_2,
+                                 font=F["F_BODY"]).pack(side="left")
+                    sku_chips.append(chip)
             except Exception:
                 pass
 
-        def _fit_sku_height(_e=None):
-            # 宽度变化时重算行数（正常单行；极窄才折行，且永不裁切）
-            try:
-                n = max(1, int(float(sku_txt.index("end"))))
-                if sku_txt.cget("height") != n:
-                    sku_txt.configure(height=n)
-            except Exception:
-                pass
-
-        sku_txt.bind("<Configure>", _fit_sku_height, add="+")
         _render_sku(DEFAULT_PRICES)            # 先用内置值秒开
-        _fetch_and_render_prices(sku_txt, _render_sku)  # 后台拉服务端价，成功则覆盖
+        _fetch_and_render_prices(sku_row, _render_sku)  # 后台拉服务端价，成功则覆盖
 
         # 购买按钮（开官网 pricing 页）
         RoundButton(body, text=tr("up_buy"), command=self._open_buy,
@@ -4341,7 +4377,7 @@ class App:
         self._build_offline_fold(win, body)
 
         win.add_cancel_action(tr("up_close"))
-        self._fit_modal(win, 600)
+        self._fit_modal(win, win_w)
 
     def _open_buy(self):
         """「购买」按钮：开官网 pricing 页（价格单一来源在 store.js，app 不写死）。"""
