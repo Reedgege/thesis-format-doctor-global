@@ -34,8 +34,9 @@ BRAND_EMAIL = "hi@paperformatpro.com"
 BRAND_SITE = "paperformatpro.com"
 BRAND_SITE_URL = "https://paperformatpro.com"
 BRAND_BUY_URL = "https://paperformatpro.com/pricing"
-# 价格单一来源（老板可自行改价上传，无需重新打包软件）；拉取失败回退内置 DEFAULT_PRICES
-BRAND_PRICES_URL = "https://download.paperformatpro.com/prices.json"
+# 价格单一来源 = 中台 GET /api/prices?product=global（后台 PUT /api/admin/prices 改价即时生效，
+# 无需重新打包软件、无需重新部署中台）；拉取失败回退内置 DEFAULT_PRICES
+BRAND_PRICES_URL = "https://api.reedskill.com/api/prices?product=global"
 BRAND_NAME = "ReedSkill"
 
 

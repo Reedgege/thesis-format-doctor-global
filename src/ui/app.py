@@ -446,9 +446,9 @@ def _fmt_expiry(value):
 # ---------------------------------------------------------------------------
 # 价格（升级弹窗 SKU 行）
 # ---------------------------------------------------------------------------
-# 价格单一来源 = 服务端 prices.json（见 i18n.BRAND_PRICES_URL，放在 R2 上，
-# 老板可自行改价上传，无需重新打包软件）。拉取失败 / 离线时回退到这个内置值
-# （与当前官网四档价一致）。两者结构同构：{"currency","tiers":[{name_key,price,was?,hot?}]}。
+# 价格单一来源 = 中台 GET /api/prices（见 i18n.BRAND_PRICES_URL，后台 PUT /api/admin/prices
+# 改价即时生效，无需重新打包软件、也无需重新部署中台）。拉取失败 / 离线时回退到这个内置值
+# （与当前中台四档价一致）。两者结构同构：{"currency","tiers":[{name_key,price,was?,hot?}]}。
 DEFAULT_PRICES = {
     "currency": "USD",
     "tiers": [
@@ -461,14 +461,23 @@ DEFAULT_PRICES = {
 
 
 def _load_prices():
-    """拉取服务端价格（prices.json）。失败 / 非预期结构返回 None，调用方回退内置值。"""
+    """拉取中台价格（GET /api/prices，返回 {ok,currency,tiers} 或旧 R2 形的 {tiers}）。
+
+    统一规整成 {"currency","tiers"} 给渲染器；失败 / 非预期结构返回 None，调用方回退内置值。
+    """
     try:
         req = urllib.request.Request(
             i18n.BRAND_PRICES_URL, headers={"User-Agent": "PaperFormatPro"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        if isinstance(data, dict) and data.get("tiers"):
-            return data
+        if not isinstance(data, dict):
+            return None
+        tiers = data.get("tiers")
+        if isinstance(tiers, list) and tiers:
+            return {
+                "currency": data.get("currency", "USD"),
+                "tiers": tiers,
+            }
     except Exception:
         pass
     return None
@@ -4232,8 +4241,9 @@ class App:
                  wraplength=520).pack(fill="x")
 
         # SKU 一行（四档现价，单行；特惠价珊瑚红高亮、原价划线）。
-        # 价格单一来源 = 服务端 prices.json（i18n.BRAND_PRICES_URL），改价只改服务端、不动软件；
-        # 拉取失败 / 离线时回退内置 DEFAULT_PRICES。用 Text 富文本（彩色 + 划线），
+        # 价格单一来源 = 中台 GET /api/prices（i18n.BRAND_PRICES_URL），后台 PUT /api/admin/prices
+        # 改价即时生效、不动软件不重部署中台；拉取失败 / 离线时回退内置 DEFAULT_PRICES。
+        # 用 Text 富文本（彩色 + 划线），
         # 宽度不够时自动换行且不被右缘裁掉（2026-10-26 老板截图取证截断已修）。
         sku = RoundCard(body, radius=9, fill=theme.SURFACE_SOFT,
                         border=theme.INFO_BORDER, shadow=False, padx=14, pady=8)
