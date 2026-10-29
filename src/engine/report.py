@@ -19,6 +19,8 @@ from .specs import get_spec, resolve_spec, spec_display, spec_is_baseline
 ORIGIN_LABEL = {
     "spec": "General Spec",
     "school": "School Template",
+    "school-comment": "School Template (comments)",
+    "school-default": "General default (template silent)",
     "template": "School Template",
     "user": "Questionnaire",
     "ai_import": "AI Import",

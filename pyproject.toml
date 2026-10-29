@@ -1,12 +1,12 @@
 [project]
 name = "paperformatpro"
-version = "2.3.109"
+version = "2.3.111"
 description = "PaperFormat Pro - offline, safe overseas thesis format checker & fixer (docs never leave your machine)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ReedSkill" }]
-keywords = ["docx", "thesis", "format-checker", "APA", "MLA", "Chicago", "IEEE", "Harvard", "GB/T 7714"]
+keywords = ["docx", "thesis", "format-checker", "APA", "MLA", "IEEE", "academic-writing"]
 dependencies = ["python-docx>=1.1.0", "pyyaml>=6.0", "pillow>=10.0.0"]
 
 [project.urls]

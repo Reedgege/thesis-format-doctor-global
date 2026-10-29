@@ -328,6 +328,11 @@ class DocumentProfile:
     # 「只查到 N 级」会以为漏检。None = 没识别到。
     doc_title_index: Optional[int] = None
     doc_title_size_pt: Optional[float] = None
+    # 模板批注（Word comments.xml）—— 海外「学校模板」模式的**一手规范来源**。
+    # 每条：{"id": int, "author": str, "text": str, "anchor": int|None}
+    # 空列表 = 模板没有批注（此时退回纯实测格式，行为与旧版一致）。
+    # 优先级由 questionnaire.target_from_template_docx 决定：批注 > 实测。
+    template_comments: list = field(default_factory=list)
 
 
 @dataclass
@@ -680,6 +685,30 @@ def _heading_level_from_name(name: Optional[str]) -> Optional[int]:
         if key and norm.startswith(key):
             return 1
     return None
+
+
+# 「文档标题」样式的关键词（Title / 题目 / Titel / Título …），**不含 Subtitle**：
+# 副标题不是论文大标题，不能顶替首页标题的位置。
+_DOC_TITLE_STYLE_KEYS = tuple(
+    k for k in _TITLE_STYLE_KEYWORDS if "sub" not in k.lower()
+)
+
+
+def _is_doc_title_style_name(name: Optional[str]) -> bool:
+    """样式名是否属于「文档标题」类（Word 内置 Title / 题目 / Titel …）。
+
+    为什么不复用 ``_heading_level_from_name``：后者故意把 Title 视为 **1 级标题**
+    （保护主标题不被压成正文，见 tests/test_review_fixes.py::test_title_style_is_heading）。
+    但「是标题」与「是章节标题层级」是两件事 —— 论文大标题绝不能占掉 L1 字号档。
+    """
+    if not name:
+        return False
+    norm = re.sub(r"\s+", "", name).lower()
+    for kw in _DOC_TITLE_STYLE_KEYS:
+        key = re.sub(r"\s+", "", kw).lower()
+        if key and norm.startswith(key):
+            return True
+    return False
 
 
 def _style_outline_level(para) -> Optional[int]:
@@ -3603,6 +3632,97 @@ def _normalize_strict_ooxml(path: str):
         return None
 
 
+# ---------------------------------------------------------------------------
+# 模板批注（Word comments.xml）—— 海外「学校模板」模式的规范来源
+# ---------------------------------------------------------------------------
+# 国内版（文档格式先生）的模板驱动优先级是「批注 > 样式定义 > 通用规范」；海外版
+# 此前只读实测格式（样式 + 直接格式），模板里写的 Word 批注**从未被读取**。
+# 这里补上「读」的一侧：把批注原文取出来，交给 comment_spec_en 解析成英文规范，
+# 再由 target_from_template_docx 以「批注 > 实测」的顺序合并。
+# 🔴 只读，绝不修改模板文档本身（不建 comments 部件、不清任何批注）。
+
+
+def read_template_comments(document) -> list:
+    """读取 docx 里的 Word 批注（comments.xml），只读。
+
+    返回 ``[{"id": int, "author": str, "text": str, "anchor": int|None}, ...]``：
+    - ``text``   : 批注正文（多段以空格拼接；空白批注直接跳过）
+    - ``anchor`` : 该批注锚定在正文第几段（0 基，对应 ``document.paragraphs``）；
+                   找不到锚点（如批注锚在表格/页眉里）→ ``None``
+
+    无批注 / 无 comments 部件 / 部件异常 → 返回 ``[]``，**绝不抛错**：
+    读模板属于锦上添花，不能因为它让整个检查流程失败。
+    """
+    root = None
+    try:
+        part = document.part.part_related_by(RT.COMMENTS)
+    except Exception:
+        part = None
+    if part is not None:
+        try:
+            root = getattr(part, "element", None)
+            if root is None:                  # 裸 Part（非 XmlPart）才需要解析 blob
+                root = parse_xml(part.blob)
+        except Exception:
+            root = None
+    if root is None:
+        # 兜底：关系缺失/异常时，从已加载的包部件里按 partname 找 comments.xml。
+        # 有些模板生成工具注入批注时漏写 relationship（Word 仍能打开），
+        # 只走 part_related_by 会把这类模板的批注整片漏掉。
+        try:
+            for p in document.part.package.iter_parts():
+                if str(getattr(p, "partname", "")).lower() == "/word/comments.xml":
+                    root = getattr(p, "element", None)
+                    if root is None:
+                        root = parse_xml(p.blob)
+                    break
+        except Exception:
+            root = None
+    if root is None:
+        return []
+
+    out: list = []
+    for c in root.findall(qn("w:comment")):
+        try:
+            cid = int(c.get(qn("w:id")))
+        except (TypeError, ValueError):
+            continue
+        # 批注正文可能有多段（w:p），逐段取 w:t 后拼接（保留 Word 里的换行语义）
+        chunks = []
+        for p in c.findall(qn("w:p")):
+            seg = "".join(t.text or "" for t in p.iter(qn("w:t"))).strip()
+            if seg:
+                chunks.append(seg)
+        text = " ".join(chunks).strip()
+        if not text:
+            continue
+        out.append({
+            "id": cid,
+            "author": (c.get(qn("w:author")) or "").strip(),
+            "text": text,
+            "anchor": None,
+        })
+    if not out:
+        return []
+
+    # 锚点：正文段里以 w:commentRangeStart/@w:id 标记该批注的作用范围。
+    # 只扫 body 段落（document.paragraphs 不含表格内段落）—— 模板规范批注通常挂在正文段。
+    try:
+        wanted = {c["id"] for c in out}
+        by_id = {c["id"]: c for c in out}
+        for idx, p in enumerate(document.paragraphs):
+            for cs in p._p.iter(qn("w:commentRangeStart")):
+                try:
+                    pid = int(cs.get(qn("w:id")))
+                except (TypeError, ValueError):
+                    continue
+                if pid in wanted and by_id[pid]["anchor"] is None:
+                    by_id[pid]["anchor"] = idx
+    except Exception:
+        pass
+    return out
+
+
 def read_docx(path: str) -> DocumentProfile:
     """读取 docx → DocumentProfile。
 
@@ -3711,8 +3831,14 @@ def detect_title_page(doc):
             break
     if idx0 is None:
         return None
-    if heading_level(paras[idx0]) is not None:
-        return None
+    _lvl0 = heading_level(paras[idx0])
+    if _lvl0 is not None:
+        # Word 内置「Title」样式被 _heading_level_from_name 故意算作 1 级；但它其实
+        # 是**论文大标题**，不能因此放弃标题页识别 —— 否则标题页（标题 + 作者 + 单位）
+        # 整块漏识别，标题还会占掉 L1 字号档（实测：heading_formats 只剩 {1: 24pt}）。
+        _st_name0 = paras[idx0].style.name if paras[idx0].style is not None else None
+        if not _is_doc_title_style_name(_st_name0):
+            return None
     # v2.3.100（C 批 D-14）：官方 IEEE 会议模板的论文标题用 **`paper title` 样式**
     # （`<w:pStyle w:val="papertitle"/>`，居中写在样式里、段落本身没有 w:jc）。
     # 旧逻辑在这里走 is_heading 分支后又因"读不到段落级居中"而放弃 → 整份模板被判
@@ -3799,31 +3925,36 @@ def doc_title_index(doc) -> Optional[int]:
         if (p.text or "").strip():
             idx0 = i
             break
-    if idx0 is None or heading_level(paras[idx0]) is not None:
+    if idx0 is None:
         return None
+    _lvl0 = heading_level(paras[idx0])
+    if _lvl0 is not None:
+        # 与 detect_title_page 同口径：Word 内置 Title 样式虽被算作 1 级标题，
+        # 但它是论文大标题，仍需走「居中 + 加粗 + 全篇最大字号」的判定。
+        _st_name0 = paras[idx0].style.name if paras[idx0].style is not None else None
+        if not _is_doc_title_style_name(_st_name0):
+            return None
     first = paras[idx0]
     runs = [r for r in first.runs if (r.text or "").strip()]
     if not runs:
         return None
-    for r in runs:
-        try:
-            if r.bold is not True:
-                return None
-        except Exception:
-            return None
+    # 加粗 / 字号都必须**样式感知**：Word 内置 Title 样式把 bold / sz 写在样式层，
+    # run 级读不到（r.bold is None），只认直接格式会把最标准的论文标题判成"不是标题"。
+    if _run_bool_with_style(runs, first, "bold") is not True:
+        return None
     _al_raw = first.alignment
     if _al_raw is None:
         _al_raw = _pf_attr(first, None, "alignment")
     if _ALIGN_MAP.get(_al_raw) != "center":
         return None
-    title_sz = _max_run_size_pt(first)
+    title_sz = _max_run_size_pt(first) or _style_chain_size_pt(first)
     if title_sz is None:
         return None
     later = [p for p in paras[idx0 + 1:] if (p.text or "").strip()]
     if len(later) < 2:
         return None
     for p in later:
-        sz = _max_run_size_pt(p)
+        sz = _max_run_size_pt(p) or _style_chain_size_pt(p)
         if sz is not None and sz >= title_sz:
             return None
     return idx0
@@ -4080,6 +4211,13 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.soft_break_splits = split_body_soft_breaks(doc)
     except Exception:
         prof.soft_break_splits = 0
+
+    # 模板批注（Word comments）：必须在软换行拆分**之后**读 —— 拆分会产生新段落对象，
+    # 先读会让 anchor 段号与后续 body_paras 的下标错位。
+    try:
+        prof.template_comments = read_template_comments(doc)
+    except Exception:
+        prof.template_comments = []
 
     # —— 页边距：遍历所有分节取众数；不一致则标记 ——
     per_side: dict = {s: [] for s in ("top", "bottom", "left", "right")}
@@ -4660,7 +4798,17 @@ def _read_docx_impl(doc) -> DocumentProfile:
     # 每级只取第一个样本，避免同层多个标题互相平均掩盖差异。
     level_samples: dict = {}
     seen_levels: set = set()
-    for para in paras:
+    for _i, para in enumerate(paras):
+        # 🔴 前置块不是章节标题，绝不能占层级字号档（实测真 bug）：
+        #   · skip            —— detect_title_page 认出的标题页标题 + 作者行；
+        #   · _is_front_style —— 样式名属前置类（含 Word 内置 "Title"）；
+        #   · doc_title_index —— 无摘要论文里认出的论文大标题。
+        # 不排除的后果：Word "Title" 样式被 _heading_level_from_name 判为 1 级，
+        # 先占掉 L1，seen_levels 再把真正的 Heading 1 跳过 → heading_formats 只剩
+        # {1: 标题字号}，学校模板目标 L1 变成标题字号，修正会把章节标题放大成标题号。
+        # 与下方「伪标题兜底」路径（4789-4793 已排除 skip / doc_title_index）同一口径。
+        if _i in skip or _i == prof.doc_title_index or _is_front_style(para):
+            continue
         lvl = _heading_level(para)
         if lvl is None or not para.text.strip():
             continue

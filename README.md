@@ -12,7 +12,7 @@
 | 项 | 说明 |
 |---|---|
 | 定位 | 离线安全（本机处理，论文不上传） |
-| 内置规范 | APA / MLA / Chicago / IEEE / Harvard 写死进代码（`engine/specs.py`） |
+| 内置规范 | APA（学生版 / 专业版）、MLA、IEEE（会议 / 期刊）写死进代码（`engine/specs.py`）；**无 Chicago、无 Harvard**（以 `SPEC_ORDER` 为唯一事实源） |
 | 可选学校模板 | 上传学校 Word 模板 → 读其页面排版作为「学校要求」 |
 | 双轨对比 | 跑完出「分维度裁决报告」：哪些以规范为准、哪些以学校为准 |
 | 格式问卷 + AI 填表 | 无模板/解析失败时的兜底；用户可手填，或把模板丢给任意 AI 填表后导入 |
@@ -31,11 +31,33 @@
 A) 选内置规范 (spec)
 B) 手填格式问卷 (questionnaire)
 C) 导入 AI 填好的 JSON (ai_import)   ← 用户把学校模板交给 GPT/Gemini/Claude 填表
-D) 上传学校 Word 模板 (template)     ← 读模板自身的页面排版
+D) 上传学校 Word 模板 (template)     ← 先读模板里的 Word 批注（规范原文），读不到再量实际排版
 E) LaTeX 模板 (.tex)                 ← 从 geometry / setlength 等命令推断页面要求
 ```
 
 `merge_school()` 规则：**页面排版以学校为准**，引用格式以规范为准（除非学校显式覆盖）。
+
+### 学校模板内部：批注 > 实测
+
+上传学校模板时，同一维度可能有两处来源，优先级固定为：
+
+```
+Word 批注（模板里写的规范原文）  >  实测排版（量模板自身长什么样）
+```
+
+- **批注**由 `engine/comment_spec_en.py` 解析（**纯英文**，海外版不做双语）：
+  认 `Heading 1 / H2 / Level 3 / First-level heading`、`pt / inch / cm / mm`、
+  `centered / justified / left-aligned`、`bold / italic`（含 `not bold`）、
+  `single / 1.5 / double-spaced`、`first-line / hanging indent`、
+  `Margins / Paper size / Layout（单双栏）/ Tables（三线表）/ Table spacing /
+  References（APA · MLA · IEEE）/ Figure & Table captions / Page numbers`。
+- 只有「类别词 + 冒号」开头的批注才被当作规范；`fix this later` 这类编辑性批注会被
+  忽略并记进 `unparsed`（诊断用），**绝不误读成格式要求**。
+- 批注没提到的维度一律回落实测 —— 不会因为「有批注」就丢掉模板的真实排版。
+- **表后间隙**：模板没写、实测又是 0（表格紧贴文字）时，按通用兜底 ≥12pt，并在报告里
+  注明「模板未明确，按通用留白处理」（来源标 `General default (template silent)`）。
+- **参考文献流派**：学校模板子面板的下拉（APA / MLA / IEEE）**优先**；未选时才用模板
+  批注推断；两者都没有则不查参考文献。IEEE 是顺序编码制 —— 会报未编号条目并自动补 `[n]`。
 
 ---
 
@@ -146,12 +168,12 @@ GUI 需本机带 Tk（_tkinter）。**界面默认英文**，右上角可一键�
 
 ## 七、当前范围与待办（P2）
 
-- ✅ 已落地：内置五规范、docx 读取、Rule Engine、对比报告、纯格式修正、GUI（中英双语、默认英文）、
+- ✅ 已落地：内置规范（APA 学生/专业、MLA、IEEE 会议/期刊）、docx 读取、Rule Engine、对比报告、纯格式修正、GUI（中英双语、默认英文）、
   AI 填表导入、学校模板读取、LaTeX 模板读取、在线激活 + 离线激活码
 - ⏳ PDF 范例解析（仅给 PDF 无 Word 的学校）：P2
 - ⏳ 参考文献逐条语义校验（当前为著录形态启发式）：P2
-- ⏳ 页码 / 页眉页脚检查：P2
-- ⏳ 报告正文英文化（当前报告文案为中文，界面已双语）
+- ✅ 页码位置 / running head 已落地（v2.3.90 起可查可修）；页眉页脚**内容**仍只提示
+- ✅ 报告正文已英文化（海外版客户可见处不出现中文）
 
 ---
 

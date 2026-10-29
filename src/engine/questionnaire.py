@@ -22,6 +22,7 @@ from typing import Any, Optional
 from .specs import (get_spec, REFERENCE_STYLE_KEYS, REFERENCE_STYLE_CHOICES,
                     REFERENCE_STYLE_CUSTOM, SPEC_ORDER)
 from .docx_reader import read_docx, PAPER_SIZES, identify_paper_size
+from .comment_spec_en import parse_comments
 
 # 页码位置可选值（**唯一真相源**）：与 specs.StyleSpec.page_number_position 同口径。
 # 语义严格按「页眉 / 页脚」分开 —— 这是修好「页脚右对齐被误判符合 APA top-right」的关键：
@@ -48,7 +49,14 @@ REF_HANG_CONFLICT_TOL = 0.06
 _SOURCE_ORIGIN = {
     "template": "school",
     "school": "school",
-    "ai_import": "ai_import",
+    # 模板批注：比「实测」更细的来源标签，但**归一后同样是「学校显式要求」**。
+    # 🔴 必须映射：checker/fixer 判「这是不是客户明确要求」用的是归一后的
+    # user/school/ai_import/spec 四个值；少了这一条，批注要求会被当成外人，
+    # _fix_value 门控不通过 → 报告说可修、点修正却不动（同一类坑踩过）。
+    "school-comment": "school",
+    # 模板既没写批注、也量不出时的「通用兜底」值（目前只有表后间隙用到）：
+    # 归一后同样是 school —— 兜底也要能修，但报告里要说清「模板没写，按通用处理」。
+    "school-default": "school",    "ai_import": "ai_import",
     "ai": "ai_import",
     "user": "user",
     "questionnaire": "user",
@@ -66,6 +74,47 @@ def origin_of_source(tag: Optional[str]) -> Optional[str]:
     if tag is None:
         return None
     return _SOURCE_ORIGIN.get(str(tag), str(tag))
+
+
+# 模板批注的独立来源标签：比 "school"（实测）更细，供报告区分「批注说的」vs「量出来的」。
+_COMMENT_ORIGIN = "school-comment"
+# 模板沉默时的通用兜底来源（当前用于「表后间隙」）：报告要标明不是模板要求的。
+_DEFAULT_ORIGIN = "school-default"
+
+# TargetProfile 的合法字段名缓存（懒加载）：批注解析器将来多出字段时，
+# 合并侧直接丢弃而不是让 ``TargetProfile(**extra)`` 抛 TypeError 把整个流程搞崩。
+_TP_FIELD_NAMES_CACHE: set = set()
+
+
+def _merge_comment_values(dst: dict, src: dict, resolution: dict, origin: str,
+                          allowed: Optional[set] = None) -> list:
+    """把模板批注解析值覆盖到「实测」字典上（**批注 > 实测**），返回被覆盖的键。
+
+    只覆盖批注**真的提到**的字段；没提到的键保持实测值 —— 与国内版
+    「批注 override、样式兜底」同一口径，绝不因为「模板有批注」就丢掉实测。
+
+    ``allowed``: 允许的键集合。``page`` 字典的键（margin_* / font_* …）**不是**
+    dataclass 字段，必须传 ``TargetProfile.PAGE_KEYS``，否则会被字段名过滤全筛掉
+    （实测踩过：批注写 12pt，目标里仍是实测 11pt）。
+    """
+    if not src:
+        return []
+    global _TP_FIELD_NAMES_CACHE
+    if allowed is None:
+        if not _TP_FIELD_NAMES_CACHE:
+            from dataclasses import fields as _dc_fields
+            _TP_FIELD_NAMES_CACHE = {f.name for f in _dc_fields(TargetProfile)}
+        allowed = _TP_FIELD_NAMES_CACHE
+    applied = []
+    for key, val in src.items():
+        if val is None:
+            continue
+        if key not in allowed:
+            continue                      # 解析器新增了 TargetProfile 不认识的键 → 丢弃
+        dst[key] = val
+        resolution[key] = origin
+        applied.append(key)
+    return applied
 
 # 叠加顺序（FR2 明文优先级 template > ai > questionnaire）：
 # _overlay_one 是「后写覆盖先写」，故按优先级**从低到高**依次叠加。
@@ -967,6 +1016,15 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
     """
     page: dict = {}
     notes: list = []          # 提示收集（纸型非标 / 模板与规范冲突…），全函数随时可用
+
+    # —— 模板批注（Word comments）：海外「学校模板」模式的一手规范来源 ——
+    # 优先级：**批注 > 实测**（与国内版「批注 > 样式定义」同一口径）。
+    # 解析失败 / 无批注一律退化为 {} —— 读模板是锦上添花，绝不能让它把主流程搞崩。
+    try:
+        _cm = parse_comments(getattr(doc_profile, "template_comments", None) or [])
+    except Exception:
+        _cm = {}
+    _CM = _COMMENT_ORIGIN
     if doc_profile.margins:
         for k_src, k_dst in (("top", "margin_top_in"), ("bottom", "margin_bottom_in"),
                              ("left", "margin_left_in"), ("right", "margin_right_in")):
@@ -1113,6 +1171,13 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
 
     # 图表标题（Caption）：模板实测（模板里通常只给字号/行距/段前段后，位置另判）
     tpl_cap: dict = {}
+    # caption 段前/段后实测为 0.0 仅表示它继承了正文样式的段间距，≠「模板要求必须是 0」。
+    # 若模板带表格且触发 table_gap（表格与前后文字至少留 N pt 空隙），修正器会把这条
+    # 空隙写进「表题段前」→ 与这里硬判的「0pt」互相打架，点完「全部修正」报告仍挂红项。
+    # 故实测 0 视为「未规定」(None)，不写进 TargetProfile；显式批注仍照常覆盖（见下方
+    # _merge_comment_values 合并，批注值会重新落进来）。仅放过「恰好=0」这一档，非零
+    # 实测（如模板明确写了 6pt）照常带出。
+    _CAP_SKIP_ZERO = ("caption_space_before_pt", "caption_space_after_pt")
     for _key, _rnd in (("caption_font_size_pt", 1),
                        ("caption_line_spacing", 2),
                        ("caption_space_before_pt", 1),
@@ -1120,7 +1185,10 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         _val = getattr(doc_profile, _key, None)
         if _val is None:
             continue
-        tpl_cap[_key] = round(float(_val), _rnd) if _rnd else float(_val)
+        _val = round(float(_val), _rnd) if _rnd else float(_val)
+        if _key in _CAP_SKIP_ZERO and _val == 0.0:
+            continue
+        tpl_cap[_key] = _val
         resolution[_key] = "school"
 
     # 表格内段落（v2.3.77）：模板里三线表常见「单元格内不空行」= 0 磅，必须带出来，
@@ -1152,7 +1220,19 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
             tpl_toc[_key] = round(float(_val), 1)
             resolution[_key] = "school"
 
-    ref_style = reference_style if reference_style in REFERENCE_STYLE_KEYS else None
+    # 参考文献流派：**显式下拉 > 模板批注推断 > 不查**（老板 2026-10-29 拍板）。
+    # 只从批注推断、不从实测条目形态猜流派 —— 实测猜流派不可靠。
+    _cm_ref = (_cm.get("reference") or {})
+    # 🔴 REFERENCE_STYLE_KEYS 是**大写**（"APA"/"MLA"/"IEEE"），解析器输出小写 → 必须归一，
+    #    否则 `"apa" in ("APA",...)` 恒 False，批注里的流派永远被丢掉（实测踩过）。
+    _cm_style = str(_cm_ref.get("reference_style") or "").strip().upper() or None
+    if reference_style in REFERENCE_STYLE_KEYS:
+        ref_style = reference_style
+    elif _cm_style in REFERENCE_STYLE_KEYS:
+        ref_style = _cm_style
+        resolution["reference_style"] = _CM
+    else:
+        ref_style = None
     ref_hang = None
     ref_num = None
     ref_extra: dict = {}
@@ -1162,7 +1242,12 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
     # 旧写法直接用规范值（还标成 "school"）—— 模板写「悬挂 0.25″」、客户选了 APA（0.5″），
     # 检查器就按 0.5″ 判 fail、修正器把学生的 0.25″ 改成 0.5″，模板被自己的"规范"推翻。
     tpl_hang = getattr(doc_profile, "reference_hanging_indent_in", None)
-    if tpl_hang is not None:
+    _cm_hang = _cm_ref.get("reference_hanging_indent_in")
+    if _cm_hang is not None:
+        # 批注 > 实测：批注写「悬挂 0.25″」就按 0.25″，不再用模板实际条目的缩进
+        ref_hang = round(float(_cm_hang), 3)
+        resolution["reference_hanging_indent_in"] = _CM
+    elif tpl_hang is not None:
         ref_hang = round(float(tpl_hang), 3)
         resolution["reference_hanging_indent_in"] = "school"
         if spec_ref is not None and spec_ref.hanging_indent_in is not None \
@@ -1179,7 +1264,12 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
     # 编码方式：条目实测是否带 [n]/1. 前缀（有条目才判，没条目不下结论）
     ref_entries = [t for t in (getattr(doc_profile, "reference_entries", None) or [])
                    if str(t).strip()]
-    if ref_entries:
+    _cm_num = _cm_ref.get("reference_numbered")
+    if _cm_num is not None:
+        # 批注 > 实测：批注明确写了「编号 / 不编号」就照批注，不再拿条目形态反推
+        ref_num = bool(_cm_num)
+        resolution["reference_numbered"] = _CM
+    elif ref_entries:
         _numbered = sum(1 for t in ref_entries if _LEADING_NUM_RE.match(str(t).strip()))
         ref_num = _numbered >= max(1, len(ref_entries) // 2)      # 过半即视为编号制
         resolution["reference_numbered"] = "school"
@@ -1228,7 +1318,9 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
             resolution.pop("reference_heading_centered", None)
 
     if ref_style is not None:
-        resolution["reference_style"] = "school"
+        # setdefault：流派若是从**批注**推断出来的，上面已标了更细的 "school-comment"，
+        # 这里不能把它覆盖回 "school"（否则报告分不清「批注说的」还是「量出来的」）。
+        resolution.setdefault("reference_style", "school")
 
     # 层级数：模板用 Heading 样式时取样式层级；模板是「手排加粗标题」（无样式）时
     # heading_levels_used 为 0，需由伪标题样本反推 —— 否则 heading_levels=None 会让
@@ -1241,6 +1333,99 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         if _tpl_levels:
             resolution["heading_levels"] = "school"
 
+    # ↑ 以上全部是「实测」。下面按 **批注 > 实测** 覆盖批注真正提到的字段；
+    #   没提到的键保持实测，绝不因为「模板有批注」就把实测结果丢掉。
+    _cm_applied: list = []
+    _cm_page = _cm.get("page") or {}
+    # page 字典的键（margin_* / font_* …）**不是** dataclass 字段 → 必须显式传 PAGE_KEYS，
+    # 否则会被字段名过滤整片筛掉（实测：批注写 12pt，目标里仍是实测 11pt）。
+    _cm_applied += _merge_comment_values(page, _cm_page, resolution, _CM,
+                                         allowed=set(TargetProfile.PAGE_KEYS))
+    # 页码位置是**独立字段**（不在 page 字典里），单独取
+    if _cm_page.get("page_number_position"):
+        tpl_page_num = str(_cm_page["page_number_position"])
+        resolution["page_number_position"] = _CM
+        _cm_applied.append("page_number_position")
+    _cm_applied += _merge_comment_values(tpl_tp, _cm.get("title_page"), resolution, _CM)
+    _cm_applied += _merge_comment_values(tpl_abs, _cm.get("abstract"), resolution, _CM)
+    _cm_applied += _merge_comment_values(tpl_cap, _cm.get("caption"), resolution, _CM)
+    _cm_applied += _merge_comment_values(tpl_tbl, _cm.get("table"), resolution, _CM)
+    _cm_applied += _merge_comment_values(tpl_toc, _cm.get("toc"), resolution, _CM)
+    # 参考文献细项：这三项已由上面的显式分支定过（下拉 > 批注 > 实测 > 规范），
+    # 不能再进 ref_extra —— 否则和 TargetProfile 的显式关键字重复，直接 TypeError。
+    _cm_ref_rest = {k: v for k, v in _cm_ref.items()
+                    if k not in ("reference_style", "reference_hanging_indent_in",
+                                 "reference_numbered")}
+    _cm_applied += _merge_comment_values(ref_extra, _cm_ref_rest, resolution, _CM)
+
+    # —— 每级标题格式：批注逐字段覆盖实测（只覆盖批注写了的字段）——
+    _cm_hf = _cm.get("heading_formats") or {}
+    for _lvl, _vals in _cm_hf.items():
+        _merged = dict(heading_formats.get(_lvl) or {})
+        _hit = False
+        for _k, _v in (_vals or {}).items():
+            if _v is None:
+                continue
+            _merged[_k] = _v
+            _hit = True
+        if _hit:
+            heading_formats[_lvl] = _merged
+            _cm_applied.append("heading_formats")
+    if _cm_hf:
+        resolution["heading_formats"] = _CM
+        # 批注可能声明了实测里没有的层级（模板只写了规范、没排样例）→ 层级数要跟上，
+        # 否则修正链在 _assign_heading_levels 处提前返回，标题一个都不改。
+        _max_cm_lvl = max(_cm_hf)
+        if _tpl_levels is None or _max_cm_lvl > _tpl_levels:
+            _tpl_levels = _max_cm_lvl
+            resolution["heading_levels"] = _CM
+
+    # —— 结构维度：栏数 / 纸张（批注 > 实测）——
+    _cm_struct = _cm.get("structural") or {}
+    if _cm_struct.get("columns") is not None:
+        tpl_columns = int(_cm_struct["columns"])
+        resolution["columns"] = _CM
+        _cm_applied.append("columns")
+    if _cm_struct.get("paper_size"):
+        tpl_paper = str(_cm_struct["paper_size"])
+        resolution["paper_size"] = _CM
+        _cm_applied.append("paper_size")
+
+    # —— 表格线（三线表）——
+    # 🔴 此前模板模式**从没把 table_lines 传进 TargetProfile**，于是勾了学校模板也
+    # 永远不查三线表（客户明确要求「表格要看是不是三线表」根本落不了地）。现补上：
+    # 先按模板自己的表推断（过半是三线表即视为模板要求），再让批注覆盖。
+    tpl_table_lines = None
+    _tls = getattr(doc_profile, "table_line_states", None) or []
+    if _tls:
+        _n3 = sum(1 for _s in _tls if isinstance(_s, dict) and _s.get("three_line"))
+        if _n3 and _n3 * 2 >= len(_tls):
+            tpl_table_lines = "three_line"
+            resolution["table_lines"] = "school"
+    if _cm_struct.get("table_lines"):
+        tpl_table_lines = str(_cm_struct["table_lines"])
+        resolution["table_lines"] = _CM
+        _cm_applied.append("table_lines")
+
+    # —— 表后间隙兜底（老板 2026-10-29 决策 A）——
+    # 「表格与前后文字之间必须留空隙」是硬要求。模板若既不写批注、实测又是 0（表格
+    # 紧贴文字 = 模板自己没留），一律按通用兜底：至少一个空行 ≈ 12pt，并在报告里
+    # 明说「模板未明确，按通用留白处理」。只在模板**确实有表格**时才兜底。
+    _gap_tpl = tpl_tbl.get("table_gap_pt")
+    if _tls and (_gap_tpl is None or float(_gap_tpl) <= 0.0):
+        tpl_tbl["table_gap_pt"] = 12.0
+        resolution["table_gap_pt"] = _DEFAULT_ORIGIN
+        notes.append(
+            "Table spacing: your template does not state how much space should separate "
+            "tables from the text, so the general default is applied — at least 12 pt "
+            "(about one blank line) above and below each table.")
+
+    if _cm_applied:
+        notes.append(
+            "%d formatting rule(s) came from the Word comments in your template. "
+            "Where a comment and the template's own formatting disagree, the comment wins."
+            % len(_cm_applied))
+
     return TargetProfile(
         source="template",
         spec_key=None,
@@ -1248,6 +1433,7 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         heading_levels=_tpl_levels,
         columns=tpl_columns,
         paper_size=tpl_paper,
+        table_lines=tpl_table_lines,
         page_number_position=tpl_page_num,
         **tpl_tp,
         **tpl_abs,
