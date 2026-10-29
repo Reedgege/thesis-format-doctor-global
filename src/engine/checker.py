@@ -140,6 +140,11 @@ def _tp_expected_text(vals: dict) -> str:
         bits.append("title space before %g pt" % float(vals["title_page_space_before_pt"]))
     if vals.get("title_page_space_after_pt") is not None:
         bits.append("title space after %g pt" % float(vals["title_page_space_after_pt"]))
+    # v2.3.114：题目字号 / 字体
+    if vals.get("title_page_title_size_pt") is not None:
+        bits.append("title %g pt" % float(vals["title_page_title_size_pt"]))
+    if vals.get("title_page_title_font"):
+        bits.append("title font %s" % vals["title_page_title_font"])
     return ", ".join(bits)
 
 # 已带顺序编号的形态：[1] / (1) / 1. / 1)  —— 与 fixer 的 _LEADING_NUMBER_RE 保持一致
@@ -1115,7 +1120,9 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     for _k in ("title_page_title_centered", "title_page_title_bold",
                "title_page_author_centered",
                # v2.3.76：标题段的段前 / 段后
-               "title_page_space_before_pt", "title_page_space_after_pt"):
+               "title_page_space_before_pt", "title_page_space_after_pt",
+               # v2.3.114：题目字号 / 字体（模板驱动）
+               "title_page_title_size_pt", "title_page_title_font"):
         _v = getattr(target, _k, None)
         if _v is not None:
             _tp_vals[_k] = _v
@@ -1133,6 +1140,9 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
             _tp_vals["title_page_title_bold"] = bool(_spec_tp.title_bold)
         if _spec_tp.author_centered is not None:
             _tp_vals["title_page_author_centered"] = bool(_spec_tp.author_centered)
+        # v2.3.114：规范的标题字号也兜底带入（TitlePageFormat.title_size_pt）。
+        if getattr(_spec_tp, "title_size_pt", None) is not None:
+            _tp_vals.setdefault("title_page_title_size_pt", float(_spec_tp.title_size_pt))
         _tp_origin = "spec"
     if _tp_vals:
         _tp_origin = _tp_origin or "spec"
@@ -1199,6 +1209,18 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                                 % (_label, float(_got), float(_w)))
                 else:
                     _act.append("%s %g pt" % (_label, float(_got)))
+            # v2.3.114：题目字号（模板驱动）。题目段实测字号来自 prof.doc_title_size_pt；
+            # 模板/问卷/AI 显式给了题目字号才判，否则不碰（避免把正文字号当错误）。
+            if "title_page_title_size_pt" in _tp_vals:
+                _w = _tp_vals["title_page_title_size_pt"]
+                _got_sz = getattr(prof, "doc_title_size_pt", None)
+                if _got_sz is None:
+                    _act.append("could not read the title size")
+                elif abs(float(_got_sz) - float(_w)) > 0.5:
+                    _bad.append("title %g pt (expected %g pt)"
+                                % (float(_got_sz), float(_w)))
+                else:
+                    _act.append("title %g pt" % float(_got_sz))
             _sev = "fail" if _bad else "pass"
             _sev = _downgrade(_sev, _tp_origin, is_page_or_heading=True,
                               dim="title_page", spec_key=target.spec_key)
@@ -1209,6 +1231,9 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 actual=("Title page: " + ", ".join(_bad)) if _bad else
                        (", ".join(_act) if _act else "Matches"),
                 source=_tp_origin,
+                # v2.3.114：挂 FixAction 让修正器能施加题目字号/字体（检查→修正单一真相源）。
+                # 值取 _tp_vals 全量（含 size_pt/font），修正器按 target 三态幂等施加。
+                fix=FixAction(dimension="title_page", value=dict(_tp_vals), note=""),
             ))
 
     # —— 首页结构（v2.3.91）——
@@ -3220,11 +3245,20 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
     #   `<w:sz w:val="18"/>` + `<w:b/>` + `jc=both` + `<w:spacing w:after="10pt"/>`；
     #   OWL「All papers must begin with an abstract」）。
     # APA 专业版没有这些字号字段 → 仍是原来的 info，行为不变。
+    # v2.3.114：模板驱动优先。学校模板批注写了摘要正文版式（如 12 pt、不加粗）就按模板，
+    # 规范硬编码值只在目标没显式给时兜底。此前直接取 apa_spec（= 当前 spec，IEEE 会议档
+    # 硬编码 9pt 加粗），导致学校模板模式下摘要被错误套成 9pt 加粗、还加了粗。
+    _t_abs_bold = getattr(target, "abstract_bold", None)
     _abs_want = (
-        getattr(apa_spec, "abstract_font_size_pt", None),
-        getattr(apa_spec, "abstract_bold", None),
-        getattr(apa_spec, "abstract_alignment", None),
-        getattr(apa_spec, "abstract_space_after_pt", None),
+        getattr(target, "abstract_font_size_pt", None)
+        or getattr(apa_spec, "abstract_font_size_pt", None),
+        _t_abs_bold if _t_abs_bold is not None
+        else getattr(apa_spec, "abstract_bold", None),
+        getattr(target, "abstract_alignment", None)
+        or getattr(apa_spec, "abstract_alignment", None),
+        getattr(target, "abstract_space_after_pt", None)
+        if getattr(target, "abstract_space_after_pt", None) is not None
+        else getattr(apa_spec, "abstract_space_after_pt", None),
     )
     _abs_hard = apa_spec.expect_abstract and any(v is not None for v in _abs_want)
     if apa_spec.expect_abstract and not prof.has_abstract:

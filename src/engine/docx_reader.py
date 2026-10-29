@@ -4807,6 +4807,32 @@ def _read_docx_impl(doc) -> DocumentProfile:
     if _dti is not None:
         prof.doc_title_index = _dti
         prof.doc_title_size_pt = _max_run_size_pt(doc.paragraphs[_dti])
+    else:
+        # v2.3.114 加固（题目字号读取盲区）：doc_title_index 因「题目不是全篇最大字号」
+        # 等保守条件判不出时（典型：题目被错改小到与正文同号，不再最大），题目字号会
+        # 读不到 → title_page 维度误报 pass。此处退化用 detect_title_page 定位题名页首段
+        # 读字号，让检查器仍能标红「题目字号不符」。
+        # 守卫：仅认「居中」或「Title/papertitle 样式」的题名页首段，避免把左对齐的章节
+        # 标题误读成论文题目字号（负作用）。绝不改 prof.doc_title_index —— 章节标题层级
+        # 排除逻辑（checker / docx_reader 扫描 / fixer 均依赖它）保持原样，零影响。
+        try:
+            _tp = detect_title_page(doc)
+        except Exception:
+            _tp = None
+        if _tp and isinstance(_tp.get("title"), int):
+            _ti = _tp["title"]
+            _tp0 = doc.paragraphs[_ti]
+            _al = _tp0.alignment
+            if _al is None:
+                _al = _pf_attr(_tp0, None, "alignment")
+            _st = (_tp0.style.name or "").strip().lower() if _tp0.style is not None else ""
+            _title_like = (_ALIGN_MAP.get(_al) == "center"
+                           or "paper title" in _st or _st in ("papertitle", "title")
+                           or _is_doc_title_style_name(_tp0.style.name if _tp0.style is not None else None))
+            if _title_like:
+                _sz = _max_run_size_pt(_tp0) or _style_chain_size_pt(_tp0)
+                if _sz is not None:
+                    prof.doc_title_size_pt = _sz
 
     # —— 块引用候选收集（MLA：超 4 行引文应缩进 0.5″、不加引号；此处只收集长段落，由 checker 按风格判断）——
     # idx 一并记下：fixer 要按**同一批候选**施加缩进，否则「检查按长引文判、修正只认

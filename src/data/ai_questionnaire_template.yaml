@@ -40,6 +40,9 @@ _how_to_fill: |-
   title_page_space_before_pt / title_page_space_after_pt are the space above / below the
   thesis title on the title page, in points ("1 line" ≈ 1.2 × the title's font size).
   Omit them when the requirement says nothing.
+  title_page_title_size_pt / title_page_title_font are the thesis title's font size (in points,
+  e.g. 24) and font family (e.g. "Times New Roman"). Omit them when the requirement says nothing
+  about the title's size or font.
   title_page_new_page says whether the title page occupies its own page, and
   title_page_zero_extra_spacing says whether no extra paragraph spacing is allowed between
   the title page elements (author, affiliation, course, instructor, date). text_new_page says
@@ -49,6 +52,10 @@ _how_to_fill: |-
   abstract_space_before_pt / abstract_space_after_pt and caption_space_before_pt /
   caption_space_after_pt are the space above / below each Abstract paragraph and each
   figure/table caption, in points. Omit them when the requirement says nothing.
+  abstract_font_size_pt / abstract_bold / abstract_alignment are the Abstract BODY text's font size
+  (in points), boldness (true/false) and alignment (left/justify/center/right). They describe the
+  abstract body, NOT the "Abstract" heading line (that is abstract_heading_*). Omit them when the
+  requirement says nothing about the abstract body.
   table_space_before_pt / table_space_after_pt are the space above / below each paragraph
   inside table cells (0 is very common). table_gap_pt is the space between a table and the
   text directly above / below it, in points (it is NOT the space inside the cells). toc_heading_space_before_pt /
@@ -192,6 +199,21 @@ fields:
       true = no extra paragraph spacing (space before/after) between the author, affiliation,
       course, instructor and date lines on the title page; false = the requirement does not
       demand this. Omit when unspecified.
+  - key: title_page_title_size_pt
+    label: Title page - title font size (pt)
+    unit: "pt"
+    example: 24
+    note: >-
+      The thesis title's font size in points (e.g. 24). Omit when the requirement says nothing
+      about the title size — the tool will then follow the school template comments or the
+      default style. Must be a number; do not include "pt" in the value.
+  - key: title_page_title_font
+    label: Title page - title font family
+    unit: ""
+    example: Times New Roman
+    note: >-
+      The thesis title's font family, e.g. "Times New Roman", "Arial", "Calibri". Omit when the
+      requirement says nothing about the title font.
   - key: paper_size
     label: Paper size
     unit: ""
@@ -355,6 +377,30 @@ fields:
     note: >-
       Space below each Abstract paragraph, in points. APA adds no extra space (0). Omit when
       unspecified.
+  - key: abstract_font_size_pt
+    label: Abstract - body font size (pt)
+    unit: pt
+    example: 12
+    note: >-
+      Font size of the Abstract body text, in points (e.g. 12). Omit when the requirement says
+      nothing about the abstract body size — the tool will then follow the school template comments
+      or the default style. Must be a number; do not include "pt" in the value.
+  - key: abstract_bold
+    label: Abstract - body text bold
+    unit: ""
+    example: false
+    allowed: [true, false]
+    note: >-
+      true = the Abstract body text is bold; false = the Abstract body text is NOT bold. Omit when
+      the requirement is silent (when the template comment mentions a bold Abstract HEADING but says
+      nothing about the body, the body is treated as not bold).
+  - key: abstract_alignment
+    label: Abstract - body alignment
+    unit: ""
+    example: justify
+    allowed: [left, justify, center, right]
+    note: >-
+      Alignment of the Abstract body text. Omit when the requirement says nothing about it.
   - key: running_head_required
     label: Running head required
     unit: ""

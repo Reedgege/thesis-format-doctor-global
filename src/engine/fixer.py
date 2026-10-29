@@ -3071,6 +3071,9 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
     # 直接交给 _format_heading_one 施加 —— 与章节标题同一条原语，幂等且会清掉「行」单位。
     t_sb = getattr(target, "title_page_space_before_pt", None)
     t_sa = getattr(target, "title_page_space_after_pt", None)
+    # v2.3.114：题目字号 / 字体（模板驱动）。
+    t_size = getattr(target, "title_page_title_size_pt", None)
+    t_font = getattr(target, "title_page_title_font", None)
     if tp_spec is not None:
         if t_center is None:
             t_center = tp_spec.title_centered
@@ -3078,8 +3081,11 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
             t_bold = tp_spec.title_bold
         if a_center is None:
             a_center = tp_spec.author_centered
+        # 规范标题字号兜底（TitlePageFormat.title_size_pt）
+        if t_size is None and getattr(tp_spec, "title_size_pt", None) is not None:
+            t_size = float(tp_spec.title_size_pt)
     if t_center is None and t_bold is None and a_center is None \
-            and t_sb is None and t_sa is None:
+            and t_sb is None and t_sa is None and t_size is None and t_font is None:
         return info
     tp = _detect_title_page(doc)
     if not tp:
@@ -3097,9 +3103,14 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
         bold=title_bold,
         space_before_pt=t_sb,
         space_after_pt=t_sa,
-        desc="%s title-page title%s" % (
+        # v2.3.114：题目字号 / 字体（模板驱动）
+        size_pt=t_size,
+        font_family=t_font,
+        desc="%s title-page title%s%s%s" % (
             "centered" if t_center else "left-aligned",
-            "" if t_bold is None else (" + bold" if t_bold else " + not bold")),
+            "" if t_bold is None else (" + bold" if t_bold else " + not bold"),
+            "" if t_size is None else (" %g pt" % float(t_size)),
+            "" if t_font is None else (" %s" % t_font)),
     )
     p = doc.paragraphs[tp["title"]]
     changed = _format_heading_one(p, title_fmt, body_font, body_size)
@@ -3128,6 +3139,10 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
             bits.append("title space before %g pt" % float(t_sb))
         if t_sa is not None:
             bits.append("title space after %g pt" % float(t_sa))
+        if t_size is not None:
+            bits.append("title %g pt" % float(t_size))
+        if t_font is not None:
+            bits.append("title font %s" % t_font)
         add_comment(
             doc, p,
             "Title page formatted per %s: %s." % (_spec_label(spec), "; ".join(bits) or "no change"),
@@ -3840,7 +3855,9 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
                           "title_page_author_centered",
                           # v2.3.76：标题段的段前/段后也算「声明了标题页」——
                           # 否则只填了段前段后时，标题页大标题会被卷进伪标题流程。
-                          "title_page_space_before_pt", "title_page_space_after_pt")))
+                          "title_page_space_before_pt", "title_page_space_after_pt",
+                          # v2.3.114：题目字号 / 字体同样算「声明了标题页」
+                          "title_page_title_size_pt", "title_page_title_font")))
     tp = _detect_title_page(doc) if _need_title_page_probe else None
     # 标题页块（标题/作者/单位/通讯）**永远**不参与章节标题判定——作者名被误判成
     # run-in 标题会触发句点/冒号注入（TEXT_IS_LOCKED 红线）。这与「是否套用标题页版式」

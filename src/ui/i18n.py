@@ -1105,6 +1105,8 @@ Q_LABELS_EN = {
     "title_page_space_after_pt": "Title page: space after title",
     "title_page_new_page": "Title page on its own page",
     "title_page_zero_extra_spacing": "Title page: no extra paragraph spacing",
+    "title_page_title_size_pt": "Title page: title font size",
+    "title_page_title_font": "Title page: title font",
     "text_new_page": "Body starts on a new page",
     "heading_levels": "Heading levels",
     "reference_style": "Reference style",
@@ -1125,6 +1127,9 @@ Q_LABELS_EN = {
     "abstract_heading_alignment": "Abstract heading alignment",
     "abstract_heading_bold": "Abstract heading bold",
     "abstract_heading_italic": "Abstract heading italic",
+    "abstract_font_size_pt": "Abstract body font size",
+    "abstract_bold": "Abstract body bold",
+    "abstract_alignment": "Abstract body alignment",
     "keywords_label_italic": "Keywords label italic",
     "keywords_indent_in": "Keywords line indent",
     "running_head_required": "Running head required",
@@ -1222,6 +1227,11 @@ Q_HELP_EN = {
     "title_page_zero_extra_spacing": "Yes = no extra paragraph spacing between the author, "
                                      "affiliation, course, instructor and date lines (APA "
                                      "student papers require this); — = unspecified",
+    "title_page_title_size_pt": "Font size of the paper title in points (e.g. 24). Leave blank "
+                               "to follow the template / spec; this is the school template "
+                               "value, not a hard-coded spec default",
+    "title_page_title_font": "Font of the paper title, e.g. Times New Roman / Arial / Calibri. "
+                            "Leave blank to follow the template / spec",
     "text_new_page": "Yes = the body starts on a new page after the abstract (APA requires "
                      "this); No = it may continue right after the abstract; — = unspecified",
     "heading_levels": "0 = not enforced; APA usually has 5 levels, others follow the school",
@@ -1246,6 +1256,13 @@ Q_HELP_EN = {
     "abstract_heading_alignment": "Alignment of the word 'Abstract' itself: center = APA style; left = most engineering templates. — = unspecified",
     "abstract_heading_bold": "Yes = the 'Abstract' line is bold (APA requires this); No = explicitly not bold; — = unspecified",
     "abstract_heading_italic": "Yes = the 'Abstract' line is italic (some IEEE templates); No = explicitly not italic; — = unspecified",
+    "abstract_font_size_pt": "Font size of the Abstract body text in points (e.g. 12). Leave "
+                           "blank to follow the template / spec; the template value drives this, "
+                           "not a hard-coded spec default",
+    "abstract_bold": "Yes = the Abstract body is bold; No = explicitly not bold (most styles); "
+                    "— = unspecified (treat as not bold when the template does not mention it)",
+    "abstract_alignment": "Alignment of the Abstract body: left / justify / center / right. "
+                         "Leave blank to follow the template / spec",
     "keywords_label_italic": "Yes = only the word 'Keywords:' is italic and the terms stay upright (APA requires this); No = explicitly not italic; — = unspecified",
     "keywords_indent_in": "First-line indent of the whole Keywords line; APA uses 0.5 in. Leave blank to skip",
     "running_head_required": "Yes = a running head in the header (short title or last name). Leave as — to skip",

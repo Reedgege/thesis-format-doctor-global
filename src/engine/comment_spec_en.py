@@ -738,6 +738,13 @@ def _apply_part(out: dict, cat: str, seg: str, meta: dict) -> bool:
             tp["title_page_space_before_pt"] = attrs["space_before_pt"]
         if "space_after_pt" in attrs:
             tp["title_page_space_after_pt"] = attrs["space_after_pt"]
+        # v2.3.114：题目字号 / 字体也进画像（模板驱动）。此前只抓居中/加粗/段距，
+        # 漏了 size_pt/font_family → 模板的「24 pt / Times New Roman」要求静默丢弃，
+        # 修正器只能套正文字号，题目永远改不对。
+        if "size_pt" in attrs:
+            tp["title_page_title_size_pt"] = attrs["size_pt"]
+        if "font_family" in attrs:
+            tp["title_page_title_font"] = attrs["font_family"]
         return True
 
     if cat == "abstract_heading":
@@ -768,6 +775,25 @@ def _apply_part(out: dict, cat: str, seg: str, meta: dict) -> bool:
         if "space_after_pt" in attrs:
             absd["abstract_space_after_pt"] = attrs["space_after_pt"]
             hit = True
+        # v2.3.114：摘要正文字号 / 对齐 / 加粗也进画像（模板驱动）。此前只抓缩进/段距，
+        # 漏了 size_pt/bold → 模板的「12 pt」要求进不来，检查器转而套内置规范的
+        # 硬编码 9pt 加粗（checker.py 的 _abs_want），越改越错。
+        if "size_pt" in attrs:
+            absd["abstract_font_size_pt"] = attrs["size_pt"]
+            hit = True
+        if "alignment" in attrs:
+            absd["abstract_alignment"] = attrs["alignment"]
+            hit = True
+        if "bold" in attrs:
+            absd["abstract_bold"] = bool(attrs["bold"])
+            hit = True
+        else:
+            # 模板驱动解读：摘要「标题」显式加粗、而「正文」段没提 bold → 正文按
+            # 「不加粗」理解（"Abstract heading: ... bold ... Abstract body: 12 pt"
+            # 的明确对照；正文若真要加粗，模板会像标题一样显式写 bold）。
+            if absd.get("abstract_heading_bold") is True:
+                absd["abstract_bold"] = False
+                hit = True
         return hit
 
     if cat == "keywords":

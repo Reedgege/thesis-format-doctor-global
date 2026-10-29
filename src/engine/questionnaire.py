@@ -207,6 +207,14 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
      "group": "page", "type": "tri", "default": "", "unit": "",
      "help": "是=作者/单位/课程/教师/日期各行之间段前段后清 0（APA 学生版要求）；"
              "否=明确不要求；—=不规定"},
+    # v2.3.114：标题字号 / 字体（与「学校模板批注」同一组 KEY，三路齐平）。
+    # 此前只有模板批注能读，AI 导入 / 手填都无处填 → 被 _coerce 静默丢掉。
+    {"key": "title_page_title_size_pt", "label": "标题页标题字号", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (6.0, 120.0),
+     "help": "论文大标题的字号（磅）；留空=不规定，跟随模板批注 / 规范"},
+    {"key": "title_page_title_font", "label": "标题页标题字体", "group": "page",
+     "type": "str", "default": "Times New Roman", "unit": "",
+     "help": "论文大标题字体，如 Times New Roman / Arial / Calibri；留空=不规定"},
 
     # 栏数：单栏=1 / 双栏=2。结构性页面维度，不进 PAGE_KEYS；复核弹窗用单选下拉。
     # 标签双语：zh 走此处的 label，en 走 i18n.Q_LABELS_EN（英文界面绝不泄漏中文）。
@@ -350,6 +358,17 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "abstract_space_after_pt", "label": "摘要正文段后", "group": "page", "type": "float",
      "default": "", "unit": "磅", "range": (0.0, 200.0),
      "help": "摘要正文段下方的间距（磅）；留空=不规定"},
+    # v2.3.114：摘要正文字号 / 加粗 / 对齐（与「学校模板批注」同一组 KEY，三路齐平）。
+    # 此前只有模板批注能读，AI 导入 / 手填都无处填 → 被 _coerce 静默丢掉。
+    {"key": "abstract_font_size_pt", "label": "摘要正文字号", "group": "page",
+     "type": "float", "default": "", "unit": "磅", "range": (6.0, 120.0),
+     "help": "摘要正文字号（磅）；留空=不规定，跟随模板批注 / 规范"},
+    {"key": "abstract_bold", "label": "摘要正文加粗", "group": "page", "type": "tri",
+     "default": "", "unit": "",
+     "help": "是=摘要正文加粗；否=明确不加粗；—=不规定（模板批注未提 bold 时按不加粗理解）"},
+    {"key": "abstract_alignment", "label": "摘要正文对齐", "group": "page", "type": "choice",
+     "options": ["left", "justify", "center", "right"], "default": "", "unit": "",
+     "help": "摘要正文对齐方式；留空=不规定（跟随模板批注 / 规范）"},
 
     # —— Running head（v2.3.67）——
     {"key": "running_head_required", "label": "要求页眉 Running Head", "group": "page", "type": "tri",
@@ -474,6 +493,11 @@ class TargetProfile:
     # 不单独建字段：它跟随标题、且引擎只识别「标题 + 作者块」两段，多建会臆造）。
     title_page_space_before_pt: Optional[float] = None
     title_page_space_after_pt: Optional[float] = None
+    # v2.3.114：题目字号 / 字体（模板驱动）。此前漏了这两个维度，模板批注写的
+    # 「Times New Roman 24 pt」永远进不来画像，修正器只能套正文 12pt → 题目改不对。
+    # None = 不规定（不检查、不改动）。
+    title_page_title_size_pt: Optional[float] = None
+    title_page_title_font: Optional[str] = None
     # v2.3.93：首页结构（题名页独立成页 / 其余元素零额外段距）。三态 None = 不规定。
     # 这两项 v2.3.91/92 只存在于内置规范（``StyleSpec``）里，三个显式通道无处表达，
     # 客户学校模板明确写了也带不出来 —— 与「模板驱动」铁律相悖，故补进画像。
@@ -501,6 +525,12 @@ class TargetProfile:
     # v2.3.76：摘要正文段的段前/段后（磅）。None = 不规定（不检查、不改动）。
     abstract_space_before_pt: Optional[float] = None
     abstract_space_after_pt: Optional[float] = None
+    # v2.3.114：摘要**正文**的字号 / 加粗 / 对齐（模板驱动）。此前漏了这三个维度，
+    # 模板批注的「12 pt、不加粗」进不来，检查器转而套内置规范硬编码的 9pt 加粗。
+    # None = 不规定（不检查、不改动）。
+    abstract_font_size_pt: Optional[float] = None
+    abstract_bold: Optional[bool] = None
+    abstract_alignment: Optional[str] = None
     # —— Running head（v2.3.67）——
     # 页眉 running head 的两个显式开关。以前只能由内置规范（APA 专业版 / MLA）隐式带出，
     # 客户/学校想显式声明「要 running head」或「页码要含作者姓氏」无处可填。
@@ -582,6 +612,8 @@ class TargetProfile:
                        "title_page_author_centered",
                        # v2.3.76：标题页标题段的段前 / 段后
                        "title_page_space_before_pt", "title_page_space_after_pt",
+                       # v2.3.114：题目字号 / 字体
+                       "title_page_title_size_pt", "title_page_title_font",
                        # v2.3.93：首页结构两项（三路通道齐平，此前只有内置规范能表达）
                        "title_page_new_page", "title_page_zero_extra_spacing")
 
@@ -598,6 +630,8 @@ class TargetProfile:
     ABSTRACT_KEYS = ("abstract_first_line_indent_in", "abstract_new_page",
                      # v2.3.76：摘要正文段的段前 / 段后
                      "abstract_space_before_pt", "abstract_space_after_pt",
+                     # v2.3.114：摘要正文字号 / 加粗 / 对齐（模板驱动）
+                     "abstract_font_size_pt", "abstract_bold", "abstract_alignment",
                      # v2.3.93：摘要之后正文另起一页
                      "text_new_page",
                      # v2.3.97：摘要标题本身的对齐 / 加粗 / 斜体
