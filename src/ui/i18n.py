@@ -625,7 +625,7 @@ STRINGS: dict = {
         "adv_school_title": "School Template",
         "adv_school_desc": "Import your university's .docx template; we read its real styles.",
         "school_ref_title": "Reference / citation style",
-        "school_ref_none": "Use the school template",
+        "school_ref_none": "Your school's template",
         "review_title": "Confirm your format settings",
         "review_helper": "We read the values below. Review them, correct any gap, then run the check.",
         "review_page": "Page Layout",
@@ -1143,19 +1143,19 @@ Q_LABELS_EN = {
     "equation_line_spacing": "Equation line spacing",
     "equation_space_before_pt": "Space before equations",
     "equation_space_after_pt": "Space after equations",
-    "equation_font_family": "Equation math font",
+    "equation_font_family": "Equation font",
 }
 Q_HELP_EN = {
     "table_lines": "three_line = academic three-line table (top rule / rule under the header "
                    "/ bottom rule, no vertical or inner rules). Leave blank = not checked.",
     # v2.3.112：公式
-    "equation_alignment": "center = display equations are centred in the text column (most "
+    "equation_alignment": "center = display equations are centered in the text column (most "
                           "schools require this); left = flush left. Leave blank = not checked",
     "equation_number_position": "right = the number sits in parentheses, flush with the right "
                                 "margin; none = equations are not numbered. Leave blank = not "
-                                "checked. Numbers are never added or removed for you - that "
-                                "would change your text",
-    "equation_size_pt": "Font size of the maths inside the equation (often the same as the "
+                                "checked. We never add, remove or renumber an equation (that "
+                                "would change your text) — we only report it",
+    "equation_size_pt": "Font size of the math inside the equation (often the same as the "
                         "body text). Leave blank = not checked",
     "equation_line_spacing": "Line spacing of the paragraph that holds the equation. "
                              "Leave blank = not checked",
@@ -1163,11 +1163,11 @@ Q_HELP_EN = {
                                 "Leave blank = not checked",
     "equation_space_after_pt": "Space below the equation paragraph; 0 is common. "
                                "Leave blank = not checked",
-    "equation_font_family": "Font of the maths symbols inside the equation (e.g. Cambria "
-                            "Math). CHECK ONLY — we never change the math font for you, "
-                            "because swapping it in Word can render the symbols as empty "
-                            "boxes. Leave blank = not checked. If your school requires a "
-                            "specific font, set it by hand in Word (Equation Tools → Convert)",
+    "equation_font_family": "Font used for the math inside the equation (e.g. Cambria Math). "
+                            "CHECK ONLY — we never change the math font automatically, "
+                            "because swapping it in Word can turn the symbols into empty boxes. "
+                            "Leave blank = not checked. If your school requires a specific font, "
+                            "set it manually in Word (Equation Tools → Convert)",
     "margin_top_in": "Top margin in inches (1 in ≈ 2.54 cm)",
     "margin_bottom_in": "Bottom margin in inches",
     "margin_left_in": "Left margin in inches (often wider for binding)",
