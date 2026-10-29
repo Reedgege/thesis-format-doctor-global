@@ -1113,7 +1113,9 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
     无规范基线模式（产品铁律）：spec_key 恒为 None，不套任何内置规范的页面值，
     避免把规范值错标成「学校模板」、或抢占用户在高级面板里显式选的引用风格。
     引用风格由「学校模板」子面板的下拉框驱动（reference_style 参数）：
-      - 留空（None）→ 不检查参考文献（也不带任何风格专属开关）；
+      - 留空（None）→ **按学校模板**：模板批注里写了 APA/MLA/IEEE 就按它核条目体例；
+        模板也没写才不查流派。注意这**不等于「不检查参考文献」** —— 悬挂缩进 / 条目
+        字体字号行距 / 编号 / 段距这些版式维度，空值时照样按模板实测值判定；
       - 选 APA/MLA/IEEE → 自动带入该风格的引用开关（悬挂缩进 / 编码方式，以及
         running head / 页码位置 / 参考文献另起页 / 字体白名单 / 标题页 / 标题加粗规则，
         这些开关由 checker 经 resolve_spec(target) 按 reference_style 取出，无需在此落盘）。
@@ -1742,7 +1744,8 @@ def build_target(spec_key: Optional[str] = None, template: Optional[str] = None,
     ai: AI 填表 JSON 路径
     questionnaire: 用户手填问卷 dict
     reference_style: 学校模板子下拉选中的引用风格（仅无规范基线模式生效；
-                    留空表示「不检查参考文献」）
+                    留空表示「按学校模板」——模板批注有流派就按它、没有才不查，
+                    不是「整块参考文献都不看」）
     """
     # v2.3.65：**空串必须当"无规范"**。UI 里「无规范基线」存的是 ``""``（StringVar
     # 的默认值），旧写法只判 ``is not None`` → 空串被当成合法规范键，于是客户选了

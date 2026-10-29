@@ -110,7 +110,8 @@ def test_template_docx_maps_header_and_headings(tmp_path):
     # 每级标题格式被带入
     assert t.heading_formats and 1 in t.heading_formats
     assert t.heading_formats[1]["alignment"] == "center"
-    # 引用风格留空 -> 不检查参考文献
+    # 该合成模板**没有参考文献批注**、也未选流派 -> 才真的不查
+    # （「留空」本身 = 按学校模板，不是「不检查参考文献」）
     assert t.reference_style is None
     assert t.reference_hanging_indent_in is None
 

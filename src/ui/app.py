@@ -544,7 +544,9 @@ class App:
         self.questionnaire_data: dict = {}
         # 6 选 1 来源：前 4 项带内置规范（spec_key 非空），后 2 项走无规范基线
         self.source_mode = tk.StringVar(value="src_apa_student")
-        # 学校模板子下拉：引用 / 参考文献风格（默认留空=不检查引用）
+        # 学校模板子下拉：引用 / 参考文献风格。留空 = **按学校模板**（模板批注里写了
+        # APA/MLA/IEEE 就按它查；模板也没写才不查流派），不是「不检查参考文献」——
+        # 参考文献的版式维度（悬挂缩进/条目字体字号/段距）空值时照样按模板实测值判。
         self.school_ref_style = tk.StringVar(value="")
         # 高级区是否可用（选内置规范时整片置灰）
         self._adv_enabled = True
@@ -2047,7 +2049,8 @@ class App:
         """高级区 ①：学校模板面板（两行）。
 
         行1 导入 .docx 模板文件（读取真实样式）；行2 引用 / 参考文献风格子下拉，
-        默认「不检查引用」。来源为学校模板时由 _apply_source_mode 自动展开。
+        默认「按学校模板」（模板批注写了流派就按它、没写才不查）。来源为学校模板时
+        由 _apply_source_mode 自动展开。
         """
         tr = self.tr
         F = self.F
@@ -2078,7 +2081,7 @@ class App:
             values=[tr("school_ref_none"), "APA", "MLA", "IEEE"],
             state="readonly", font=F["F_BODY"], width=22)
         self._school_ref_cb.pack(side="right")
-        # 默认「不检查引用」（用 ComboboxSelected 绑定而非 trace_add，避免构建期
+        # 默认「按学校模板」（用 ComboboxSelected 绑定而非 trace_add，避免构建期
         # 程序化 set 误触发 _refresh_rows 访问尚未建好的控件）
         self.school_ref_style.set(tr("school_ref_none"))
         try:
@@ -4594,7 +4597,8 @@ class App:
         is_school = mode == "src_school"
         is_manual = mode == "src_manual"
         is_ai = mode == "src_ai"
-        # 默认「不检查引用」对应的显示串不是合法风格键，build_target 会忽略为 None
+        # 默认「按学校模板」对应的显示串不是合法风格键，build_target 会归一成 None
+        # （None 在 target_from_template_docx 里 = 先按模板批注推断流派，没有才不查）
         return build_target(
             # spec_key 是 StringVar，无规范时是 ""（不是 None）—— 统一转成 None 再交给
             # 引擎，别让空串被当成一个"空规范"（v2.3.65 引擎侧也做了兜底）
