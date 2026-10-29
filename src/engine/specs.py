@@ -293,6 +293,29 @@ class StyleSpec:
     # None = 不规定该风格的表格间距（MLA/IEEE 现状）。
     table_gap_min_pt: Optional[float] = None
     table_gap_ratio: Optional[float] = None
+    # —— 公式（Word 原生 OMML，v2.3.112）——
+    # 「公式居中、编号加括号靠右边界、与正文同字号、段前段后 0」是学校模板里高频的硬要求，
+    # 而引擎此前**整条链路缺失**：OMML 的数学 run 是 ``m:r``，python-docx 的
+    # ``para.runs`` 只返回 ``w:r``，公式段在引擎眼里是「一个字都没有的空段」。
+    #
+    # 🔴 三个内置规范一律留 None（= 不规定 → 不检查、也不改动）：
+    #   · APA 7 / MLA 9 手册本身没有公式版式条款，硬写就是臆造；
+    #   · IEEE 的**编辑规范**确实规定「公式在本栏内居中，编号加括号与右边界齐平」
+    #     （ESM；IEEE 会议模板原话 "Equation numbers, within parentheses, are to position
+    #     flush right, as in (1), using a right tab stop"），但 IEEE-Journal 档已有冻结
+    #     裁定 FRZ-2026-10-23-01（P-1：不碰版式），IEEE-Conference 档的 notes 也明说
+    #     「版式随各会议模板」。故两者**暂不启用**。
+    #     将来要开，只需在对应构造里补两行 —— checker / fixer 已全线就绪：
+    #         equation_alignment="center", equation_number_position="right"
+    # 真正说了算的是学校模板批注 / 问卷 / AI 导入（三条通道都已支持）。
+    equation_alignment: Optional[str] = None        # "center" / "left"
+    equation_number_position: Optional[str] = None  # "right" / "none"（不许编号）
+    equation_size_pt: Optional[float] = None        # 公式字号（磅）
+    # 公式字体：**只查不改**。Word 的数学区换字体可能丢字形（见 fixer 的 _apply_equation_*）。
+    equation_font_family: Optional[str] = None
+    equation_line_spacing: Optional[float] = None   # 公式段行距（倍数）
+    equation_space_before_pt: Optional[float] = None
+    equation_space_after_pt: Optional[float] = None
     # v2.3.100（F-5 / 裁定 C-6）：byline（作者/单位/城市/邮箱）字号。
     # OWL 说 10pt、官方会议模板 `Author` 样式是 11pt → 老板裁定**以模板 11pt 为准**。
     # None = 该风格不规定（APA/MLA 不设 byline）。
@@ -336,6 +359,13 @@ class StyleSpec:
         "table_gap_pt": self.table_gap_pt,
         "table_gap_min_pt": self.table_gap_min_pt,
         "table_gap_ratio": self.table_gap_ratio,
+        "equation_alignment": self.equation_alignment,
+        "equation_number_position": self.equation_number_position,
+        "equation_size_pt": self.equation_size_pt,
+        "equation_font_family": self.equation_font_family,
+        "equation_line_spacing": self.equation_line_spacing,
+        "equation_space_before_pt": self.equation_space_before_pt,
+        "equation_space_after_pt": self.equation_space_after_pt,
         "byline_size_pt": self.byline_size_pt,
         "notes": self.notes,
         }

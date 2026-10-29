@@ -51,6 +51,8 @@ from .docx_reader import (
     _norm_matter_title, _MATTER_TITLES, caption_block_top,
     # v2.3.98：表格与前后文字的间距（读段前/段后，认「行」单位）
     _spacing_pair_of_para,
+    # v2.3.112：公式修正要连表格单元格里的公式一起处理（「公式+编号」常写成无框表）
+    _iter_all_paragraphs,
     # v2.3.100（F-2 / 裁定 C-2）：表格间距的「同页」判定（reader 与 fixer 共用）
     _starts_new_page,
     # v2.3.100（B 批收尾）：byline 段识别（正文格式修正要避开作者块）
@@ -873,6 +875,249 @@ def _apply_three_line_tables(doc) -> int:
                 _write_border(cbox, "bottom", "single", _THIN_SZ)
         updated += 1
     return updated
+
+
+# ---------------------------------------------------------------------------
+# 公式（Word 原生 OMML）修正（v2.3.112）
+# ---------------------------------------------------------------------------
+# 🔴 铁律：只改**版式**（对齐 / 字号 / 段距 / 行距 / 编号的制表位），公式内容一个字节
+#    都不碰（policy.TEXT_IS_LOCKED）。数学文本在 ``m:t`` 里 —— 下面所有函数都不读它、
+#    更不写它；唯一与「公式内部」打交道的动作是给 ``m:r`` 挂字号，那只影响大小。
+# 每个函数都**幂等**：已经合规时返回 0，第二遍零动作（否则报告里的红杠永远点不掉）。
+
+
+def _eq_display_paras(doc) -> list:
+    """全部「含展示公式」的段落，返回 ``[(Paragraph, p_el), ...]``（含表格内）。
+
+    走 ``_iter_all_paragraphs`` 而不是 ``doc.paragraphs``：后者不含表格单元格里的段落，
+    而「公式居中 + 编号放右单元格」的真实版式常常就是一张无框表 —— 漏掉等于漏修一半。
+    """
+    out: list = []
+    for para, _in_tbl in _iter_all_paragraphs(doc):
+        try:
+            p_el = para._p
+        except Exception:
+            continue
+        if p_el is None:
+            continue
+        try:
+            if not p_el.findall(qn("m:oMathPara")):
+                continue
+        except Exception:
+            continue
+        out.append((para, p_el))
+    return out
+
+
+def _apply_equation_alignment(doc, want: str) -> int:
+    """把所有展示公式的对齐设为 ``want``（center / left）；返回实际改动的段落数。
+
+    写的是 ``m:oMathParaPr/m:jc`` —— Word 展示公式**真正认**的那个开关。
+    ``w:pPr/w:jc`` 在这条路上是干扰项（Word 存着不改），所以这里不碰它；
+    读侧也已让 ``m:jc`` 优先，两边同一口径，杜绝「改完复检又报回来」。
+    """
+    if want not in ("center", "left"):
+        return 0
+    changed = 0
+    for _para, p_el in _eq_display_paras(doc):
+        hit = False
+        try:
+            omath_paras = p_el.findall(qn("m:oMathPara"))
+        except Exception:
+            continue
+        for op in omath_paras:
+            pr = op.find(qn("m:oMathParaPr"))
+            if pr is None:
+                pr = OxmlElement("m:oMathParaPr")
+                # OOXML 顺序要求：oMathParaPr 必须是 oMathPara 的第一个子元素
+                op.insert(0, pr)
+            jc = pr.find(qn("m:jc"))
+            if jc is None:
+                jc = OxmlElement("m:jc")
+                pr.insert(0, jc)
+            cur = str(jc.get(qn("m:val")) or "").strip().lower()
+            # centerGroup（整组居中）在版面上就是居中 → 视为已合规，不重写（幂等）
+            if ("center" if cur == "centergroup" else cur) == want:
+                continue
+            jc.set(qn("m:val"), want)
+            hit = True
+        if hit:
+            changed += 1
+    return changed
+
+
+def _apply_equation_size(doc, size_pt: float) -> int:
+    """把所有公式内数学 run 的字号设为 ``size_pt``；返回实际改动的段落数。
+
+    只写 ``m:r/w:rPr/w:sz`` + ``w:szCs``，**绝不碰 ``w:rFonts``** —— 数学区换字体可能
+    让符号丢字形（客户打开是一堆空框），字号只是大小，换不坏。
+
+    没有 ``w:rPr`` 的数学 run 要新建，且必须排在 ``m:rPr``（数学属性）**之后**、
+    ``m:t`` 之前 —— 插错位置 Word 会直接判定文件损坏。
+    """
+    try:
+        want_half = int(round(float(size_pt) * 2))
+    except (TypeError, ValueError):
+        return 0
+    if want_half <= 0:
+        return 0
+    changed = 0
+    for _para, p_el in _eq_display_paras(doc):
+        hit = False
+        try:
+            math_runs = p_el.findall(".//" + qn("m:r"))
+        except Exception:
+            continue
+        for mr in math_runs:
+            rpr = mr.find(qn("w:rPr"))
+            if rpr is None:
+                rpr = OxmlElement("w:rPr")
+                mrpr = mr.find(qn("m:rPr"))
+                if mrpr is not None:
+                    mrpr.addnext(rpr)
+                else:
+                    mr.insert(0, rpr)
+            for tag in ("w:sz", "w:szCs"):
+                el = rpr.find(qn(tag))
+                if el is None:
+                    el = OxmlElement(tag)
+                    rpr.append(el)
+                if str(el.get(qn("w:val"))) != str(want_half):
+                    el.set(qn("w:val"), str(want_half))
+                    hit = True
+        if hit:
+            changed += 1
+    return changed
+
+
+def _eq_text_width_twips(doc) -> Optional[int]:
+    """正文区可用宽度（twips），用于给公式编号补「右对齐制表位」。
+
+    双栏时制表位要落在**本栏**右边界，不是页面右边界 → 按节里的 ``w:cols/@w:num`` 折算。
+    """
+    try:
+        sec = doc.sections[-1]
+    except Exception:
+        return None
+    try:
+        # ⚠️ ``Length - Length`` 在 python-docx 里返回的是 **int（EMU）**，不是 Length，
+        # 接着调 ``.twips`` 会 AttributeError —— 被外层 try 吞掉后整条修正静默失效，
+        # 报告却照旧写着「可自动修正」（实测踩过，正是最坑的那种「说能修、其实没修」）。
+        # 1 twip = 635 EMU（914400 EMU/inch ÷ 1440 twip/inch）。
+        emu = int(sec.page_width) - int(sec.left_margin) - int(sec.right_margin)
+    except Exception:
+        return None
+    tw = int(emu / 635.0)
+    try:
+        cols = sec._sectPr.find(qn("w:cols"))
+        num = int(cols.get(qn("w:num")) or 1) if cols is not None else 1
+    except Exception:
+        num = 1
+    if num and num > 1:
+        tw = int(tw / num)
+    return tw if tw > 0 else None
+
+
+def _apply_equation_number_right(doc) -> int:
+    """把「已有 Tab 分隔、却缺右对齐制表位」的公式编号推到右边界；返回改动条数。
+
+    🔴 **绝不插入 Tab 字符** —— 那是往客户文档里加字符（改内容）。这里只补/改制表位，
+    纯版式。没有 Tab 分隔的段落直接跳过，由 checker 如实告诉客户去 Word 里加。
+    """
+    width = _eq_text_width_twips(doc)
+    if not width:
+        return 0
+    changed = 0
+    for para, p_el in _eq_display_paras(doc):
+        # 必须已有 Tab：否则推过去就得插入字符，不做。
+        try:
+            if not p_el.findall(".//" + qn("w:tab")):
+                continue
+        except Exception:
+            continue
+        try:
+            pf = para.paragraph_format
+        except Exception:
+            continue
+        # 已有「贴近右边界」的右对齐制表位 → 已合规，跳过（幂等）
+        ok = False
+        try:
+            for t in pf.tab_stops:
+                try:
+                    if (t.alignment == WD_TAB_ALIGNMENT.RIGHT
+                            and int(t.position.twips) >= int(width * 0.9)):
+                        ok = True
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            ok = False
+        if ok:
+            continue
+        try:
+            # 用 python-docx 的 API 而不是手拼 XML：它会按 schema 顺序插进 w:pPr，
+            # 手拼 append 到 pPr 末尾会排在 w:jc 之后 → 严格校验判文件损坏。
+            pf.tab_stops.add_tab_stop(Inches(width / 1440.0), WD_TAB_ALIGNMENT.RIGHT)
+            changed += 1
+        except Exception:
+            continue
+    return changed
+
+
+def _apply_equation_spacing(doc, before_pt, after_pt) -> int:
+    """公式段段前/段后；返回改动段落数。
+
+    复用 ``_write_one_spacing`` —— 它会先清 ``w:beforeLines``/``w:afterLines``；
+    不清的话「行」单位优先级更高，写的磅值等于没写（历史踩过）。
+    """
+    if before_pt is None and after_pt is None:
+        return 0
+    changed = 0
+    for para, _p_el in _eq_display_paras(doc):
+        hit = False
+        if before_pt is not None:
+            try:
+                if _write_one_spacing(para, "space_before", float(before_pt)):
+                    hit = True
+            except Exception:
+                pass
+        if after_pt is not None:
+            try:
+                if _write_one_spacing(para, "space_after", float(after_pt)):
+                    hit = True
+            except Exception:
+                pass
+        if hit:
+            changed += 1
+    return changed
+
+
+def _apply_equation_line_spacing(doc, sp: float) -> int:
+    """公式段行距（倍数）；返回改动段落数。幂等：已经等于目标值时不动。"""
+    try:
+        want = float(sp)
+    except (TypeError, ValueError):
+        return 0
+    if want <= 0:
+        return 0
+    changed = 0
+    for para, _p_el in _eq_display_paras(doc):
+        try:
+            cur = para.paragraph_format.line_spacing
+        except Exception:
+            cur = None
+        try:
+            same = cur is not None and abs(float(cur) - want) <= 1e-6
+        except (TypeError, ValueError):
+            same = False
+        if same:
+            continue
+        try:
+            para.paragraph_format.line_spacing = want
+            changed += 1
+        except Exception:
+            continue
+    return changed
 
 
 def _toc_heading_paragraph(doc):
@@ -3962,6 +4207,47 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
         if _apply_three_line_tables(doc):
             applied["table_lines"] = "three_line"
 
+    # —— 公式（v2.3.112）——
+    # 顺序有讲究：**先把对齐/字号/段距改好，最后才动编号的制表位**。
+    # 制表位依赖段落宽度换算，前面若还有段落级改动，位置可能被 Word 重排；放在末尾
+    # 等于让编号永远落在最后计算的右边界上。
+    # 每个动作只在 checker 真的绑了 FixAction（即真的发现不符）时才做 ——
+    # fix_dims 是「检查出来的」，这里绝不独立重算（check→fix 单一真相源）。
+    if "equation_alignment" in fix_dims:
+        _eq_align = getattr(target, "equation_alignment", None)
+        if _eq_align in ("center", "left"):
+            if _apply_equation_alignment(doc, _eq_align):
+                applied["equation_alignment"] = _eq_align
+
+    if "equation_size" in fix_dims:
+        _eq_size = getattr(target, "equation_size_pt", None)
+        if _eq_size is not None:
+            if _apply_equation_size(doc, float(_eq_size)):
+                applied["equation_size_pt"] = float(_eq_size)
+
+    _eq_sb = getattr(target, "equation_space_before_pt", None) \
+        if "equation_space_before" in fix_dims else None
+    _eq_sa = getattr(target, "equation_space_after_pt", None) \
+        if "equation_space_after" in fix_dims else None
+    if (_eq_sb is not None or _eq_sa is not None) \
+            and _apply_equation_spacing(doc, _eq_sb, _eq_sa):
+        if _eq_sb is not None:
+            applied["equation_space_before_pt"] = _eq_sb
+        if _eq_sa is not None:
+            applied["equation_space_after_pt"] = _eq_sa
+
+    if "equation_line_spacing" in fix_dims:
+        _eq_ls = getattr(target, "equation_line_spacing", None)
+        if _eq_ls is not None:
+            if _apply_equation_line_spacing(doc, float(_eq_ls)):
+                applied["equation_line_spacing"] = float(_eq_ls)
+
+    # 编号靠右：只补制表位，绝不插 Tab 字符（那是改内容）
+    if "equation_number_position" in fix_dims \
+            and getattr(target, "equation_number_position", None) == "right":
+        if _apply_equation_number_right(doc):
+            applied["equation_number_position"] = "right"
+
     # 目录标题段段前/段后（v2.3.77）：只动「目录」这一行，条目一律不碰
     # （条目是域段落，改直接格式会被「更新目录」冲掉）。
     _toc_sb = getattr(target, "toc_heading_space_before_pt", None) \
@@ -4136,6 +4422,14 @@ _DIM_LABELS = {
         "table_space_after": "Table cell space after",
         "table_gap": "Spacing between tables and the text",
         "table_lines": "Table rules (three-line)",
+        # v2.3.112：公式
+        "equation_alignment": "Equation alignment",
+        "equation_number_position": "Equation numbering",
+        "equation_size": "Equation font size",
+        "equation_space_before": "Space before equations",
+        "equation_space_after": "Space after equations",
+        "equation_line_spacing": "Equation line spacing",
+        "equation_font": "Equation font",
         "toc_heading_space_before": "Contents heading space before",
         "toc_heading_space_after": "Contents heading space after",
         "title_page": "Title page", "block_quote": "Block quotation",
@@ -4179,6 +4473,14 @@ _DIM_LABELS = {
         "table_space_after": "表格内段落段后间距",
         "table_gap": "表格与正文的间距",
         "table_lines": "表格线（三线表）",
+        # v2.3.112：公式
+        "equation_alignment": "公式对齐",
+        "equation_number_position": "公式编号位置",
+        "equation_size": "公式字号",
+        "equation_space_before": "公式段前间距",
+        "equation_space_after": "公式段后间距",
+        "equation_line_spacing": "公式行距",
+        "equation_font": "公式字体",
         "toc_heading_space_before": "目录标题段前间距",
         "toc_heading_space_after": "目录标题段后间距",
         "title_page": "标题页", "block_quote": "块引用",

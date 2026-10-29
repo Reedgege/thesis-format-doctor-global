@@ -3450,7 +3450,17 @@ class App:
         vars_: dict = {}
         first_wrap = None      # 第一个可折叠区块的外壳，预填提示行要插在它前面
         for gi, (gkey, gtitle) in enumerate((("page", "q_sec_page"),
+                                             # v2.3.112：表格单独成块 —— 原先「三线表」藏在
+                                             # 「参考文献」里、「表格间距」埋在「页面排版」里，
+                                             # 客户想找三线表得先点开参考文献（找不到）。
+                                             # 表格类字段（表格线 / 表格内段距 / 表格与正文间距）
+                                             # 单独立组，紧跟页面排版之后。
+                                             ("table", "q_sec_table"),
                                              ("heading", "q_sec_heading"),
+                                             # v2.3.112：公式单独成块 —— 口径与正文/表格
+                                             # 完全不同（居中/编号/段距），混进「页面排版」
+                                             # 那张长表里没人找得到。
+                                             ("equation", "q_sec_equations"),
                                              ("reference", "q_sec_refs"))):
             fields = [f for f in QUESTIONNAIRE_SCHEMA if f.get("group") == gkey]
             if not fields:
@@ -4869,6 +4879,18 @@ class App:
             "%s: %s" % (_lbl("caption_position_figure"),
                         target.caption_position_figure or _none),
             "%s: %s" % (_lbl("table_lines"), target.table_lines or _none),
+            # v2.3.112：公式（Word 原生公式）—— 让客户在复核弹窗里就看到「这次会按什么口径查公式」
+            "%s: %s" % (_lbl("equation_alignment"), target.equation_alignment or _none),
+            "%s: %s" % (_lbl("equation_number_position"),
+                        target.equation_number_position or _none),
+            "%s: %s" % (_lbl("equation_size_pt"),
+                        _num_txt(target.equation_size_pt, "pt")),
+            "%s: %s" % (_lbl("equation_line_spacing"),
+                        _num_txt(target.equation_line_spacing, "x")),
+            "%s: %s" % (_lbl("equation_space_before_pt"),
+                        _num_txt(target.equation_space_before_pt, "pt")),
+            "%s: %s" % (_lbl("equation_space_after_pt"),
+                        _num_txt(target.equation_space_after_pt, "pt")),
         ]
         for ln in _fm_lines:
             tk.Label(inner, text=ln, bg=theme.SURFACE, fg=theme.TEXT, font=F["F_SMALL"],

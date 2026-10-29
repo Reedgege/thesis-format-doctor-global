@@ -469,7 +469,9 @@ STRINGS: dict = {
         "q_cancel": "Cancel",
         # v2.3.64：问卷弹窗分三块（按 schema 的 group），不再 16 行一字排开
         "q_sec_page": "Page layout",
+        "q_sec_table": "Tables",
         "q_sec_heading": "Headings",
+        "q_sec_equations": "Equations",
         "q_sec_refs": "References",
         "q_saved_title": "Saved",
         "q_saved": "Questionnaire saved. It will be used the next time you run.",
@@ -921,7 +923,9 @@ STRINGS: dict = {
         "q_save": "保存问卷",
         "q_cancel": "取消",
         "q_sec_page": "页面排版",
+        "q_sec_table": "表格",
         "q_sec_heading": "标题层级",
+        "q_sec_equations": "公式",
         "q_sec_refs": "参考文献",
         "q_saved_title": "已保存",
         "q_saved": "问卷已填入，运行体检时生效。",
@@ -1132,10 +1136,38 @@ Q_LABELS_EN = {
     "caption_position_table": "Table caption position",
     "caption_position_figure": "Figure caption position",
     "table_lines": "Table rules (three-line)",
+    # v2.3.112：公式（Word 原生公式的版式）
+    "equation_alignment": "Equation alignment",
+    "equation_number_position": "Equation numbering",
+    "equation_size_pt": "Equation font size",
+    "equation_line_spacing": "Equation line spacing",
+    "equation_space_before_pt": "Space before equations",
+    "equation_space_after_pt": "Space after equations",
+    "equation_font_family": "Equation math font",
 }
 Q_HELP_EN = {
     "table_lines": "three_line = academic three-line table (top rule / rule under the header "
                    "/ bottom rule, no vertical or inner rules). Leave blank = not checked.",
+    # v2.3.112：公式
+    "equation_alignment": "center = display equations are centred in the text column (most "
+                          "schools require this); left = flush left. Leave blank = not checked",
+    "equation_number_position": "right = the number sits in parentheses, flush with the right "
+                                "margin; none = equations are not numbered. Leave blank = not "
+                                "checked. Numbers are never added or removed for you - that "
+                                "would change your text",
+    "equation_size_pt": "Font size of the maths inside the equation (often the same as the "
+                        "body text). Leave blank = not checked",
+    "equation_line_spacing": "Line spacing of the paragraph that holds the equation. "
+                             "Leave blank = not checked",
+    "equation_space_before_pt": "Space above the equation paragraph; 0 is common. "
+                                "Leave blank = not checked",
+    "equation_space_after_pt": "Space below the equation paragraph; 0 is common. "
+                               "Leave blank = not checked",
+    "equation_font_family": "Font of the maths symbols inside the equation (e.g. Cambria "
+                            "Math). CHECK ONLY — we never change the math font for you, "
+                            "because swapping it in Word can render the symbols as empty "
+                            "boxes. Leave blank = not checked. If your school requires a "
+                            "specific font, set it by hand in Word (Equation Tools → Convert)",
     "margin_top_in": "Top margin in inches (1 in ≈ 2.54 cm)",
     "margin_bottom_in": "Bottom margin in inches",
     "margin_left_in": "Left margin in inches (often wider for binding)",
@@ -1258,6 +1290,11 @@ Q_OPTION_LABELS: dict = {
     # v2.3.97：摘要标题对齐（引擎值是 left/center）
     "abstract_heading_alignment.left": {"zh": "左对齐", "en": "Left-aligned"},
     "abstract_heading_alignment.center": {"zh": "居中", "en": "Centered"},
+    # v2.3.112：公式对齐 / 编号（引擎值是 center|left、right|none）
+    "equation_alignment.center": {"zh": "居中", "en": "Centered"},
+    "equation_alignment.left": {"zh": "左对齐", "en": "Left-aligned"},
+    "equation_number_position.right": {"zh": "编号靠右", "en": "Numbered, flush right"},
+    "equation_number_position.none": {"zh": "不编号", "en": "Not numbered"},
 }
 
 

@@ -54,6 +54,11 @@ COMMENTS = [
     "Figure captions: Times New Roman 12 pt, bold label, placed below the figure.",
     "Table captions: Times New Roman 12 pt, bold label, placed above the table.",
     "Layout: single column, one column per page.",
+    # v2.3.112：公式（Word 原生公式）的版式要求 —— 海外学校模板里很常见的一条。
+    # 引擎只从**批注**读公式条款，不从模板实物推断：学校模板常常一个公式都没放，
+    # 拿「模板里没公式」去反推「没要求」等于替客户拍板。
+    "Equations must be centred and numbered consecutively on the right, e.g. (1).",
+    "Equation size: 12 pt, no extra space before or after, double-spaced.",
 ]
 
 DEFAULT_OUT = os.path.join(
@@ -264,8 +269,13 @@ def build_with_anchors(tmp_path):
     mark(11, add("The paragraph after a table leaves one blank line of spacing "
                  "before it resumes.", "Normal"))
 
-    mark(12, add("References", "Heading 1"))
+    # 公式段：承载批注 16（公式居中 + 编号靠右）、17（字号 / 段距 / 行距）。
+    # 模板里**不放假公式** —— 公式条款只从批注读（见 COMMENTS 末尾说明）。
+    mark(16, add("2.2  Equations", "Heading 2"))
+    mark(17, add("Displayed equations follow the convention described in the "
+                 "comments attached to this section.", "Normal"))
 
+    mark(12, add("References", "Heading 1"))
     for line in (
         "[1] Example, A. (2024). A fictional reference entry. "
         "Example Journal, 12(3), 45-52.",

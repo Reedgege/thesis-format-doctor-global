@@ -73,6 +73,17 @@ _DIM_LABEL = {
     "caption_position_table": "Table caption position",
     "caption_position_figure": "Figure caption position",
     "table_lines": "Table rules (three-line)",
+    # v2.3.112：公式。⚠️ 这张表的键是**目标画像的字段名**（target.resolution 的键），
+    # 不是 Finding 的 dimension 名 —— 两者在公式这块恰好不一样：
+    #   字段名 equation_space_before_pt ↔ 维度名 equation_space_before。
+    # 写成维度名的话，来源清单里会直接显示 "equation_space_before_pt" 这种原始键名。
+    "equation_alignment": "Equation alignment",
+    "equation_number_position": "Equation numbering",
+    "equation_size_pt": "Equation font size",
+    "equation_space_before_pt": "Space before equations",
+    "equation_space_after_pt": "Space after equations",
+    "equation_line_spacing": "Equation line spacing",
+    "equation_font_family": "Equation font",
     "heading_formats": "Heading formats",
     "running_head_required": "Running head required",
     "page_number_include_author_name": "Page number includes author name",
@@ -108,7 +119,13 @@ KNOWN_LIMITATIONS = [
     "the tool leaves them as-is and does not re-level them.",
     "In-text citation ↔ reference-list correspondence is NOT verified. "
     "The tool checks reference formatting only, not whether every citation has a matching entry.",
-    "Complex formulas / equations are NOT processed.",
+    # v2.3.112：公式从「一律不处理」升级为「按模板/问卷声明查改版式」。
+    "Equations (Word's own equation objects) are checked and fixed for LAYOUT only — "
+    "alignment, number position, font size, paragraph spacing and line spacing — and only "
+    "when your template or questionnaire states a rule for them. The maths itself is never "
+    "edited, the font of the maths is never substituted (that can make symbols render as "
+    "empty boxes), and equations are never renumbered or given a number: adding the number "
+    "would mean inserting text. Formulas pasted as pictures are not detected.",
     "Complex tables are handled conservatively. Merged / split cells are fine (the rules "
     "are drawn per row), but nested tables (a table inside a cell) and tables inside "
     "headers/footers/text boxes are NOT processed, and multi-level headers only get one "

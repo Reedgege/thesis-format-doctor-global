@@ -426,40 +426,6 @@ fields:
     label: Gap between a table and the surrounding text
     unit: pt
     example: 24.0
-  # v2.3.100 (F-2 / ruling C-2): the other two thresholds of the table_gap triplet.
-  # The manual asks for 24 pt, but the official samples measure 0/12 pt - hence a 12 pt
-  # floor and 24 x 0.8 = 19.2 pt as the "recommended" line.
-  - key: table_gap_min_pt
-    label: Minimum acceptable gap between a table and the text
-    unit: pt
-    example: 12.0
-    note: >-
-      The hard floor: only gaps BELOW this value are reported as a problem. APA's official
-      samples use 12 pt, so report 12.0 when the requirement tolerates that. Omit when only
-      the recommended value should be enforced.
-  - key: table_gap_ratio
-    label: Fraction of the recommended gap that still passes
-    example: 0.8
-    note: >-
-      A gap counts as acceptable once it reaches this fraction of table_gap_pt. APA uses 0.8
-      (24 pt x 0.8 = 19.2 pt). Omit when no fractional pass line applies.
-  # v2.3.100 (F-2 / ruling C-2): the other two thresholds of the table_gap triplet.
-  # The manual asks for 24 pt, but the official samples measure 0/12 pt - hence a 12 pt
-  # floor and 24 x 0.8 = 19.2 pt as the "recommended" line.
-  - key: table_gap_min_pt
-    label: Minimum acceptable gap between a table and the text
-    unit: pt
-    example: 12.0
-    note: >-
-      The hard floor: only gaps BELOW this value are reported as a problem. APA's official
-      samples use 12 pt, so report 12.0 when the requirement tolerates that. Omit when only
-      the recommended value should be enforced.
-  - key: table_gap_ratio
-    label: Fraction of the recommended gap that still passes
-    example: 0.8
-    note: >-
-      A gap counts as acceptable once it reaches this fraction of table_gap_pt. APA uses 0.8
-      (24 pt x 0.8 = 19.2 pt). Omit when no fractional pass line applies.
     note: >-
       The empty space that must sit between a table and the text directly above / below it, in
       points. This is NOT the space inside the cells (that is table_space_before_pt /
@@ -468,6 +434,23 @@ fields:
       is 12 pt, so report 24.0 only when the requirement says something like that. Omit when the
       requirement is silent. The tool creates the gap by setting the spacing of the neighbouring
       paragraph, so the student's text is never touched.
+  # v2.3.100 (F-2 / ruling C-2): the other two thresholds of the table_gap triplet.
+  # The manual asks for 24 pt, but the official samples measure 0/12 pt - hence a 12 pt
+  # floor and 24 x 0.8 = 19.2 pt as the "recommended" line.
+  - key: table_gap_min_pt
+    label: Minimum acceptable gap between a table and the text
+    unit: pt
+    example: 12.0
+    note: >-
+      The hard floor: only gaps BELOW this value are reported as a problem. APA's official
+      samples use 12 pt, so report 12.0 when the requirement tolerates that. Omit when only
+      the recommended value should be enforced.
+  - key: table_gap_ratio
+    label: Fraction of the recommended gap that still passes
+    example: 0.8
+    note: >-
+      A gap counts as acceptable once it reaches this fraction of table_gap_pt. APA uses 0.8
+      (24 pt x 0.8 = 19.2 pt). Omit when no fractional pass line applies.
   - key: table_lines
     label: Table rules (three-line academic table)
     unit: ""
@@ -478,6 +461,64 @@ fields:
       row and the bottom rule; remove every vertical rule and every inner horizontal rule. The
       tool draws the three rules if the table currently has none. Omit when the school or the
       style says nothing about table rules.
+  # v2.3.112: equations (Word's own equation objects / OMML). Only layout is checked and
+  # fixed - the maths itself is never edited. All six keys are optional; omit every one of
+  # them when the requirement says nothing about equations.
+  - key: equation_alignment
+    label: Equation alignment
+    unit: ""
+    example: center
+    allowed: [center, left]
+    note: >-
+      How displayed (stand-alone) equations are aligned across the text column. center is what
+      most schools require; left means flush left. Omit when the requirement is silent.
+  - key: equation_number_position
+    label: Equation numbering
+    unit: ""
+    example: right
+    allowed: [right, none]
+    note: >-
+      right = every displayed equation carries a number in parentheses, flush with the right
+      margin; none = equations are not numbered at all. The tool never adds, removes or
+      renumbers an equation number (that would change the student's text) - it only reports it.
+      Omit when the requirement is silent.
+  - key: equation_size_pt
+    label: Equation font size
+    unit: pt
+    example: 12.0
+    note: >-
+      The size of the maths inside the equation, in points. Usually the same as the body text.
+      The tool changes only the size, never the maths font. Omit when the requirement is silent.
+  - key: equation_line_spacing
+    label: Equation line spacing
+    example: 2.0
+    note: >-
+      Line spacing (as a multiple) of the paragraph that holds the equation: 2.0 = double,
+      1.5 = one-and-a-half, 1.0 = single. Omit when the requirement is silent.
+  - key: equation_space_before_pt
+    label: Space before an equation
+    unit: pt
+    example: 0.0
+    note: >-
+      Space above the equation paragraph, in points. 0 is common. Omit when the requirement is
+      silent.
+  - key: equation_space_after_pt
+    label: Space after an equation
+    unit: pt
+    example: 0.0
+    note: >-
+      Space below the equation paragraph, in points. 0 is common. Omit when the requirement is
+      silent.
+  - key: equation_font_family
+    label: Equation font
+    unit: ""
+    example: Cambria Math
+    note: >-
+      The font of the maths inside the equation (most Word equations use Cambria Math). This is a
+      HINT ONLY - the tool never substitutes the equation font, because doing so in Word can make
+      symbols render as empty boxes. Omit when the requirement says nothing; if your school names
+      a font, write it here so the report reminds you to set it manually in Word
+      (Equation Tools -> Conversions) after applying the other fixes.
   - key: toc_heading_space_before_pt
     label: Contents heading - space before
     unit: pt

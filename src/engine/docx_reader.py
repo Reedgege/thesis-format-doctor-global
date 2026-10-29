@@ -145,6 +145,11 @@ class DocumentProfile:
     # 每张表一条 dict，见 sample_table_lines()：has_top / has_bottom / has_header_line /
     # has_vertical / has_inside_h / three_line。空列表 = 文档里没有表格（不是"合规"）。
     table_line_states: list = field(default_factory=list)
+    # —— 公式（Word 原生 OMML，v2.3.112）——
+    # 每个「含公式的段落」一条 dict，见 sample_equations()：display / alignment /
+    # size_pt / space_before_pt / space_after_pt / line_spacing / number_text /
+    # number_at_right / in_table。空列表 = 文档里没有 OMML 公式（不是"合规"）。
+    equation_samples: list = field(default_factory=list)
     # —— 目录（TOC）探测（v2.3.77）——
     # 目录条目是**域段落**，fixer 一律不碰（改直接格式会被「更新目录」冲掉）；
     # 这里只负责认出「有没有目录 / 有几条 / 目录标题与条目的实际间距」，
@@ -2510,6 +2515,307 @@ def describe_table_lines(state: dict) -> str:
     return ", ".join(problems)
 
 
+# ---------------------------------------------------------------------------
+# 公式（Word 原生 OMML）采样（v2.3.112）
+# ---------------------------------------------------------------------------
+# 为什么需要
+# --------
+# 学校模板里「公式居中、编号靠右、与正文同字号、段前段后 0」是高频率硬要求，但引擎
+# 此前**完全读不到** Word 公式：OMML 的数学 run 是 ``m:r``，而 python-docx 的
+# ``para.runs`` 只返回 ``w:r`` —— 公式段在引擎眼里永远是「除了编号一个字都没有」的
+# 空段，任何维度都判不到它，修正器更无从下手。``report.KNOWN_LIMITATIONS`` 里那句
+# 「Complex formulas / equations are NOT processed」说的就是这个空白。
+#
+# 🔴 只读**版式**：对齐 / 字号 / 段距 / 行距 / 编号位置。数学内容在 ``m:t`` 里，
+#    本函数一个字节都不读进输出、更不写（policy.TEXT_IS_LOCKED：文字 100% 锁死）。
+
+# 「这一段里除公式外只有一串编号」的形态：(1) / [1] / (2-1) / (3.4a)。
+# 与 C-14 那套 _EQ_NUM_STYLE_RES 不同：那边收集的是「全文用过哪些编号形态」，
+# 用来判「有没有混用」；这里要的是「这个公式段里剩下的文字是不是就一个编号」。
+_EQ_NUMBER_ONLY_RE = re.compile(
+    r"^[\s\u00a0]*[\(\[]\s*\d+(?:\s*[.\-\u2013]\s*\d+)*\s*[a-zA-Z]?\s*[\)\]][\s\u00a0]*$")
+
+# m:jc 的取值 → 客户能理解的三档。centerGroup 是 Word 的「整组居中」，
+# 版面上与居中完全一样，判等时必须归一，否则「明明居中却报未居中」。
+_MATH_JC_ALIASES = {
+    "center": "center",
+    "centergroup": "center",
+    "left": "left",
+    "right": "right",
+}
+
+
+def _iter_all_paragraphs(doc):
+    """按文档顺序产出 ``(Paragraph, in_table)``，含表格（及嵌套表格）单元格段落。
+
+    公式常常出现在表格里 —— 「公式 + 编号」的真实版式很多时候就是一张 1×2 无框表
+    （居中单元格放公式、右单元格放编号）。只走 ``doc.paragraphs`` 会漏掉这些，
+    于是客户报「我的公式明明有问题，你却查不出来」。
+
+    🔴 合并单元格会让同一个 ``w:tc`` 在多个 grid 列上重复出现，必须按 ``id(tc)``
+    去重：否则一张合并表里的公式会被数成好几份（「共 3 个公式」显示成 9 个）。
+    """
+    try:
+        for p in doc.paragraphs:
+            yield p, False
+    except Exception:
+        pass
+    seen: set = set()
+
+    def _walk(tbl):
+        try:
+            rows = list(tbl.rows)
+        except Exception:
+            return
+        for row in rows:
+            try:
+                cells = list(row.cells)
+            except Exception:
+                continue
+            for cell in cells:
+                try:
+                    key = id(cell._tc)
+                except Exception:
+                    key = id(cell)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    for p in cell.paragraphs:
+                        yield p, True
+                except Exception:
+                    pass
+                try:
+                    for inner in cell.tables:
+                        for item in _walk(inner):
+                            yield item
+                except Exception:
+                    pass
+
+    try:
+        for tbl in list(doc.tables):
+            for item in _walk(tbl):
+                yield item
+    except Exception:
+        pass
+
+
+def _eq_display_alignment(p_el) -> str:
+    """展示公式（``m:oMathPara``）的**生效**对齐：center / left / right。
+
+    优先级：``m:oMathParaPr/m:jc`` > ``w:pPr/w:jc`` > Word 缺省（居中）。
+
+    ⚠️ 为什么 ``m:jc`` 必须优先：Word 里把一段展示公式改成左对齐，写的是 ``m:jc``，
+    而 ``w:jc`` 往往还原样留着。若先读 ``w:jc``，「已经左对齐」会被读回「还居中」，
+    修正器于是反复改、报告永远点不掉（自伤型误报）。
+    """
+    raw = None
+    try:
+        for op in p_el.findall(qn("m:oMathPara")):
+            pr = op.find(qn("m:oMathParaPr"))
+            if pr is None:
+                continue
+            jc = pr.find(qn("m:jc"))
+            if jc is None:
+                continue
+            val = jc.get(qn("m:val"))
+            if val:
+                raw = str(val).strip().lower()
+                break
+    except Exception:
+        raw = None
+    if raw:
+        return _MATH_JC_ALIASES.get(raw, raw)
+    # 回退到段落对齐：只认能映射的三档；both/distribute（两端对齐）对单行公式没有
+    # 实际意义，Word 仍按居中渲染 → 不采纳。
+    try:
+        ppr = p_el.find(qn("w:pPr"))
+    except Exception:
+        ppr = None
+    if ppr is not None:
+        try:
+            jc = ppr.find(qn("w:jc"))
+        except Exception:
+            jc = None
+        if jc is not None:
+            val = str(jc.get(qn("w:val")) or "").strip().lower()
+            if val in ("left", "start"):
+                return "left"
+            if val in ("right", "end"):
+                return "right"
+            if val == "center":
+                return "center"
+    # m:oMathParaPr 与 w:jc 都没写 → Word 对展示公式的渲染就是居中
+    return "center"
+
+
+def _eq_has_right_tab_stop(p_el) -> bool:
+    """段落里是否有**右对齐制表位**。
+
+    Word 的「公式 + 编号」标准版式 = 展示公式居中 + 右对齐制表位 + Tab + ``(1)``。
+    有了这个制表位，编号才会被推到正文右边界；没有它，编号只是紧跟在公式后面。
+    """
+    try:
+        ppr = p_el.find(qn("w:pPr"))
+    except Exception:
+        return False
+    if ppr is None:
+        return False
+    try:
+        tabs = ppr.find(qn("w:tabs"))
+    except Exception:
+        return False
+    if tabs is None:
+        return False
+    for tab in tabs.findall(qn("w:tab")):
+        val = str(tab.get(qn("w:val")) or "").strip().lower()
+        if val in ("right", "end"):
+            return True
+    return False
+
+
+def _eq_math_size_pt(p_el) -> Optional[float]:
+    """公式内数学 run 的**显式**字号（众数，磅）。读不到 → None。
+
+    只认 ``m:r/w:rPr/w:sz``：公式没写显式字号时会继承段落/样式，这一层回退交给
+    调用方（它有 Paragraph 对象，能走样式链），本函数不猜。
+    """
+    sizes: Counter = Counter()
+    try:
+        math_runs = p_el.findall(".//" + qn("m:r"))
+    except Exception:
+        return None
+    for mr in math_runs:
+        try:
+            rpr = mr.find(qn("w:rPr"))
+        except Exception:
+            continue
+        if rpr is None:
+            continue
+        sz = rpr.find(qn("w:sz"))
+        if sz is None:
+            continue
+        try:
+            sizes[round(float(sz.get(qn("w:val"))) / 2.0, 1)] += 1
+        except Exception:
+            continue
+    if not sizes:
+        return None
+    return sizes.most_common(1)[0][0]
+
+
+def sample_equations(doc) -> list:
+    """采样全文公式（OMML）的版式现状，供 checker 判 / fixer 修。
+
+    每个「含公式的段落」一条记录：
+
+    - ``index``            第几个公式段（从 1 起，给客户看的序号）
+    - ``display``          是否含独立成行的展示公式（``m:oMathPara``）
+    - ``display_count``    该段展示公式个数
+    - ``inline_count``     该段行内公式个数（``m:oMath`` 直接挂在 ``w:p`` 下）
+    - ``alignment``        展示公式生效对齐：center / left / right
+    - ``size_pt``          公式字号（数学 run 显式 → 样式链 → 文档默认）
+    - ``space_before_pt``  所在段段前（磅，``w:beforeLines`` 已折算）
+    - ``space_after_pt``   所在段段后
+    - ``line_spacing``     所在段行距倍数
+    - ``number_text``      同段除公式外**只有**一串编号时的编号文本（如 "(1)"）
+    - ``number_at_right``  编号是否已靠右（段右对齐，或右制表位 + Tab）
+    - ``number_by_tab``    编号前是否已有 Tab 分隔（决定能否安全改成靠右）
+    - ``in_table``         是否在表格单元格里
+
+    🔴 只读版式，不读公式内容：``m:t`` 里的数学文本一个字节都不进结果。
+    """
+    out: list = []
+    idx = 0
+    for para, in_table in _iter_all_paragraphs(doc):
+        try:
+            p_el = para._p
+        except Exception:
+            continue
+        if p_el is None:
+            continue
+        try:
+            n_display = len(p_el.findall(qn("m:oMathPara")))
+            n_inline = len(p_el.findall(qn("m:oMath")))
+        except Exception:
+            continue
+        if not n_display and not n_inline:
+            continue
+        idx += 1
+
+        # 段内除公式外的可见文字：python-docx 的 ``w:t`` **不含** ``m:t``，所以这里
+        # 天然只捞到「编号」这类普通文字；正文段即使混排行内公式也不会被误当编号。
+        try:
+            plain = "".join(t.text or "" for t in p_el.findall(".//" + qn("w:t")))
+        except Exception:
+            plain = ""
+        plain = (plain or "").strip()
+        number_text = plain if plain and _EQ_NUMBER_ONLY_RE.match(plain) else None
+
+        size_pt = _eq_math_size_pt(p_el)
+        if size_pt is None:
+            # 公式没写显式字号 → 走与正文完全相同的三级回退（段落样式链 → 文档默认）。
+            # 少了这一层，「模板要求 12pt、公式继承 12pt」会被判成「读不到字号」。
+            size_pt = (_style_chain_size_pt(para) or _font_size_hint(para)
+                       or _doc_default_size_pt(doc))
+
+        try:
+            sb, sa = _spacing_pair_of_para(para)
+        except Exception:
+            sb, sa = None, None
+        try:
+            ls = _line_spacing_of_para(para)
+        except Exception:
+            ls = None
+        try:
+            align_para = _effective_para_alignment(para)
+        except Exception:
+            align_para = "left"
+
+        try:
+            has_tab = bool(p_el.findall(".//" + qn("w:tab")))
+        except Exception:
+            has_tab = False
+        right_tab = _eq_has_right_tab_stop(p_el)
+        at_right = (align_para == "right") or (has_tab and right_tab)
+
+        out.append({
+            "index": idx,
+            "display": bool(n_display),
+            "display_count": n_display,
+            "inline_count": n_inline,
+            "alignment": _eq_display_alignment(p_el) if n_display else None,
+            "align_para": align_para,
+            "size_pt": size_pt,
+            "space_before_pt": sb,
+            "space_after_pt": sa,
+            "line_spacing": ls,
+            "number_text": number_text,
+            "number_at_right": bool(at_right),
+            "number_by_tab": bool(has_tab),
+            "in_table": bool(in_table),
+        })
+    return out
+
+
+def describe_equation(state: dict) -> str:
+    """把一个公式段的现状说成人话（进报告给客户看）。"""
+    if not state:
+        return "unknown"
+    bits = []
+    if state.get("display"):
+        bits.append("display equation, %s" % (state.get("alignment") or "alignment unset"))
+    else:
+        bits.append("inline equation")
+    if state.get("size_pt") is not None:
+        bits.append("%s pt" % state["size_pt"])
+    num = state.get("number_text")
+    if num:
+        bits.append("number %s%s" % (num, "" if state.get("number_at_right") else " (not at the right margin)"))
+    else:
+        bits.append("no equation number")
+    return ", ".join(bits)
+
 
 # ---------------------------------------------------------------------------
 # 目录（TOC）识别（v2.3.77）—— 单一真相源，checker 与 fixer 共用
@@ -4680,6 +4986,14 @@ def _read_docx_impl(doc) -> DocumentProfile:
         prof.table_line_states = sample_table_lines(doc)
     except Exception:
         prof.table_line_states = []
+
+    # v2.3.112：公式（Word 原生 OMML）现状。python-docx 的 para.runs 只返回 w:r，
+    # 数学 run 是 m:r —— 不单独采一遍，公式段在引擎眼里就是「一个字都没有的空段」，
+    # 任何维度都判不到它。空列表 = 没有公式，checker 会如实说明。
+    try:
+        prof.equation_samples = sample_equations(doc)
+    except Exception:
+        prof.equation_samples = []
 
     # v2.3.100（F-5 / 裁定 C-6）：byline（作者/单位/城市/邮箱）采样。
     try:

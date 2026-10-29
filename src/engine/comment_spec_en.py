@@ -37,6 +37,9 @@
                     caption_space_before_pt/after_pt,
                     caption_position_table/figure},
       "table":     {table_space_before_pt/after_pt, table_gap_pt},
+      "equation":  {equation_alignment, equation_number_position, equation_size_pt,
+                    equation_font_family, equation_line_spacing,
+                    equation_space_before_pt/after_pt},
       "structural":{"columns": int, "paper_size": str, "table_lines": "three_line"},
       "heading_formats": {1: {...与 HeadingFormatSample.to_dict() 同键...}},
       "title_format":    {...论文大标题的 attrs，供报告/标题页用...},
@@ -76,7 +79,11 @@ _PAPER_ALIASES = {
 }
 
 _ALIGN_PATTERNS = (
-    (re.compile(r"\bcent(?:er|re)(?:ed|ing)?\b", re.I), "center"),
+    # 🔴 必须认英式拼写 "centred"。旧写法 ``cent(?:er|re)(?:ed|ing)?`` 只覆盖
+    # "centered / centering / center / centre" —— "centred" = cent+re+**d**，
+    # 末尾那个孤零零的 d 让 ``\b`` 落在两个字母之间，整条匹配失败。英联邦（英/澳/加/
+    # 印）大学的模板大量写 "centred"，于是「批注说居中」被静默丢掉，客户照旧居中不了。
+    (re.compile(r"\bcent(?:er|re)(?:ed|d|ing)?\b", re.I), "center"),
     (re.compile(r"\bjustified\b|\bjustify\b|\bflush\s+left\s+and\s+right\b", re.I), "justify"),
     (re.compile(r"\bleft[-\s]?aligned\b|\bflush\s+left\b", re.I), "left"),
     (re.compile(r"\bright[-\s]?aligned\b|\bflush\s+right\b", re.I), "right"),
@@ -88,7 +95,9 @@ _LS_PATTERNS = (
     (re.compile(r"\b1\.5[-\s]?(?:spaced?|lines?)\b|\bone\s+and\s+a\s+half\s+(?:line\s+)?spac", re.I), 1.5),
     (re.compile(r"\btriple[-\s]?spaced?\b", re.I), 3.0),
 )
-_LS_VALUE_RE = re.compile(r"([0-3](?:\.\d+)?)\s*(?:x\s*)?line\s+spacing", re.I)
+_LS_VALUE_RE = re.compile(
+    r"([0-3](?:\.\d+)?)\s*(?:x\s*)?line\s+spacing"
+    r"|line\s+spacing\s*(?:of|:|=)?\s*([0-3](?:\.\d+)?)", re.I)
 
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:pt|points?)\b", re.I)
 _SIZE_HYPHEN_RE = re.compile(r"(\d+(?:\.\d+)?)[-\s]point\b", re.I)
@@ -101,9 +110,12 @@ _UPPER_RE = re.compile(r"\ball\s+caps\b|\bupper[-\s]?case\b", re.I)
 
 _SP_BEFORE_RE = re.compile(
     r"(?:space\s+(?:before|above)\s*(?:of\s*)?([\d.]+)\s*(?:pt|points?))"
+    # "6 pt space before" —— 数字前置、中间隔一个 space 的写法，模板里同样高频。
+    r"|(?:([\d.]+)\s*(?:pt|points?)\s+(?:of\s+)?(?:space|spacing)\s+(?:before|above)\b)"
     r"|(?:([\d.]+)\s*(?:pt|points?)\s+(?:before|above)\b)", re.I)
 _SP_AFTER_RE = re.compile(
     r"(?:space\s+(?:after|below)\s*(?:of\s*)?([\d.]+)\s*(?:pt|points?))"
+    r"|(?:([\d.]+)\s*(?:pt|points?)\s+(?:of\s+)?(?:space|spacing)\s+(?:after|below)\b)"
     r"|(?:([\d.]+)\s*(?:pt|points?)\s+(?:after|below)\b)", re.I)
 
 # 长度单位：必须同时认「inch」与「inches」。
@@ -143,6 +155,32 @@ _GAP_PT_RE = re.compile(
 _GAP_LINES_RE = re.compile(
     r"\b(one|two|three|\d+)\s+(?:blank|empty)\s+lines?\s+(?:of\s+(?:space|spacing)\s+)?"
     r"(?:after|before)\s+(?:each\s+|the\s+)?table\b", re.I)
+
+# —— 公式（v2.3.112）——
+# 类别词。**必须能吃掉紧跟的限定词**（"Equation font:" / "Equation numbering:"）：
+# 否则 `_split_parts` 会把 "Equation font: Times New Roman 12 pt" 切成 category=font，
+# 于是这条公式批注被当成**正文**字体规则，把客户全篇正文改成公式字体 —— 一个批注
+# 毁一篇稿。加限定词后标记命中位置提前到 "Equation font"，冒号紧随其后，切对了。
+_EQ_WORD_RE = re.compile(
+    r"\b(?:equations?|formulas?)"
+    r"(?:\s*(?:and|&|/)\s*(?:equations?|formulas?))?"
+    r"(?:\s+(?:fonts?|typeface|numbering|numbers?|alignment|size|sizes|spacing|"
+    r"layout|format|formatting))?\b", re.I)
+# 「编号靠右」：先认「编号词 + 靠右说法」**同时出现**，而不是把两句写成一条紧邻正则。
+# 模板的实际写法太散 —— "numbered consecutively on the right" / "are numbered flush
+# right" / "numbers at the right margin" / "numbering right-aligned"，穷举紧邻形态
+# 一定会漏。这里只要求两个特征在同一段里共现，覆盖度远高于穷举。
+_EQ_NUM_WORD_RE = re.compile(r"\bnumber(?:s|ed|ing)?\b", re.I)
+_EQ_RIGHT_HINT_RE = re.compile(
+    r"\b(?:on|at|to)\s+the\s+right\b|\bright[-\s]?aligned\b|\bflush\s+right\b"
+    r"|\bright(?:[-\s]hand)?\s+margin\b", re.I)
+# 「不许编号」：not numbered / no numbering / unnumbered / do not number / without numbers
+_EQ_NO_NUMBER_RE = re.compile(
+    r"\b(?:do\s+not|don'?t|never)\s+number\b|\bwithout\s+(?:an?\s+)?numbers?\b", re.I)
+# 「段前段后都不要额外空」：no extra space / without extra spacing / no blank lines
+_EQ_NO_SPACE_RE = re.compile(
+    r"\b(?:no|without|zero)\s+(?:extra\s+|additional\s+)?"
+    r"(?:space|spacing|blank\s+lines?|gap)\b", re.I)
 
 _APA_RE = re.compile(r"\bAPA\b", re.I)
 _MLA_RE = re.compile(r"\bMLA\b", re.I)
@@ -194,6 +232,9 @@ _PART_MARKERS = (
     ("heading", _HEADING_H_RE),
     ("heading", _HEADING_BEFORE_RE),
     ("keywords", re.compile(r"key\s*words?", re.I)),
+    # v2.3.112：公式（equation / formula）。放在 body 之前 —— `_category_of` 按本元组
+    # 顺序取**第一个**命中的类别，公式比"正文"更具体，不能被 body 抢走。
+    ("equations", _EQ_WORD_RE),
     ("body", re.compile(r"body\s+(?:text|paragraphs?)|main\s+text", re.I)),
     ("margins", re.compile(r"margins?", re.I)),
     ("paper_size", re.compile(r"(?:paper|page)\s+size", re.I)),
@@ -267,8 +308,11 @@ def _find_line_spacing(text: str) -> Optional[float]:
             return val
     m = _LS_VALUE_RE.search(text)
     if m:
+        raw = next((g for g in m.groups() if g), None)
+        if raw is None:
+            return None
         try:
-            return round(float(m.group(1)), 2)
+            return round(float(raw), 2)
         except (TypeError, ValueError):
             return None
     return None
@@ -287,7 +331,11 @@ def _find_space_pt(text: str, rx) -> Optional[float]:
     m = rx.search(text)
     if not m:
         return None
-    raw = m.group(1) or m.group(2)
+    # 正则每多一条备选就多一个捕获组：一律扫「第一个非空组」，别再写死 group(1)/group(2)
+    # （加第三条 "6 pt space before" 时，写死分组会把新写法静默读成 None）。
+    raw = next((g for g in m.groups() if g), None)
+    if raw is None:
+        return None
     try:
         v = float(raw)
     except (TypeError, ValueError):
@@ -365,7 +413,13 @@ def _split_parts(text: str) -> list:
             if not re.match(r"\s*:", tail):
                 continue
             # 同一位置只留最具体的类别（_PART_MARKERS 已按优先级排序）
-            if any(abs(m.start() - p) < 2 for p, _c, _s in marks):
+            #
+            # 🔴 必须按**区间重叠**挡，不能只挡「位置相差 <2」。旧写法挡不住「短标记
+            # 嵌在长标记内部」：``"Equation font: Cambria Math 12 pt"`` 会同时命中
+            # equations(0..14) 与 font(9..13)，于是前半段被切成孤零零的 "Equation"
+            # （没有任何规则可解析），后半段 "font: Cambria Math 12 pt" 落进**正文**
+            # 字体通道 —— 一条关于公式的批注把整篇正文改成公式字体。
+            if any(p <= m.start() < e for p, _c, e in marks):
                 continue
             marks.append((m.start(), cat, m.end()))
     if not marks:
@@ -481,6 +535,85 @@ def _parse_table_rules(text: str, table: dict, structural: dict, page: dict) -> 
             table["table_space_after_pt"] = 0.0
             hit = True
     return hit
+
+
+def _scrub_space_phrases(text: str) -> str:
+    """把「间距」短语先抠掉，再交给字号识别。
+
+    `_find_size` 只认「数字 + pt」，分不清 12 pt 说的是**字号**还是**间距**。公式批注里
+    "6 pt space before and 6 pt after" 会被读成「公式字号 6 pt」——修正器于是把公式缩到
+    6 磅，一眼可见的破坏。凡是要判字号的地方都必须先洗一遍。
+
+    只在公式解析里用，不动 `_parse_attrs` 的既有行为：那边「字号写在前面」是常态
+    （`_SIZE_RE.search` 取第一个匹配），贸然全局改会牵动已上线的正文/摘要/标题口径。
+    """
+    out = re.sub(r"[\d.]+\s*(?:pt|points?)\s+(?:of\s+)?(?:space|spacing|gap)\b",
+                 " ", text, flags=re.I)
+    out = re.sub(r"\b(?:space|spacing|gap)\s+(?:before|above|after|below)\s*(?:of\s*)?"
+                 r"[\d.]+\s*(?:pt|points?)", " ", out, flags=re.I)
+    # "6 pt after" / "12 pt before" —— 省掉 space 一词的写法同样会被误当字号。
+    out = re.sub(r"[\d.]+\s*(?:pt|points?)\s+(?:before|above|after|below)\b",
+                 " ", out, flags=re.I)
+    return out
+
+
+def _parse_equation_rules(text: str, equation: dict, page: dict) -> bool:
+    """公式类批注 → 结构化规则。
+
+    只落 ``TargetProfile`` 认识的键。三条纪律：
+    1. **对齐只认 center / left**。段内出现 "right-aligned" 时它说的是**编号**的位置，
+       不是公式本身 —— 顺手拿 `_find_alignment` 的结果会把「编号靠右」误读成
+       「公式右对齐」，修正器于是把公式推到右边，越改越错。
+    2. **"no extra space" 只在没写具体磅值时才兜底成 0**；写了 "6 pt before" 就用 6。
+    3. 字体只**记录**、不自动改（Word 的数学区一旦换字体可能丢字形，见 fixer 说明）。
+    """
+    hit = False
+
+    # ① 编号：靠右 / 不许编号
+    if _NOT_NUMBERED_RE.search(text) or _EQ_NO_NUMBER_RE.search(text):
+        equation["equation_number_position"] = "none"
+        hit = True
+    elif _EQ_NUM_WORD_RE.search(text) and _EQ_RIGHT_HINT_RE.search(text):
+        equation["equation_number_position"] = "right"
+        hit = True
+
+    # ② 展示公式对齐：只认 center / left（right 归编号，见上述纪律 1）
+    al = _find_alignment(text)
+    if al in ("center", "left"):
+        equation["equation_alignment"] = al
+        hit = True
+
+    # ③ 字号 / 字体（字号必须洗掉间距短语，见 _scrub_space_phrases）
+    size = _find_size(_scrub_space_phrases(text))
+    if size is not None:
+        equation["equation_size_pt"] = size
+        hit = True
+    fam = _find_font(text)
+    if fam:
+        equation["equation_font_family"] = fam
+        hit = True
+
+    # ④ 行距
+    ls = _find_line_spacing(text)
+    if ls is not None:
+        equation["equation_line_spacing"] = ls
+        hit = True
+
+    # ⑤ 段前 / 段后
+    got_space = False
+    sb = _find_space_pt(text, _SP_BEFORE_RE)
+    if sb is not None:
+        equation["equation_space_before_pt"] = sb
+        got_space = True
+    sa = _find_space_pt(text, _SP_AFTER_RE)
+    if sa is not None:
+        equation["equation_space_after_pt"] = sa
+        got_space = True
+    if not got_space and _EQ_NO_SPACE_RE.search(text):
+        equation["equation_space_before_pt"] = 0.0
+        equation["equation_space_after_pt"] = 0.0
+        hit = True
+    return hit or got_space
 
 
 def _parse_reference(text: str, reference: dict) -> bool:
@@ -674,6 +807,9 @@ def _apply_part(out: dict, cat: str, seg: str, meta: dict) -> bool:
     if cat == "tables":
         return _parse_table_rules(seg, out["table"], out["structural"], page)
 
+    if cat == "equations":
+        return _parse_equation_rules(seg, out["equation"], page)
+
     if cat == "references":
         return _parse_reference(seg, out["reference"])
 
@@ -722,6 +858,7 @@ def parse_comments(comments, *, default_font_pt: float = 12.0) -> dict:
         "abstract": {},
         "caption": {},
         "table": {},
+        "equation": {},
         "toc": {},
         "structural": {},
         "heading_formats": {},

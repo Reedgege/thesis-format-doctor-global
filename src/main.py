@@ -268,6 +268,29 @@ def _summary_lines(summary: dict) -> list:
         added = summary.get("reference_numbering_added") or 0
         if added:
             out.append(f"Reference numbering → added [n] prefix to {added} unnumbered entries (prefix only, text unchanged)")
+    # v2.3.112：表格线（学术三线表）。同样必须**显式列出** —— `_summary_lines` 只渲染
+    # 一张固定清单，光写进 summary["applied"] 不会被打印（客户会以为表格没改）。
+    if applied.get("table_lines") == "three_line":
+        out.append("Table rules → three-line (top / header / bottom, "
+                   "no vertical or inner rules)")
+    # v2.3.112：公式（只改版式，公式内容一字不动）。
+    # ⚠️ 这里必须**逐项显式列出** —— `_summary_lines` 只渲染一张固定清单，
+    # 光写进 summary["applied"] 是不会被打印的（表面看像「没修公式」，实际修了）。
+    _eq_space = []
+    if applied.get("equation_space_before_pt") is not None:
+        _eq_space.append("before %g pt" % applied["equation_space_before_pt"])
+    if applied.get("equation_space_after_pt") is not None:
+        _eq_space.append("after %g pt" % applied["equation_space_after_pt"])
+    if _eq_space:
+        out.append("Equation spacing → " + ", ".join(_eq_space))
+    if applied.get("equation_alignment"):
+        out.append("Equation alignment → %s" % applied["equation_alignment"])
+    if applied.get("equation_number_position") == "right":
+        out.append("Equation numbering → number pushed to the right margin")
+    if applied.get("equation_size_pt") is not None:
+        out.append("Equation font size → %g pt" % applied["equation_size_pt"])
+    if applied.get("equation_line_spacing") is not None:
+        out.append("Equation line spacing → %gx" % applied["equation_line_spacing"])
     out.append("Heading paragraphs skipped (heading size/font unchanged, original visual hierarchy preserved)")
     return out
 

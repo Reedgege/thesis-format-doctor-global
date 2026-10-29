@@ -2834,6 +2834,273 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 _f.fix = FixAction(dimension="table_gap", value=float(_tg_want))
                 findings.append(_f)
 
+    # —— 公式（Word 原生 OMML，v2.3.112）——
+    # 学校模板里「公式居中、编号加括号靠右边界、与正文同字号、段前段后 0」是高频硬要求。
+    # 引擎此前**完全读不到** Word 公式：数学 run 是 ``m:r``，而 python-docx 的
+    # ``para.runs`` 只返回 ``w:r`` —— 公式段在引擎眼里是「除了编号一个字都没有的空段」，
+    # 任何维度都判不到它。report 里那句「Complex formulas / equations are NOT processed」
+    # 说的就是这个空白。
+    #
+    # 🔴 只判**版式**（对齐 / 编号位置 / 字号 / 段距 / 行距），公式内容一个字都不碰
+    #    （policy.TEXT_IS_LOCKED）。来源没声明公式规则的文档，本块整段不判。
+    # 与 table_lines 同为**元素级版式维度**，故不做 spec→info 软参考降级。
+    _eq_samples = list(getattr(prof, "equation_samples", None) or [])
+    # 只有**展示公式**（独立成行）吃对齐 / 编号 / 字号 / 段距；行内公式随正文跑，
+    # 它的字号归「正文字号」维度，在这里再判一次就是两套 owner 打架。
+    _eq_disp = [s for s in _eq_samples if s.get("display")]
+
+    def _eq_ids(items) -> str:
+        return ", ".join("equation %d" % s.get("index", 0) for s in items)
+
+    # 有公式规则、却没有可判的展示公式 → **只出一条**说明。
+    # 若放任每个维度各报一句「没找到公式」，模板写了几条公式规则就刷几行同样的话，
+    # 报告立刻变成噪音墙（6 条规则 = 6 行废话）。
+    _eq_rules_declared = any(
+        getattr(target, _k, None) is not None
+        for _k in ("equation_alignment", "equation_number_position", "equation_size_pt",
+                   "equation_font_family", "equation_line_spacing",
+                   "equation_space_before_pt", "equation_space_after_pt"))
+    _eq_judge = bool(_eq_disp)
+    if _eq_rules_declared and not _eq_judge:
+        findings.append(Finding(
+            dimension="equation_format", severity="info", message="Equations",
+            expected="Display equations follow the equation rules in your template",
+            actual=("No equations were found in the document, so the equation rules your "
+                    "template states do not apply to anything here."
+                    if not _eq_samples else
+                    "The document has inline equations only (maths inside a sentence). "
+                    "There is no displayed equation to align, number or space, so those "
+                    "rules are not judged."),
+            source=target.resolution.get("equation_alignment", "school"),
+        ))
+
+    _eq_align_want = getattr(target, "equation_alignment", None)
+    if _eq_align_want and _eq_judge:
+        _o = target.resolution.get("equation_alignment", "school")
+        _exp = ("Display equations centred in the text column"
+                if _eq_align_want == "center" else "Display equations left-aligned")
+        _bad = [s for s in _eq_disp
+                if (s.get("alignment") or "center") != _eq_align_want]
+        if not _bad:
+            findings.append(Finding(
+                dimension="equation_alignment", severity="pass",
+                message="Equation alignment", expected=_exp,
+                actual="%d display equation(s), all %s" % (len(_eq_disp), _eq_align_want),
+                source=_o,
+            ))
+        else:
+            _f = Finding(
+                dimension="equation_alignment", severity="warn",
+                message="Equation alignment", expected=_exp,
+                actual="; ".join("%s: %s" % (_eq_ids([s]),
+                                             s.get("alignment") or "alignment not set")
+                                 for s in _bad),
+                source=_o,
+            )
+            # 只改 m:oMathParaPr/m:jc（段落级展示对齐），不动任何数学内容 → 可修。
+            _f.fix = FixAction(dimension="equation_alignment", value=_eq_align_want)
+            findings.append(_f)
+
+    _eq_num_want = getattr(target, "equation_number_position", None)
+    if _eq_num_want and _eq_judge:
+        _o = target.resolution.get("equation_number_position", "school")
+        # 「公式 + 编号」放进一张无框表（公式居中单元格、编号右单元格）是**合法版式**，
+        # 此时编号根本不在公式段里 —— 拿「同段有没有编号」去判会把它误报成「没编号」。
+        # 表格里的公式只判对齐/字号/段距，编号位置不判（如实说明，不猜）。
+        _eq_tbl = [s for s in _eq_disp if s.get("in_table")]
+        _eq_flat = [s for s in _eq_disp if not s.get("in_table")]
+        if _eq_tbl:
+            findings.append(Finding(
+                dimension="equation_number_position", severity="info",
+                message="Equation numbering",
+                actual=("%s sit inside a table. A formula-plus-number layout built as a "
+                        "table is legitimate, so the number position was not judged."
+                        % _eq_ids(_eq_tbl)),
+                expected="The equation number sits in parentheses, flush with the right margin",
+                source=_o,
+            ))
+        _with_num = [s for s in _eq_flat if s.get("number_text")]
+        _without = [s for s in _eq_flat if not s.get("number_text")]
+        if not _eq_flat:
+            pass
+        elif _eq_num_want == "none":
+            # 「不许编号」→ 删编号就是删客户的文字，只提示（P-2 铁律）。
+            if _with_num:
+                findings.append(Finding(
+                    dimension="equation_number_position", severity="info",
+                    message="Equation numbering",
+                    expected="Display equations are not numbered",
+                    actual=("%s carry a number (%s). Removing it would delete your own "
+                            "text, so it is reported only."
+                            % (_eq_ids(_with_num),
+                               ", ".join(str(s.get("number_text")) for s in _with_num))),
+                    source=_o,
+                ))
+            else:
+                findings.append(Finding(
+                    dimension="equation_number_position", severity="pass",
+                    message="Equation numbering",
+                    expected="Display equations are not numbered",
+                    actual="%d display equation(s), none numbered" % len(_eq_flat),
+                    source=_o,
+                ))
+        else:
+            _bad = [s for s in _with_num if not s.get("number_at_right")]
+            _fixable = [s for s in _bad if s.get("number_by_tab")]
+            _stuck = [s for s in _bad if not s.get("number_by_tab")]
+            if _fixable:
+                _f = Finding(
+                    dimension="equation_number_position", severity="warn",
+                    message="Equation numbering",
+                    expected="The equation number sits in parentheses, flush with the "
+                             "right margin",
+                    actual="%s: the number is not pushed to the right margin" % _eq_ids(_fixable),
+                    source=_o,
+                )
+                # 已有 Tab 分隔 → 只需把右对齐制表位补到右边界，不加任何字符 → 可修。
+                _f.fix = FixAction(dimension="equation_number_position", value="right")
+                findings.append(_f)
+            if _stuck:
+                # 没有 Tab 分隔：补一个 Tab 就是**插入字符**，属于改客户的文档内容 → 只提示。
+                findings.append(Finding(
+                    dimension="equation_number_position", severity="info",
+                    message="Equation numbering",
+                    expected="The equation number sits in parentheses, flush with the "
+                             "right margin",
+                    actual=("%s: the number follows the formula directly. Pushing it right "
+                            "needs a tab character, which would mean inserting something "
+                            "into your text - please add it in Word (type the number, then "
+                            "Tab, and set a right tab stop at the margin)." % _eq_ids(_stuck)),
+                    source=_o,
+                ))
+            if _without:
+                # 补编号同样是加文字 → 只提示，绝不代写。
+                findings.append(Finding(
+                    dimension="equation_number_position", severity="info",
+                    message="Equation numbering",
+                    expected="Every display equation carries a number",
+                    actual=("%s have no equation number. Adding one would insert text into "
+                            "your document, so it is reported only." % _eq_ids(_without)),
+                    source=_o,
+                ))
+            if not _bad and not _without:
+                findings.append(Finding(
+                    dimension="equation_number_position", severity="pass",
+                    message="Equation numbering",
+                    expected="The equation number sits in parentheses, flush with the "
+                             "right margin",
+                    actual="%d display equation(s), all numbered at the right margin"
+                           % len(_eq_flat),
+                    source=_o,
+                ))
+
+    _eq_size_want = getattr(target, "equation_size_pt", None)
+    if _eq_size_want is not None and _eq_judge:
+        _o = target.resolution.get("equation_size_pt", "school")
+        _bad = []
+        for s in _eq_disp:
+            _sev, _act = _cmp_num(s.get("size_pt"), float(_eq_size_want),
+                                  SIZE_TOL_FAIL, SIZE_TOL_WARN, " pt")
+            if _sev != "pass":
+                _bad.append((s, _act))
+        if not _bad:
+            findings.append(Finding(
+                dimension="equation_size", severity="pass", message="Equation font size",
+                expected="%g pt" % float(_eq_size_want),
+                actual="%d display equation(s), all at %g pt"
+                       % (len(_eq_disp), float(_eq_size_want)),
+                source=_o,
+            ))
+        else:
+            _f = Finding(
+                dimension="equation_size", severity="warn", message="Equation font size",
+                expected="%g pt" % float(_eq_size_want),
+                actual="; ".join("%s: %s" % (_eq_ids([s]), _act) for s, _act in _bad),
+                source=_o,
+            )
+            # 只写 m:r/w:rPr/w:sz（字号），绝不换数学字体、不碰公式内容 → 可修。
+            _f.fix = FixAction(dimension="equation_size", value=float(_eq_size_want))
+            findings.append(_f)
+
+    # ⚠️ 注意三列分别是「target 字段名 / 采样字典里的键名 / 维度名」——
+    # 采样用的是 ``space_before_pt``（无 equation 前缀，因为它描述的是「公式所在段落」），
+    # 别拿 target 的字段名去取采样值，否则一律读成 None → 报「读不到」（实测踩过）。
+    for _k, _sk, _dim, _label in (
+            ("equation_space_before_pt", "space_before_pt",
+             "equation_space_before", "Space before equations"),
+            ("equation_space_after_pt", "space_after_pt",
+             "equation_space_after", "Space after equations")):
+        _w = getattr(target, _k, None)
+        if _w is None or not _eq_judge:
+            continue
+        _o = target.resolution.get(_k, "school")
+        _bad = []
+        for s in _eq_disp:
+            _sev, _act = _cmp_num(s.get(_sk), float(_w),
+                                  SPACE_TOL_FAIL, SPACE_TOL_WARN, " pt")
+            if _sev != "pass":
+                _bad.append((s, _act))
+        if not _bad:
+            findings.append(Finding(
+                dimension=_dim, severity="pass", message=_label,
+                expected="%g pt" % float(_w),
+                actual="%d display equation(s), all at %g pt" % (len(_eq_disp), float(_w)),
+                source=_o,
+            ))
+        else:
+            _f = Finding(
+                dimension=_dim, severity="warn", message=_label,
+                expected="%g pt" % float(_w),
+                actual="; ".join("%s: %s" % (_eq_ids([s]), _act) for s, _act in _bad),
+                source=_o,
+            )
+            # 只写段落段前/段后（并清掉 w:beforeLines 干扰），不动文字 → 可修。
+            _f.fix = FixAction(dimension=_dim, value=float(_w))
+            findings.append(_f)
+
+    _eq_ls_want = getattr(target, "equation_line_spacing", None)
+    if _eq_ls_want is not None and _eq_judge:
+        _o = target.resolution.get("equation_line_spacing", "school")
+        _bad = []
+        for s in _eq_disp:
+            _sev, _act = _cmp_num(s.get("line_spacing"), float(_eq_ls_want),
+                                  SPACING_TOL_FAIL, SPACING_TOL_WARN, " lines")
+            if _sev != "pass":
+                _bad.append((s, _act))
+        if not _bad:
+            findings.append(Finding(
+                dimension="equation_line_spacing", severity="pass",
+                message="Equation line spacing",
+                expected="%g lines" % float(_eq_ls_want),
+                actual="%d display equation(s), all at %g lines"
+                       % (len(_eq_disp), float(_eq_ls_want)),
+                source=_o,
+            ))
+        else:
+            _f = Finding(
+                dimension="equation_line_spacing", severity="warn",
+                message="Equation line spacing",
+                expected="%g lines" % float(_eq_ls_want),
+                actual="; ".join("%s: %s" % (_eq_ids([s]), _act) for s, _act in _bad),
+                source=_o,
+            )
+            _f.fix = FixAction(dimension="equation_line_spacing", value=float(_eq_ls_want))
+            findings.append(_f)
+
+    # 公式字体：**只提示、绝不自动替换**。
+    # 数学区换字体在 Word 里不是「改个 w:rFonts」这么简单 —— 字形映射一变，符号可能
+    # 直接渲染成空框（客户打开就是一堆方框，比不对齐严重得多）。宁可不改，如实告知。
+    _eq_font_want = getattr(target, "equation_font_family", None)
+    if _eq_font_want and _eq_samples:
+        findings.append(Finding(
+            dimension="equation_font", severity="info", message="Equation font",
+            expected="%s, as specified in your template" % _eq_font_want,
+            actual="Not changed automatically: substituting the font inside Word equations "
+                   "can make symbols render as empty boxes. If it matters, set it in Word "
+                   "(Equation Tools -> Conversions) after applying the other fixes.",
+            source=target.resolution.get("equation_font_family", "school"),
+        ))
+
     # —— 表格内段落：段前 / 段后（v2.3.77）——
     # 表格里「不要多余空行」是学校硬要求里很常见的一条；表格段落与正文是两套口径
     # （表格通常 0 磅、正文常有 6–12 磅），所以单独立维度、单独采样。

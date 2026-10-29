@@ -214,25 +214,35 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
      "default": 1, "unit": "", "range": (1, 4),
      "help": "1=单栏（多数格式）；2=双栏（IEEE 会议/期刊）"},
 
-    # —— 表格内段落（v2.3.77）——
+    # —— 表格（v2.3.112 起独立成组）——
+    # 🔴 v2.3.112：这 6 个字段原先散落在「页面排版」和「参考文献」两块里 —— 客户想在
+    # 手动表单里找「三线表」得先点开「参考文献」，找「表格间距」得翻「页面排版」，
+    # 全都找不到。表格类单独立组，客户找得到才是好参数。group 只驱动 UI 分组，
+    # 引擎的检查/修正/合并一律不看 group，改分组对逻辑零影响。
+    #
+    # 表格线（三线表）放在组内第一位 —— 它是最常被学校点名的一条，先进眼帘。
+    # 学校模板里「表格用三线表，不要竖线」是高频硬要求。留空=不检查不改动（模板驱动）。
+    {"key": "table_lines", "label": "表格线", "group": "table", "type": "choice",
+     "options": ["three_line"], "default": "", "unit": "",
+     "help": "three_line=学术三线表（顶线/表头下线/底线，去掉四边竖线与内部横线）；留空=不检查"},
     # 表格里「不要多余空行」是学校硬要求里很常见的一条；表格段落的段前段后与正文
     # 是两套口径（表格通常 0、正文常有 6–12 磅），必须能分开填。
-    {"key": "table_space_before_pt", "label": "表格内段落段前", "group": "page",
+    {"key": "table_space_before_pt", "label": "表格内段落段前", "group": "table",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
      "help": "表格单元格里每个段落的段前间距；常见 0（表格内不留空行）；留空=不规定"},
-    {"key": "table_space_after_pt", "label": "表格内段落段后", "group": "page",
+    {"key": "table_space_after_pt", "label": "表格内段落段后", "group": "table",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 72.0),
      "help": "表格单元格里每个段落的段后间距；常见 0；留空=不规定"},
     # v2.3.98：表格与**前后文字**之间的空隙（不是表格内部）。
     # APA 7 原文：「嵌入正文的表格要与任何文字之间额外空一条双倍行距」→ 12pt 正文 = 24 磅。
-    {"key": "table_gap_pt", "label": "表格与正文的间距", "group": "page",
+    {"key": "table_gap_pt", "label": "表格与正文的间距", "group": "table",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
      "help": "表格上方/下方与文字之间应留的空隙；APA=24 磅（12pt 正文的一条双倍行距）；留空=不规定"},
     # v2.3.100（裁定 C-2）：table_gap 的硬下限与推荐比例（三档阈值的另两个参数）。
-    {"key": "table_gap_min_pt", "label": "表格间距硬下限", "group": "page",
+    {"key": "table_gap_min_pt", "label": "表格间距硬下限", "group": "table",
      "type": "float", "default": "", "unit": "磅", "range": (0.0, 200.0),
      "help": "低于此值才判定为不合格；APA=12 磅（官方样例实测 12 磅按此放行）；留空=只按推荐值判"},
-    {"key": "table_gap_ratio", "label": "推荐值达成比例", "group": "page",
+    {"key": "table_gap_ratio", "label": "推荐值达成比例", "group": "table",
      "type": "float", "default": "", "range": (0.0, 1.0),
      "help": "实测达到推荐值的多少比例即算合格；APA=0.8（24 磅 × 0.8 = 19.2 磅）；留空=不判比例"},
 
@@ -370,11 +380,38 @@ QUESTIONNAIRE_SCHEMA: list[dict] = [
     {"key": "caption_position_figure", "label": "图题位置", "group": "reference", "type": "choice",
      "options": ["top", "bottom"], "default": "", "unit": "",
      "help": "图题在图上方(top)还是下方(bottom)；APA/IEEE 图题在下。留空=不检查"},
-    # v2.3.85：表格线（三线表）。学校模板里「表格用三线表，不要竖线」是高频硬要求，
-    # 此前客户无处可填、引擎也完全不看表格边框。留空=不检查不改动（模板驱动）。
-    {"key": "table_lines", "label": "表格线", "group": "reference", "type": "choice",
-     "options": ["three_line"], "default": "", "unit": "",
-     "help": "three_line=学术三线表（顶线/表头下线/底线，去掉四边竖线与内部横线）；留空=不检查"},
+    # （v2.3.112：table_lines 已移到「表格」组，见本文件前面的 table 分组。）
+    # v2.3.112：公式（Word 原生公式）。学校模板里「公式居中、编号加括号靠右、与正文同
+    # 字号、段前段后 0」是高频硬要求，此前客户无处可填、引擎也**读不到** Word 公式。
+    # 单独成组（equation），不与正文/表格混在一张表里 —— 公式的口径常与正文完全不同。
+    {"key": "equation_alignment", "label": "公式对齐", "group": "equation", "type": "choice",
+     "options": ["center", "left"], "default": "", "unit": "",
+     "help": "center=公式在本栏内居中（多数学校要求）；left=左对齐；留空=不检查"},
+    {"key": "equation_number_position", "label": "公式编号", "group": "equation",
+     "type": "choice", "options": ["right", "none"], "default": "", "unit": "",
+     "help": "right=编号加括号、与右边界齐平；none=不编号；留空=不检查"},
+    {"key": "equation_size_pt", "label": "公式字号", "group": "equation", "type": "float",
+     "range": (4.0, 72.0), "default": "", "unit": "pt",
+     "help": "公式里的数学符号字号（常与正文同字号）；留空=不检查"},
+    {"key": "equation_line_spacing", "label": "公式行距", "group": "equation", "type": "float",
+     "range": (0.8, 3.0), "default": "", "unit": "倍",
+     "help": "公式所在段落的行距倍数；留空=不检查"},
+    {"key": "equation_space_before_pt", "label": "公式段前", "group": "equation", "type": "float",
+     "range": (0.0, 200.0), "default": "", "unit": "pt",
+     "help": "公式段段前间距（多数要求 0）；留空=不检查"},
+    {"key": "equation_space_after_pt", "label": "公式段后", "group": "equation", "type": "float",
+     "range": (0.0, 200.0), "default": "", "unit": "pt",
+     "help": "公式段段后间距（多数要求 0）；留空=不检查"},
+    # v2.3.112：公式字体（**只提示、绝不自动替换**）。在 Word 里换数学字体风险极高——
+    # 字形映射一变符号可能渲染成空框，比不对齐严重得多，故引擎只如实告知、不代客户改。
+    # 与另外两路同口径：模板批注(school-comment)本就能设，这里补齐手动问卷/AI 导入，
+    # 让「学校要求公式用 Cambria Math」在三条输入通道都能表达（此前只有批注路径能设，
+    # 手填表单不渲染、AI 导入经 _coerce 因不在 schema 被静默丢弃——与「模板驱动」铁律相悖）。
+    {"key": "equation_font_family", "label": "公式字体", "group": "equation", "type": "str",
+     "default": "", "unit": "",
+     "help": "公式内数学符号的字体（如 Cambria Math）。⚠️ 只提示、绝不自动替换：在 Word 里"
+             "换数学字体可能让符号渲染成空框。留空=不检查；学校要求时填字体名，"
+             "修正后请在 Word 里手动设置（公式工具→转换）"},
 ]
 
 # 数值字段的合理范围（由 schema 派生，避免 UI 侧再抄一份）
@@ -502,6 +539,18 @@ class TargetProfile:
     # None = 不规定（不检查、不改动）。与 columns / paper_size 同属**结构维度**：
     # 不进 PAGE_KEYS（复核弹窗用单选下拉），checker 也不做 spec→info 降级。
     table_lines: Optional[str] = None
+    # —— 公式（Word 原生 OMML，v2.3.112）——
+    # OMML 的数学 run 是 ``m:r``，而 python-docx 的 ``para.runs`` 只返回 ``w:r`` ——
+    # 公式段此前在引擎眼里是「除了编号一个字都没有的空段」，任何维度都判不到。
+    # 与 table_lines 同属**元素级版式**：来源显式给出（模板批注 / 问卷 / AI）才硬判。
+    # None 一律 = 不规定（不检查、不改动），绝不替客户拍板。
+    equation_alignment: Optional[str] = None        # "center" / "left"
+    equation_number_position: Optional[str] = None  # "right" / "none"
+    equation_size_pt: Optional[float] = None
+    equation_font_family: Optional[str] = None      # 只提示，不替换数学字体
+    equation_line_spacing: Optional[float] = None
+    equation_space_before_pt: Optional[float] = None
+    equation_space_after_pt: Optional[float] = None
     # —— 目录（TOC，v2.3.77）——
     # 目录标题段可查可修；条目只核对、不自动改（条目是域段落，改直接格式会被
     # 「更新目录」冲掉，正确做法是改 TOC 1..9 样式）。None = 不规定。
@@ -562,6 +611,18 @@ class TargetProfile:
     # 三者都是「表格相关、数值型、只作用于表格」，合并/落盘/来源登记可共用一条路径。
     TABLE_KEYS = ("table_space_before_pt", "table_space_after_pt", "table_gap_pt")
 
+    # 公式（v2.3.112；不进 PAGE_KEYS：它们只作用于含公式的段落，与正文口径分开）。
+    # 与 TABLE_KEYS 同理 —— 都是「数值型、只作用于某类元素」，合并/落盘/来源登记共用一条路径。
+    EQUATION_KEYS = ("equation_size_pt", "equation_line_spacing",
+                     "equation_space_before_pt", "equation_space_after_pt")
+
+    # 元素级**单值**维度（v2.3.112）：一个字段一个值、只作用于某类元素（表格 / 公式）。
+    # 既不进 PAGE_KEYS（段落级数值），也不进 TABLE_KEYS（数值型间距）。
+    # 🔴 新增这类字段时**必须**同时在 `_overlay_one` 里登记，否则四条通道一合并就被
+    # 静默丢弃 —— `table_lines` 就是这么丢的（详见 _overlay_one 里的备注）。
+    ELEMENT_KEYS = ("table_lines", "equation_alignment", "equation_number_position",
+                    "equation_font_family") + EQUATION_KEYS
+
     # 目录（v2.3.77；不进 PAGE_KEYS：只作用于目录标题段 / 目录条目）
     TOC_KEYS = ("toc_heading_space_before_pt", "toc_heading_space_after_pt",
                 "toc_entry_space_before_pt", "toc_entry_space_after_pt")
@@ -593,6 +654,11 @@ class TargetProfile:
             **{k: getattr(self, k) for k in self.RUNNING_HEAD_KEYS},
             **{k: getattr(self, k) for k in self.CAPTION_KEYS},
             "table_lines": self.table_lines,
+            # v2.3.112：公式（对齐 / 编号 / 字号 / 行距 / 段距）
+            "equation_alignment": self.equation_alignment,
+            "equation_number_position": self.equation_number_position,
+            "equation_font_family": self.equation_font_family,
+            **{k: getattr(self, k) for k in self.EQUATION_KEYS},
             "heading_formats": {str(k): v for k, v in self.heading_formats.items()},
             "reference_rewrite": self.reference_rewrite,
             "resolution": self.resolution,
@@ -648,6 +714,16 @@ def target_from_spec(key: str) -> TargetProfile:
                "reference_size_pt"):
         if getattr(spec, _k, None) is not None:
             resolution[_k] = "spec"
+    # v2.3.112：公式。内置规范当前**全部留 None**（理由见 specs.StyleSpec 注释：
+    # APA/MLA 手册无此条款，IEEE 两档分别受「不碰版式」冻结裁定与「随各模板」约束）。
+    # 这里照样把 resolution 与取值一起接上 —— 将来 spec 里填了值就直接生效，不必回来
+    # 再补一遍（v2.3.100 就吃过「spec 明明写了、target 没带 → 维度整段不判」的亏）。
+    _eq_spec_keys = ("equation_alignment", "equation_number_position", "equation_size_pt",
+                     "equation_font_family", "equation_line_spacing",
+                     "equation_space_before_pt", "equation_space_after_pt")
+    for _k in _eq_spec_keys:
+        if getattr(spec, _k, None) is not None:
+            resolution[_k] = "spec"
     # v2.3.69：把规范的**每级标题格式**一并带进目标画像。
     # 此前只带了 heading_levels（层级数），heading_formats 漏传，造成两处脱节：
     #   ① 手填问卷选 APA/IEEE 后「每级标题明细」表全空 —— 客户以为规范没要求；
@@ -691,6 +767,8 @@ def target_from_spec(key: str) -> TargetProfile:
         # （"看起来改了、实际没生效"的又一例，四关之第③关）。
         table_gap_min_pt=getattr(spec, "table_gap_min_pt", None),
         table_gap_ratio=getattr(spec, "table_gap_ratio", None),
+        # v2.3.112：公式（spec 侧当前恒 None，接线先备好，见上方说明）
+        **{_k: getattr(spec, _k, None) for _k in _eq_spec_keys},
         byline_size_pt=getattr(spec, "byline_size_pt", None),
         # ⚠️ StyleSpec 的字段名是 ``reference_font_size_pt``（不是 reference_size_pt）——
         # 我第一次读错了名字，拿到 None，维度整段不判（"看起来改了、实际没生效"）。
@@ -862,6 +940,18 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     tbl_lines = clean.get("table_lines")
     if tbl_lines not in ("three_line", "boxed"):
         tbl_lines = None
+    # v2.3.112：公式 —— 两个 choice + 一组数值（EQUATION_KEYS）+ 一个只提示的字体名。
+    # 大小写归一与「不在白名单就丢弃」由 ``_coerce`` 负责（"Center" → "center"）；
+    # 下面两道判断只是**兜底**：万一将来有调用方绕过 _coerce 直接构造，也不让非法值
+    # 静默透传 —— 传进去的话 checker 判等永远不成立，客户填了既不报错也不生效。
+    eq_extra = {k: clean[k] for k in TargetProfile.EQUATION_KEYS if k in clean}
+    eq_align = clean.get("equation_alignment")
+    if eq_align not in ("center", "left"):
+        eq_align = None
+    eq_num = clean.get("equation_number_position")
+    if eq_num not in ("right", "none"):
+        eq_num = None
+    eq_font = clean.get("equation_font_family") or None
     ref_style = clean.get("reference_style")
     # 🔴 v2.3.73：「按我校要求（自定义）」= 没有选任何内置引用规范。
     # 归一成 None，后面所有「选了规范才做」的分支自然跳过（不核条目体例、不反填规范值）。
@@ -905,6 +995,14 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         resolution[_k] = source
     if tbl_lines is not None:
         resolution["table_lines"] = source
+    # v2.3.112：公式
+    for _k in eq_extra:
+        resolution[_k] = source
+    for _k, _v in (("equation_alignment", eq_align),
+                   ("equation_number_position", eq_num),
+                   ("equation_font_family", eq_font)):
+        if _v is not None:
+            resolution[_k] = source
     for _k in toc_extra:
         resolution[_k] = source
     if ref_style is not None:
@@ -938,7 +1036,8 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
     if not page and ref_style is None and heading is None and cols is None \
             and paper is None and page_num is None and tbl_lines is None \
             and not ref_extra and not tp_extra and not abs_extra and not rh_extra \
-            and not cap_extra and not tbl_extra and not toc_extra:
+            and not cap_extra and not tbl_extra and not toc_extra and not eq_extra \
+            and eq_align is None and eq_num is None and eq_font is None:
         raise ValueError(
             "No valid format fields could be parsed from the input "
             "(margins, font, reference style, and heading levels are all empty). "
@@ -961,6 +1060,11 @@ def target_from_dict(data: dict, source: str = "questionnaire") -> TargetProfile
         paper_size=paper,
         page_number_position=page_num,
         table_lines=tbl_lines,
+        # v2.3.112：公式（对齐 / 编号 / 字体只提示 / 字号·行距·段距走 EQUATION_KEYS）
+        equation_alignment=eq_align,
+        equation_number_position=eq_num,
+        equation_font_family=eq_font,
+        **eq_extra,
         **tp_extra,
         **abs_extra,
         **rh_extra,
@@ -1407,6 +1511,31 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         resolution["table_lines"] = _CM
         _cm_applied.append("table_lines")
 
+    # —— 公式（v2.3.112）——
+    # 🔴 只认**批注**，不从模板实物推断：三线表可以「看模板自己的表长什么样」反推，
+    # 公式不行 —— 模板里往往根本没放公式，凭空推断等于替客户拍板。模板没写公式批注
+    # 就是不规定（不检查、也不改动）。
+    _cm_eq = _cm.get("equation") or {}
+    _eq_vals: dict = {}
+    if _cm_eq:
+        for _k, _allowed in (("equation_alignment", ("center", "left")),
+                             ("equation_number_position", ("right", "none"))):
+            _v = _cm_eq.get(_k)
+            if _v in _allowed:
+                _eq_vals[_k] = _v
+                resolution[_k] = _CM
+                _cm_applied.append(_k)
+        if _cm_eq.get("equation_font_family"):
+            _eq_vals["equation_font_family"] = str(_cm_eq["equation_font_family"])
+            resolution["equation_font_family"] = _CM
+            _cm_applied.append("equation_font_family")
+        for _k in TargetProfile.EQUATION_KEYS:
+            _v = _cm_eq.get(_k)
+            if _v is not None:
+                _eq_vals[_k] = _v
+                resolution[_k] = _CM
+                _cm_applied.append(_k)
+
     # —— 表后间隙兜底（老板 2026-10-29 决策 A）——
     # 「表格与前后文字之间必须留空隙」是硬要求。模板若既不写批注、实测又是 0（表格
     # 紧贴文字 = 模板自己没留），一律按通用兜底：至少一个空行 ≈ 12pt，并在报告里
@@ -1435,6 +1564,8 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         paper_size=tpl_paper,
         table_lines=tpl_table_lines,
         page_number_position=tpl_page_num,
+        # v2.3.112：公式（只来自批注；模板自己没有公式时不推断）
+        **_eq_vals,
         **tpl_tp,
         **tpl_abs,
         **tpl_cap,
@@ -1541,6 +1672,20 @@ def _overlay_one(merged: TargetProfile, extra: TargetProfile, conflicts: list) -
         if _v is None:
             continue
         _register(_k, getattr(merged, _k), merged.resolution.get(_k), _v, _origin(_k))
+        setattr(merged, _k, _v)
+        merged.resolution[_k] = _origin(_k)
+
+    # v2.3.112：元素级单值维度（表格线 + 公式六项）逐键叠加。
+    # 🔴 这一段补的是一个**既有缺口**：`target_from_template_docx` 明明算出了
+    # `table_lines="three_line"`（来源 school-comment），但经 build_target —— CLI 与 GUI
+    # 的统一入口 —— 合并时这里没有搬运，整条被静默丢弃。后果是「学校模板要求三线表」
+    # 在真实产品路径上从未生效过，只有直接调 target_from_template_docx 的单测看得见。
+    # 教训：新增一个维度，**必须**在这里登记，否则等于没做。
+    for _k in TargetProfile.ELEMENT_KEYS:
+        _v = getattr(extra, _k, None)
+        if _v is None:
+            continue
+        _register(_k, getattr(merged, _k, None), merged.resolution.get(_k), _v, _origin(_k))
         setattr(merged, _k, _v)
         merged.resolution[_k] = _origin(_k)
 
