@@ -1366,6 +1366,9 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
     # 🔴 REFERENCE_STYLE_KEYS 是**大写**（"APA"/"MLA"/"IEEE"），解析器输出小写 → 必须归一，
     #    否则 `"apa" in ("APA",...)` 恒 False，批注里的流派永远被丢掉（实测踩过）。
     _cm_style = str(_cm_ref.get("reference_style") or "").strip().upper() or None
+    # 客户是否**显式**在「参考文献格式」下拉里选了既定规范（≠ 由模板批注推断出来）。
+    # v2.3.115 起这个区分决定编码方式的优先级，见下方 reference_numbered 分支。
+    _explicit_style = reference_style in REFERENCE_STYLE_KEYS
     if reference_style in REFERENCE_STYLE_KEYS:
         ref_style = reference_style
     elif _cm_style in REFERENCE_STYLE_KEYS:
@@ -1409,6 +1412,14 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
         # 批注 > 实测：批注明确写了「编号 / 不编号」就照批注，不再拿条目形态反推
         ref_num = bool(_cm_num)
         resolution["reference_numbered"] = _CM
+    elif _explicit_style and spec_ref is not None:
+        # 🔴 v2.3.115（老板 2026-10-30 拍板）：「编号形态以学校模板为准；**客户显式选了
+        # 既定规范**就按规范的」。旧行为让模板实测压过客户选择 —— 模板条目一旦读成
+        # 「不编号」，就会吞掉客户选的 IEEE 编号，还会走 _strip_reference_numbering 把
+        # 客户手打的 `1.` 编号整列剥掉（实测：老板把模板 [1] 的括号删成 1 之后，
+        # 产物条目一条编号都不剩）。没选规范时仍以模板实测为准（见下面的分支）。
+        ref_num = bool(spec_ref.numbered)
+        resolution["reference_numbered"] = "spec"
     elif ref_entries:
         _numbered = sum(1 for t in ref_entries if _LEADING_NUM_RE.match(str(t).strip()))
         ref_num = _numbered >= max(1, len(ref_entries) // 2)      # 过半即视为编号制

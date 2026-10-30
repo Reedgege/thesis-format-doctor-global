@@ -453,6 +453,73 @@ def _run_font_name(run) -> Optional[str]:
     return None
 
 
+# v2.3.115：纯编号标记 run（"1" / "[1]" / "(1)" / "1." / "1、" / "（1）"）。
+# 参考文献条目里的编号不是「条目正文」，它的字体不能作为条目字体的证据。
+# 只认 1–3 位数字，避免把条目里单列的年份 "2020" 误当编号。
+_REF_MARKER_RE = re.compile(r"^[\[\(（【]?\s*\d{1,3}\s*[\]\)）】]?[\.,，、:：;；]?$")
+
+
+def _has_east_asian(text: str) -> bool:
+    """文本里是否含东亚字符（CJK 表意 / 假名 / 谚文 / 全角）。"""
+    for ch in text or "":
+        o = ord(ch)
+        if (0x2E80 <= o <= 0x9FFF        # CJK 部首扩展 / 假名 / CJK 统一表意
+                or 0xAC00 <= o <= 0xD7AF  # 谚文音节
+                or 0xF900 <= o <= 0xFAFF  # CJK 兼容表意
+                or 0xFF00 <= o <= 0xFFEF):  # 全角字符
+            return True
+    return False
+
+
+def _ref_entry_font_name(run) -> Optional[str]:
+    """参考文献**条目正文**的字体名（v2.3.115）。
+
+    为什么不直接用 ``_run_font_name``：它把 ``w:eastAsia`` 也当字体证据。英文论文的
+    参考文献里，编号 run（手打的 "1"）常被 Word 自动贴上
+    ``w:rFonts w:hint="eastAsia" w:eastAsia="宋体"``（用中文输入法敲数字就会这样），
+    而条目正文 run 一个字体都没写（继承 Normal 的 Times New Roman）。此时整块条目
+    唯一的显式字体就是那个「宋体」→ 众数一取就把参考文献字体判成宋体 → 修正器把英文
+    条目全刷成宋体（老板 2026-10-30 实测：模板手动去掉 [ ] 后复现，未删括号时读 None 正常）。
+
+    ``w:eastAsia`` 只影响**东亚字符**的渲染，对拉丁文本零作用，故：
+      · 纯编号标记 run（"1" / "[1]" / "(1)" / "1." 等）不是条目正文，不采；
+      · 只有 eastAsia、且 run 文本不含东亚字符 → 不是拉丁字体证据，不采；
+      · run 文本含东亚字符时 eastAsia 才是真证据（中文文献条目），照采。
+    其余与 ``_run_font_name`` 一致（font.name / ascii / hAnsi / cs 优先）。
+    """
+    try:
+        t = (run.text or "").strip()
+    except Exception:
+        return None
+    if not t:
+        return None
+    if _REF_MARKER_RE.match(t):
+        return None
+    try:
+        n = run.font.name
+    except Exception:
+        n = None
+    if n:
+        return n
+    try:
+        rPr = run._r.rPr
+        rFonts = rPr.find(qn("w:rFonts")) if rPr is not None else None
+    except Exception:
+        rFonts = None
+    if rFonts is None:
+        return None
+    # 拉丁字体属性优先：写了就是真·拉丁字体证据
+    for attr in ("w:ascii", "w:hAnsi", "w:cs"):
+        v = rFonts.get(qn(attr))
+        if v:
+            return v
+    # 只剩 eastAsia：仅当这段文本本身含东亚字符时才算证据
+    ea = rFonts.get(qn("w:eastAsia"))
+    if ea and _has_east_asian(t):
+        return ea
+    return None
+
+
 def _line_spacing_of(pf) -> Optional[float]:
     """从段落格式推断行距倍数（确定性）。
 
@@ -5251,7 +5318,10 @@ def _read_docx_impl(doc) -> DocumentProfile:
                 # 之类含数字或是专有名词的仍照常统计。
                 if _STYLE_HINT_RE.match(r.text.strip()):
                     continue
-                fn = _run_font_name(r)
+                # v2.3.115：条目字体证据要排除「纯编号 run」与「只有 eastAsia 的
+                # 编号 run」—— 它俩会把英文条目的字体判成宋体（详见
+                # _ref_entry_font_name 的说明）。正文 / 标题采样不受影响。
+                fn = _ref_entry_font_name(r)
                 if fn:
                     ref_fonts[fn] += 1
                 sz = _pt(r.font.size)
