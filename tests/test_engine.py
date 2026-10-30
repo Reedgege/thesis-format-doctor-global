@@ -165,8 +165,18 @@ def test_spec_page_only_info_not_fail(tmp_path):
     good = _make_doc(tmp_path / "good.docx", margin_in=1.0)
     target = target_from_spec("APA")  # 纯规范，无学校
     prof, findings = checker.run_check(str(good), target)
-    s = checker.summarize(findings)
-    assert s["fail"] == 0, f"仅选规范时页面不应 fail，实际 {s}"
+    # 🔴 v2.3.116：本用例的本意是「**页面**维度仅参考（info），不 fail」。
+    # 旧断言写成 ``s["fail"] == 0`` 是当时的巧合（参考文献那几维恰好只给 info）。
+    # 老板 2026-10-30 拍板「以规范为准」把 APA 明文声明的参考文献版面
+    # （另起一页 / 标题加粗居中 / 条目双倍行距）真正接进画像并硬判 ——
+    # 于是 reference_* 维度会正常 fail。这里把断言收窄到「非参考文献维度」，
+    # 保持原意不被放宽，也不把引用维度的硬判当成页面回归。
+    _non_ref_fails = [f for f in findings
+                      if f.severity == "fail"
+                      and not (f.dimension or "").startswith("reference")]
+    assert not _non_ref_fails, (
+        "仅选规范时页面不应 fail，实际 %s"
+        % [(f.dimension, f.actual) for f in _non_ref_fails])
     # 引用维度仍应被检查（硬判，pass）
     ref = [f for f in findings if f.dimension == "reference"]
     assert ref and ref[0].severity in ("pass", "info")
@@ -253,7 +263,10 @@ def test_apa_reference_heading_bold_centered(tmp_path):
     doc.save(str(docx))
     prof, findings = checker.run_check(str(docx), target_from_spec("APA-Student"))
     rh = [f for f in findings if f.dimension == "reference_heading"]
-    assert rh and rh[0].severity == "info", f"(a) 手动未格式化应 info，实际 {rh}"
+    # 🔴 v2.3.116：APA 规范**显式声明**了「References 居中 + 加粗」，
+    # 老板 2026-10-30 拍板「以规范为准」→ 未格式化应为 fail（可自动修正），
+    # 不再只给 info。（原先 spec 里写了值却没接进画像，等于白写。）
+    assert rh and rh[0].severity == "fail", f"(a) 手动未格式化应 fail，实际 {rh}"
 
     # (b) 手动 'References'：已粗体+居中
     doc = Document()

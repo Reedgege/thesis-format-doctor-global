@@ -58,6 +58,10 @@ class ReferenceRule:
     order_hint: str = ""           # 人类可读的顺序说明
     pattern_hint: str = ""         # 给用户的示例
     checks: tuple = ()             # 确定性检查标识，供 checker 使用
+    # v2.3.116：参考文献**整块**行距（倍数）。None = 该风格不规定。
+    # APA 7 要求参考文献整块双倍行距、条目之间不加额外空行；此前 ReferenceRule
+    # 没有这个字段 → 纯 APA 路径下「条目行距」这一维度根本不判不改（缺口）。
+    line_spacing: Optional[float] = None
 
 
 @dataclass
@@ -221,8 +225,17 @@ class StyleSpec:
     running_head_max_chars: Optional[int] = None # 页眉短标题最大字符数；None=不检查。APA专业版=50
     reference_alpha_sort_hint: bool = False      # 参考文献字母序仅做提示（不动内容）；APA=True
     running_head_kind: str = "apa"               # running head 形态："apa"=短标题(专业版) / "mla"=姓氏+页码；仅 running_head=True 时生效
-    reference_heading_bold: bool = True          # 参考文献标题是否须加粗：APA=True（粗体居中）、MLA=False（居中不加粗）
+    # 三态：None=该风格**未声明**（不判不改）；True=必须加粗；False=必须不加粗。
+    # 🔴 v2.3.116：原先默认值是纯 bool 的 ``True`` —— 于是 IEEE / Other **没声明**也会
+    # 读出 True，被当成「规范要求标题加粗」，一旦接进画像就会给它们凭空加约束
+    # （实测把 IEEE 修正用例打挂）。改成三态后，只有显式声明过的 APA(True) / MLA(False)
+    # 才参与判定，这正是「以规范为准、不推断」。
+    reference_heading_bold: Optional[bool] = None
     reference_heading_bold_mode: str = "require"  # "require"=必须加粗(APA) / "forbid"=禁止加粗(MLA)；仅影响提示文案与判定
+    # v2.3.116：参考文献标题是否须**居中**。None = 该风格不规定（不判不改）。
+    # APA 7："References" 居中 + 加粗；MLA 9："Works Cited" 居中、不加粗；
+    # IEEE 各会议/期刊模板差异过大（多为左对齐分节标题）→ 保持 None，不替它拍板。
+    reference_heading_centered: Optional[bool] = None
     # —— 摘要页特化（v2.3.67）——
     # APA 7th 摘要正文**不首行缩进**（顶格）且专业版摘要**另起一页**；其它风格默认中性值。
     # None = 该风格不规定（由学校模板 / 问卷 / AI 决定），不臆造。
@@ -705,6 +718,8 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
             style_key="APA",
             hanging_indent_in=0.5,
             numbered=False,
+            # v2.3.116：APA 7 要求参考文献整块双倍行距、条目间不留额外空行。
+            line_spacing=2.0,
             order_hint="Author-Year: Author, A. A. (Year). Title. Publisher.",
             pattern_hint="Smith, J. A. (2020). Title of work. Publisher.",
             checks=("has_year_paren", "author_year_order"),
@@ -734,6 +749,11 @@ def _apa_spec(key: str, name: str, *, running_head: bool, expect_abstract: bool,
         font_allowlist_sizes=dict(APA_FONT_SIZES),
         running_head_max_chars=running_head_max_chars,
         reference_alpha_sort_hint=reference_alpha_sort_hint,
+        # v2.3.116：APA 7「References」标题**居中 + 加粗**。此前 StyleSpec 里只有
+        # reference_heading_bold（默认 True）却从没搬进 TargetProfile，centered 连
+        # 字段都没有 → 纯 APA 路径下这两条硬要求只报 info，不判也不改（实测缺口）。
+        reference_heading_bold=True,
+        reference_heading_centered=True,
         abstract_first_line_indent_in=abstract_first_line_indent_in,
         abstract_new_page=abstract_new_page,
         # v2.3.91：题名页独立成页 + 摘要后正文另起一页（APA 7 §2.5/§2.9）。
@@ -819,6 +839,8 @@ SPECS: dict[str, StyleSpec] = {
         running_head_kind="mla",                  # = 姓氏 + 页码（非 APA 短标题）
         reference_heading_bold=False,             # Works Cited 标题不加粗
         reference_heading_bold_mode="forbid",    # MLA 明确禁止加粗（OWL: without bolding）
+        # v2.3.116：MLA 9 的 Works Cited 标题**居中**（见本段 notes：「centered, not bold」）。
+        reference_heading_centered=True,
         table_lines="three_line",                 # MLA 表格惯例：无竖线，只用横线分区
         notes="Usually no separate title page; the Works Cited list begins on a new page, titled "
               "'Works Cited' (centered, not bold), in alphabetical order by author's last name, with a "

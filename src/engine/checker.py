@@ -1614,25 +1614,38 @@ def run_check(docx_path: str, target: TargetProfile) -> tuple[DocumentProfile, l
                 actual="No reference section detected", source=_origin,
             ))
         else:
-            _bad = []
-            if target.reference_heading_bold is not None \
-                    and bool(prof.reference_heading_bold) != bool(target.reference_heading_bold):
-                _bad.append("bolded" if prof.reference_heading_bold else "not bold")
-            if target.reference_heading_centered is not None \
-                    and bool(prof.reference_heading_centered) != bool(target.reference_heading_centered):
-                _bad.append("centered" if prof.reference_heading_centered else "not centered")
-            findings.append(Finding(
-                dimension="reference_heading",
-                severity="fail" if _bad else "pass",
-                message="Reference heading format",
-                expected=", ".join(filter(None, [
-                    None if target.reference_heading_bold is None else
-                    ("bold" if target.reference_heading_bold else "not bold"),
-                    None if target.reference_heading_centered is None else
-                    ("centered" if target.reference_heading_centered else "left-aligned")])),
-                actual=("The heading is " + " and ".join(_bad)) if _bad else "Matches",
-                source=_origin,
-            ))
+            _want_txt = ", ".join(filter(None, [
+                None if target.reference_heading_bold is None else
+                ("bold" if target.reference_heading_bold else "not bold"),
+                None if target.reference_heading_centered is None else
+                ("centered" if target.reference_heading_centered else "left-aligned")]))
+            # 🔴 信任 Heading 样式（v2.3.116 接线后必须保留这条保护）：
+            # 官方样例（APA / MLA）用 Heading 1 承载 "References"，粗体/居中来自**样式定义**，
+            # python-docx 读不出样式的解析值 → 直接判 pass，绝不把金标准论文误判红。
+            # 「只提示」旧分支本来就有这条，接线时漏掉会把官方样例判 fail（负作用）。
+            if prof.reference_heading_is_style:
+                findings.append(Finding(
+                    dimension="reference_heading", severity="pass",
+                    message="Reference heading format",
+                    expected=_want_txt + " (supplied by the Heading style)",
+                    actual="Uses a Heading style", source=_origin,
+                ))
+            else:
+                _bad = []
+                if target.reference_heading_bold is not None \
+                        and bool(prof.reference_heading_bold) != bool(target.reference_heading_bold):
+                    _bad.append("bolded" if prof.reference_heading_bold else "not bold")
+                if target.reference_heading_centered is not None \
+                        and bool(prof.reference_heading_centered) != bool(target.reference_heading_centered):
+                    _bad.append("centered" if prof.reference_heading_centered else "not centered")
+                findings.append(Finding(
+                    dimension="reference_heading",
+                    severity="fail" if _bad else "pass",
+                    message="Reference heading format",
+                    expected=_want_txt,
+                    actual=("The heading is " + " and ".join(_bad)) if _bad else "Matches",
+                    source=_origin,
+                ))
 
     # —— APA 专属保守检查（仅当 spec 显式声明时生效；其余风格取中性默认值自动跳过）——
     # 这些检查只做「提示」，不产生 fail，也不修改文档内容（符合「模板驱动 / 只提示」原则）。

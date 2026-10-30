@@ -204,15 +204,19 @@ def test_mla_works_cited_not_new_page_info(tmp_path):
     docx = tmp_path / "m.docx"
     _make_mla_doc(docx, works_cited_new_page=False)
     prof, findings = run_check(str(docx), target_from_spec("MLA"))
-    assert _sev(findings, "reference_new_page") == "info"
+    # 🔴 v2.3.116：MLA 规范**显式声明** reference_new_page=True（Works Cited 另起一页），
+    # 老板 2026-10-30 拍板「以规范为准」→ 该字段已接进画像，未另起一页判 fail（可自动修）。
+    assert _sev(findings, "reference_new_page") == "fail"
 
 
 def test_mla_works_cited_bold_info(tmp_path):
     docx = tmp_path / "m.docx"
     _make_mla_doc(docx, works_cited_bold=True)
     prof, findings = run_check(str(docx), target_from_spec("MLA"))
-    # MLA 的 Works Cited 不应加粗；加粗应提示
-    assert _sev(findings, "reference_heading") == "info"
+    # MLA 的 Works Cited 不应加粗（规范显式声明 reference_heading_bold=False /
+    # bold_mode="forbid"）。老板 2026-10-30 拍板「以规范为准」→ 该字段已接进画像，
+    # 加粗判 fail（可自动去粗），不再只给 info。
+    assert _sev(findings, "reference_heading") == "fail"
 
 
 def test_mla_works_cited_out_of_order_info(tmp_path):

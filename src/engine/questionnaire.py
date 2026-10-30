@@ -710,12 +710,30 @@ def target_from_spec(key: str) -> TargetProfile:
     spec = get_spec(key)
     page = {k: v for k, v in spec.page.__dict__.items() if v is not None}
     ref = spec.reference
+    # v2.3.116：只有**真实规范**才「声明」参考文献整块版面（另起一页 / 标题加粗居中 /
+    # 条目行距）。Other = 按学校模板，一律 None，绝不给模板驱动的客户凭空加规范约束。
+    _ref_layout = key != "Other"
     resolution = {k: "spec" for k in page}
     if spec.heading_levels:
         resolution["heading_levels"] = "spec"
     resolution["reference_style"] = "spec"
     resolution["reference_hanging_indent_in"] = "spec"
     resolution["reference_numbered"] = "spec"
+    # v2.3.116：这四项以前只存在于 StyleSpec，从没搬进 TargetProfile →
+    # 纯规范路径下 check/fix 一律不生效（"看起来改了、实际没生效"的老坑）。
+    _ref_layout_keys = (
+        ("reference_line_spacing", getattr(ref, "line_spacing", None)),
+        # 只在规范**要求**另起一页时才断言；风格写 False 的（如 IEEE）留 None，
+        # 不反过来去禁止客户另起一页（IEEE 各模板做法不一，别臆造）。
+        ("reference_new_page", True if getattr(spec, "reference_new_page", False) else None),
+        ("reference_heading_bold", getattr(spec, "reference_heading_bold", None)),
+        ("reference_heading_centered", getattr(spec, "reference_heading_centered", None)),
+    )
+    _ref_layout_vals = {}
+    for _k, _v in _ref_layout_keys:
+        if _ref_layout and _v is not None:
+            resolution[_k] = "spec"
+            _ref_layout_vals[_k] = _v
     if spec.columns is not None:
         resolution["columns"] = "spec"
     if spec.paper_size:
@@ -810,6 +828,9 @@ def target_from_spec(key: str) -> TargetProfile:
         reference_style=ref.style_key,
         reference_hanging_indent_in=ref.hanging_indent_in,
         reference_numbered=ref.numbered,
+        # v2.3.116：参考文献整块版面（行距 / 另起一页 / 标题加粗居中）—— 上面按
+        # 「真实规范才声明」筛过；Other 为空 dict，等价于不规定。
+        **_ref_layout_vals,
         # 🔴 v2.3.84：**默认关闭**参考文献正文改写（老板 2026-10-21 更新清单第 5 条：
         # 「文字内容 100% 锁死，只改 Style 与 Layout」）。
         # 旧行为：规范选 IEEE 且顺序编码 → 自动把 APA 作者-年条目改写成 IEEE 引文
@@ -1449,6 +1470,18 @@ def target_from_template_docx(doc_profile, reference_style: Optional[str] = None
             continue
         ref_extra[_key] = round(float(_val), _round) if _round else str(_val)
         resolution[_key] = "school"
+
+    # v2.3.116（老板 2026-10-30 讨论后定）：模板的**条目行距**与所选规范不一致时，
+    # 只**提示**不擅自改 —— 模板优先是铁律，但客户选 APA 往往就是想合规，得让他知道
+    # "这里按你学校的模板执行，不是 APA 的双倍"。与悬挂缩进冲突提示同一口径。
+    _tpl_sp = ref_extra.get("reference_line_spacing")
+    _spec_sp = getattr(spec_ref, "line_spacing", None) if spec_ref is not None else None
+    if _tpl_sp is not None and _spec_sp is not None \
+            and abs(float(_tpl_sp) - float(_spec_sp)) > 0.05:
+        notes.append(
+            "Reference line spacing: the school template measures %gx, while %s requires "
+            "%gx. The template value is used."
+            % (float(_tpl_sp), ref_style, float(_spec_sp)))
 
     # ③ 另起一页 / 标题加粗 / 标题居中：模板实测（仅在检测到参考文献段时成立）
     if getattr(doc_profile, "reference_new_page", None) is not None:
