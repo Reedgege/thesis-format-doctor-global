@@ -49,7 +49,14 @@ def main(dist="dist"):
     found = set()
     for _root, _dirs, files in os.walk(dist):
         found.update(files)
-    missing = [n for n in REQUIRED_FILES if n not in found]
+    # 平台专用图标：Linux 包刻意不带 .ico（0.36 MB）与 .icns（2.90 MB），
+    # GUI 读取这两者时都写了 isfile 守卫，删掉不影响运行；只有对应平台才需要。
+    # 不在这里豁免的话，Linux 构建会被这个自检判成「资源缺件」。
+    platform_only = {"icon.ico", "icon.icns"} if sys.platform.startswith("linux") else set()
+    skipped = [n for n in REQUIRED_FILES if n in platform_only and n not in found]
+    if skipped:
+        print("按平台跳过（Linux 不发平台专用图标）：%s" % ", ".join(skipped))
+    missing = [n for n in REQUIRED_FILES if n not in found and n not in platform_only]
     if missing:
         print("产物缺少运行时资源：%s" % ", ".join(missing))
         print("（检查 build.py 的 --include-data-dir / --include-package-data 是否生效）")
