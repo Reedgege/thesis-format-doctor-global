@@ -121,6 +121,163 @@ echo "==================== 开始构建 ===================="
 "$PY" build.py
 
 echo
+echo "==================== 打包 AppImage ===================="
+# 客户要的是「双击就能用」。Linux 上唯一能做到这件事的形态就是 .AppImage：
+#   · 单文件，chmod +x 之后双击 / ./xxx.AppImage 直接跑，不需要先解压；
+#   · 不需要客户装 libfuse2 —— 官方 type2 runtime 把 FUSE 静态链进去了
+#     （2026-11-14 实测：922 KB 的 runtime 里有 APPIMAGE_EXTRACT_AND_RUN 与
+#      appimage_extract，没有 libfuse.so.2 这个依赖项）；
+#   · 万一客户环境连 FUSE 都没有（容器/精简系统），
+#     APPIMAGE_EXTRACT_AND_RUN=1 ./xxx.AppImage 可以自解压运行。
+# 之前交付的 linux.zip 是「解压出 60 多个 .so 的文件夹，再进目录双击」，
+# 对不熟悉命令行的客户门槛过高，故本轮起 Linux 只发 AppImage。
+
+VER="$(tr -d '[:space:]' < VERSION 2>/dev/null | sed 's/^[vV]//' || true)"
+[ -n "$VER" ] || VER="0.0.0"
+
+PAYLOAD=""
+for d in dist/*/; do
+  [ -d "$d" ] || continue
+  PAYLOAD="${d%/}"
+  break
+done
+if [ -z "$PAYLOAD" ]; then
+  echo "::error::dist/ 下找不到构建产物目录，无法打 AppImage"
+  ls -la dist/ 2>/dev/null || true
+  exit 1
+fi
+
+# 主程序 = 产物目录里唯一一个可执行的普通文件（Nuitka standalone 的顶层只放它，
+# 其余是 .so 与子目录）。不能写死名字：三个仓库分别叫 MDF-Stu / MDF-Advisor /
+# paperformatpro，本脚本在三仓共用同一份。
+BIN_NAME=""
+for f in "$PAYLOAD"/*; do
+  [ -f "$f" ] || continue
+  case "$f" in *.so|*.so.*) continue ;; esac
+  [ -x "$f" ] || continue
+  BIN_NAME="${f##*/}"
+  break
+done
+if [ -z "$BIN_NAME" ]; then
+  echo "::error::$PAYLOAD 里找不到可执行主程序"
+  ls -la "$PAYLOAD" | sed -n '1,20p'
+  exit 1
+fi
+
+# AppImage 规范要求小写、无空格的 ID（用于 .desktop 的 Icon= 与图标文件名）。
+APPID="$(printf '%s' "$BIN_NAME" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]/-/g')"
+# 桌面显示名取 build.py 里的 PRODUCT_NAME（学生版=文档格式先生 / 海外版=PaperFormat Pro）。
+# .desktop 是 UTF-8，中文完全合法；取不到就退回二进制名。
+DISPLAY_NAME="$(grep -m1 -E '^PRODUCT_NAME[[:space:]]*=' build.py 2>/dev/null \
+  | sed -E 's/^[^"]*"([^"]*)".*/\1/' || true)"
+[ -n "$DISPLAY_NAME" ] || DISPLAY_NAME="$BIN_NAME"
+echo "  主程序      : $BIN_NAME"
+echo "  应用 ID     : $APPID"
+echo "  显示名      : $DISPLAY_NAME"
+echo "  版本        : $VER"
+
+# 图标：优先用源码树里的 icon.png（三仓路径不同：tfd_app/assets/ 或 assets/）。
+ICON_SRC="$(find . -maxdepth 3 -name icon.png -not -path './dist/*' -not -path './.git/*' \
+  -print 2>/dev/null | sed -n '1p')"
+if [ -z "$ICON_SRC" ]; then
+  echo "::error::找不到 icon.png，AppImage 必须有图标"
+  exit 1
+fi
+echo "  图标        : $ICON_SRC"
+
+# 线上取官方工具链。appimagetool 自己也是 AppImage，这里用 --appimage-extract 展开后
+# 再跑 —— 容器里没有 /dev/fuse，只能走这条路（这也正是客户侧 FUSE 缺失时的兜底路径）。
+TOOLS="/tmp/appimage-tools"
+rm -rf "$TOOLS"
+mkdir -p "$TOOLS"
+AT_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+RT_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
+echo "STEP 下载 appimagetool"
+curl -fsSL --retry 5 --retry-delay 5 -o "$TOOLS/appimagetool" "$AT_URL" || {
+  echo "::error::下载 appimagetool 失败：$AT_URL"; exit 1; }
+echo "STEP 下载 type2 runtime（静态 FUSE）"
+curl -fsSL --retry 5 --retry-delay 5 -o "$TOOLS/runtime-x86_64" "$RT_URL" || {
+  echo "::error::下载 type2 runtime 失败：$RT_URL"; exit 1; }
+chmod +x "$TOOLS/appimagetool"
+ls -la "$TOOLS"
+( cd "$TOOLS" && ./appimagetool --appimage-extract >/dev/null 2>&1 ) || {
+  echo "::error::appimagetool 自解压失败"; exit 1; }
+
+# ---- 组装 AppDir ----
+APPDIR="/tmp/appimage-work/AppDir"
+rm -rf "/tmp/appimage-work"
+mkdir -p "$APPDIR/usr/bin"
+cp -a "$PAYLOAD" "$APPDIR/usr/bin/$APPID"
+
+# 精简：Linux 包里不该带 macOS 的 .icns（2.90 MB）和 Windows 的 .ico（0.36 MB），
+# 共 3.26 MB 纯浪费。GUI 读取这两者时都有 isfile 守卫，删掉不会影响运行。
+echo "--- 移除 Linux 用不到的图标 ---"
+find "$APPDIR/usr/bin" \( -name 'icon.icns' -o -name 'icon.ico' \) -print -delete 2>/dev/null || true
+
+# AppRun：必须 exec 真实二进制路径。用符号链接会让 $ORIGIN 落错地方，而 Nuitka
+# standalone 的 RPATH=$ORIGIN 正是靠「可执行文件所在目录」去找同目录的 .so。
+cat > "$APPDIR/AppRun" <<'APPRUN'
+#!/bin/sh
+# AppImage 入口：转交真正的可执行文件。
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/__APPID__/__BIN__" "$@"
+APPRUN
+sed -i "s|__APPID__|$APPID|g; s|__BIN__|$BIN_NAME|g" "$APPDIR/AppRun"
+chmod +x "$APPDIR/AppRun"
+
+# .desktop：Exec 用二进制名，并在 usr/bin 下放同名软链（桌面集成工具会把 Exec
+# 当命令找；AppRun 走的是真实路径，两者互不干扰）。
+ln -sf "$APPID/$BIN_NAME" "$APPDIR/usr/bin/$BIN_NAME"
+cat > "$APPDIR/$APPID.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=$DISPLAY_NAME
+Comment=$DISPLAY_NAME
+Exec=$BIN_NAME
+Icon=$APPID
+Terminal=false
+Categories=Office;Utility;
+StartupNotify=true
+DESKTOP
+
+cp "$ICON_SRC" "$APPDIR/$APPID.png"
+ln -sf "$APPID.png" "$APPDIR/.DirIcon"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APPID.png"
+
+echo "--- AppDir 结构 ---"
+ls -la "$APPDIR"
+du -sh "$APPDIR" || true
+
+# ---- 出包 ----
+OUT="$ROOT/dist/$APPID-$VER-x86_64.AppImage"
+rm -f "$OUT"
+echo "STEP appimagetool 生成 $OUT"
+# --runtime-file：强制用上面那份静态 FUSE 的官方 runtime。
+# --no-appstream：跳过 appstreamcli 校验（容器里没有，且我们不提供 metainfo）。
+ARCH=x86_64 VERSION="$VER" \
+  "$TOOLS/squashfs-root/AppRun" --no-appstream \
+  --runtime-file "$TOOLS/runtime-x86_64" "$APPDIR" "$OUT" || {
+  echo "::error::appimagetool 失败"; exit 1; }
+
+if [ ! -f "$OUT" ]; then
+  echo "::error::AppImage 未生成"; exit 1
+fi
+
+# 自检：AppImage type2 = ELF 头 + 偏移 8 处的 0x41 0x49 0x02（"AI\x02"）。
+MAGIC="$(od -An -tx1 -j8 -N3 "$OUT" | tr -d ' \n')"
+SIZE="$(stat -c %s "$OUT" 2>/dev/null || echo 0)"
+echo "  magic=$MAGIC  size=$SIZE"
+if [ "$MAGIC" != "414902" ]; then
+  echo "::error::产出的不是 AppImage type2（magic=$MAGIC）"; exit 1
+fi
+if [ "$SIZE" -lt 5000000 ]; then
+  echo "::error::AppImage 只有 $SIZE 字节，明显不完整"; exit 1
+fi
+chmod +x "$OUT"
+echo "✅ AppImage 生成成功：$OUT"
+
+echo
 echo "==================== 构建产物 ===================="
 ls -la dist/ || true
 
