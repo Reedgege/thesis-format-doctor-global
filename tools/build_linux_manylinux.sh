@@ -228,7 +228,33 @@ chmod +x "$APPDIR/AppRun"
 
 # .desktop：Exec 用二进制名，并在 usr/bin 下放同名软链（桌面集成工具会把 Exec
 # 当命令找；AppRun 走的是真实路径，两者互不干扰）。
-ln -sf "$APPID/$BIN_NAME" "$APPDIR/usr/bin/$BIN_NAME"
+#
+# 🔴 只在 BIN_NAME != APPID 时建这条软链。
+# 同名时（海外版 BIN_NAME=paperformatpro，APPID 也是 paperformatpro），
+# "$APPDIR/usr/bin/$BIN_NAME" 已经不是「待创建的软链位置」，而是上一步
+# cp -a 出来的那个产物目录 —— ln -sf 会把软链建进目录里
+# （usr/bin/paperformatpro/paperformatpro），并且用一条自指软链
+# 覆盖掉同名的主程序本体。后果：33.7 MB 的主程序从包里消失，AppImage 必崩。
+# v2.3.121 就是这么坏的，别再改回来。
+if [ "$BIN_NAME" != "$APPID" ]; then
+  ln -sf "$APPID/$BIN_NAME" "$APPDIR/usr/bin/$BIN_NAME"
+fi
+
+# 自检：主程序本体必须在、必须是普通文件、大小必须与源产物一致。
+# 上面那条软链踩过的坑，靠这一步拦住——不依赖肉眼看 ls。
+REAL_BIN="$APPDIR/usr/bin/$APPID/$BIN_NAME"
+if [ -L "$REAL_BIN" ] || [ ! -f "$REAL_BIN" ]; then
+  echo "::error::AppDir 里主程序缺失或被替换成软链：$REAL_BIN"
+  ls -la "$APPDIR/usr/bin/$APPID/$BIN_NAME" 2>&1 || true
+  exit 1
+fi
+SRC_SZ="$(stat -c %s "$PAYLOAD/$BIN_NAME" 2>/dev/null || echo 0)"
+DST_SZ="$(stat -c %s "$REAL_BIN" 2>/dev/null || echo 0)"
+if [ "$SRC_SZ" != "$DST_SZ" ] || [ "$DST_SZ" -lt 5000000 ]; then
+  echo "::error::主程序大小异常 src=$SRC_SZ dst=$DST_SZ（原产物 vs AppDir）"
+  exit 1
+fi
+echo "--- 主程序自检通过：$BIN_NAME $((DST_SZ / 1048576)) MiB ---"
 cat > "$APPDIR/$APPID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application

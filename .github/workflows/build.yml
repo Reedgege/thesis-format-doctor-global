@@ -357,6 +357,50 @@ jobs:
           sudo dpkg -r paperformatpro
           test ! -e /opt/paperformatpro && echo "OK removed cleanly"
 
+      # The AppImage is a completely separate code path from the .deb: another packer,
+      # a symlink inside the AppDir, squashfs underneath. v2.3.121 shipped an AppImage
+      # whose main binary had been replaced by a self-referential symlink — the file was
+      # 33 MB too small and the app could not start at all, yet every existing check
+      # (magic bytes, size floor, glibc scan) stayed green. So unpack it, assert the
+      # main binary is a real file of a sane size, then launch it for real.
+      - name: Smoke test (AppImage: binary present and launches)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          command -v xvfb-run >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null 2>&1) || true
+          IMG="$(realpath release/paperformatpro-linux.AppImage)"
+          chmod +x "$IMG"
+          rm -rf /tmp/aiextract && mkdir -p /tmp/aiextract
+          ( cd /tmp/aiextract && "$IMG" --appimage-extract >/dev/null )
+          BIN=/tmp/aiextract/squashfs-root/usr/bin/paperformatpro/paperformatpro
+          if [ -L "$BIN" ]; then
+            echo "::error::main binary is a symlink — the AppDir step overwrote it (see tools/build_linux_manylinux.sh)"
+            ls -la "$BIN" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::main binary is missing from the AppImage"
+            ls -la /tmp/aiextract/squashfs-root/usr/bin/ || true
+            exit 1
+          fi
+          SZ="$(stat -c %s "$BIN")"
+          echo "main binary = $SZ bytes"
+          if [ "$SZ" -lt 5000000 ]; then
+            echo "::error::main binary is only $SZ bytes — the package is truncated"
+            exit 1
+          fi
+          set +e
+          timeout 25 xvfb-run -a "$IMG" > /tmp/ai.log 2>&1
+          rc=$?
+          set -e
+          echo "AppImage launch exit code = $rc (124 = still alive when the timeout hit = launched fine)"
+          if [ "$rc" -ne 124 ]; then
+            echo "::error::the AppImage does not launch rc=$rc"
+            tail -20 /tmp/ai.log || true
+            exit 1
+          fi
+          echo "OK AppImage launches"
+
       # 构建后自检：运行时资源（图标 / AI 问卷模板 / VERSION）必须真的进了产物。
       # 姊妹项目导师版真栽过 —— build.py 漏数据目录，打包版「二维码不显示、水印图
       # 丢失」却能一路绿灯发出去（读取方都有 isfile 守卫 → 全程静默）。
