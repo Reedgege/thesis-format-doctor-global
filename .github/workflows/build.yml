@@ -321,7 +321,41 @@ jobs:
           python3 tools/check_glibc_linux.py dist/paperformatpro --max 2.28
           cp "$APPIMAGE" release/paperformatpro-linux.AppImage
           chmod +x release/paperformatpro-linux.AppImage
+
+          # Also build a .deb: double-click to install, launch from the app menu, no
+          # terminal and no FUSE involved. An AppImage needs a chmod and, on some
+          # minimal distros, a system fusermount -- both of which look like
+          # "double-click does nothing at all" to the customer.
+          bash tools/make_deb.sh
+          DEB="$(find dist -maxdepth 1 -name '*.deb' -print -quit)"
+          [ -n "$DEB" ] || { echo "::error::no .deb produced under dist/"; exit 1; }
+          cp "$DEB" release/paperformatpro-linux.deb
           ls -la release/
+
+      # End-to-end from the customer side: install the .deb for real, confirm the menu
+      # entry and the binary are in place, then actually launch it once. A green build
+      # is not the same thing as a package the customer can use.
+      - name: Smoke test (install .deb and launch)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          command -v xvfb-run >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq xvfb >/dev/null 2>&1) || true
+          sudo dpkg -i release/paperformatpro-linux.deb
+          test -f /usr/share/applications/paperformatpro.desktop && echo "OK menu entry in place"
+          test -x /opt/paperformatpro/paperformatpro && echo "OK binary in place"
+          set +e
+          timeout 25 xvfb-run -a /opt/paperformatpro/paperformatpro > /tmp/smoke.log 2>&1
+          rc=$?
+          set -e
+          echo "launch exit code = $rc (124 = still alive when the timeout hit = launched fine)"
+          if [ "$rc" -ne 124 ]; then
+            echo "::error::the .deb installs but the app fails to launch rc=$rc"
+            tail -20 /tmp/smoke.log || true
+            exit 1
+          fi
+          echo "OK launches after install; checking uninstall"
+          sudo dpkg -r paperformatpro
+          test ! -e /opt/paperformatpro && echo "OK removed cleanly"
 
       # 构建后自检：运行时资源（图标 / AI 问卷模板 / VERSION）必须真的进了产物。
       # 姊妹项目导师版真栽过 —— build.py 漏数据目录，打包版「二维码不显示、水印图
@@ -340,6 +374,7 @@ jobs:
             release/paperformatpro-macos.zip
             release/paperformatpro-macos.dmg
             release/paperformatpro-linux.AppImage
+            release/paperformatpro-linux.deb
           if-no-files-found: ignore
           retention-days: 1
 
@@ -379,12 +414,13 @@ jobs:
           done
           ls -la release
           # 产物清单校验：缺任何一个都直接失败，避免发出「少东西」的 Release。
-          # 期望 5 个：windows.zip / setup.exe / macos.zip / macos.dmg / linux.AppImage
+          # 期望 6 个：windows.zip / setup.exe / macos.zip / macos.dmg / linux.AppImage / linux.deb
           EXPECTED="paperformatpro-windows.zip
           paperformatpro-setup.exe
           paperformatpro-macos.zip
           paperformatpro-macos.dmg
-          paperformatpro-linux.AppImage"
+          paperformatpro-linux.AppImage
+          paperformatpro-linux.deb"
           missing=""
           for f in $EXPECTED; do
             if [ ! -f "release/$f" ]; then missing="$missing $f"; fi
@@ -393,7 +429,7 @@ jobs:
             echo "::error::Release assets missing:$missing"
             exit 1
           fi
-          echo "Asset check passed: 5/5"
+          echo "Asset check passed: 6/6"
 
       - name: Determine version
         id: ver

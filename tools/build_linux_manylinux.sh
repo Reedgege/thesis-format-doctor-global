@@ -207,12 +207,13 @@ ls -la "$TOOLS"
 APPDIR="/tmp/appimage-work/AppDir"
 rm -rf "/tmp/appimage-work"
 mkdir -p "$APPDIR/usr/bin"
-cp -a "$PAYLOAD" "$APPDIR/usr/bin/$APPID"
-
 # 精简：Linux 包里不该带 macOS 的 .icns（2.90 MB）和 Windows 的 .ico（0.36 MB），
 # 共 3.26 MB 纯浪费。GUI 读取这两者时都有 isfile 守卫，删掉不会影响运行。
+# 删在 payload 本体上（不是副本），这样 AppImage 与 .deb 都省这 3.26 MB。
 echo "--- 移除 Linux 用不到的图标 ---"
-find "$APPDIR/usr/bin" \( -name 'icon.icns' -o -name 'icon.ico' \) -print -delete 2>/dev/null || true
+find "$PAYLOAD" \( -name 'icon.icns' -o -name 'icon.ico' \) -print -delete 2>/dev/null || true
+
+cp -a "$PAYLOAD" "$APPDIR/usr/bin/$APPID"
 
 # AppRun：必须 exec 真实二进制路径。用符号链接会让 $ORIGIN 落错地方，而 Nuitka
 # standalone 的 RPATH=$ORIGIN 正是靠「可执行文件所在目录」去找同目录的 .so。
