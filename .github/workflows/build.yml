@@ -363,7 +363,7 @@ jobs:
       # 33 MB too small and the app could not start at all, yet every existing check
       # (magic bytes, size floor, glibc scan) stayed green. So unpack it, assert the
       # main binary is a real file of a sane size, then launch it for real.
-      - name: Smoke test (AppImage: binary present and launches)
+      - name: "Smoke test (AppImage — binary present and launches)"
         if: matrix.os == 'linux'
         shell: bash
         run: |
