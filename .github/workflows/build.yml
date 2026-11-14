@@ -168,12 +168,105 @@ jobs:
           Compress-Archive -Path "dist\paperformatpro" -DestinationPath "release\paperformatpro-windows.zip" -Force
           ls release
 
+      # macOS distribution: fix the app bundle metadata, re-sign ad-hoc, then ship a
+      # zip (the .app folder must stay at the top level) plus a dmg.
+      #
+      # Two bugs fixed here on 2026-11-14 — every macOS build before this was broken:
+      #   1. `ditto -c -k` without --keepParent archives the *contents* of the folder,
+      #      so the zip's top level was `Contents/`. Buyers unpacked it, got a plain
+      #      folder named Contents, double-clicked it, and nothing happened. macOS never
+      #      recognized it as an app. The Mac build had been unusable the whole time.
+      #   2. Nuitka writes a literal "1.0" into CFBundleShortVersionString, so Finder
+      #      showed the wrong version. (The Chinese builds also got a non-ASCII
+      #      CFBundleIdentifier, which Apple's conventions don't allow.)
+      #
+      # Editing Info.plist invalidates the signature Nuitka applied, and Apple Silicon
+      # refuses to launch any binary without at least an ad-hoc signature. So re-sign.
       - name: Package (macOS)
         if: matrix.os == 'macos'
         shell: bash
         run: |
+          set -euo pipefail
+          APP="dist/paperformatpro.app"
+          PLIST="$APP/Contents/Info.plist"
+          VER="$(cat VERSION | tr -d '[:space:]' | sed 's/^v//')"
+          echo "building version $VER"
+
+          plist_set() {  # set if the key exists, add otherwise
+            /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST"
+          }
+          plist_set CFBundleIdentifier         "com.paperformatpro.app"
+          plist_set CFBundleShortVersionString "$VER"
+          plist_set CFBundleVersion            "$VER"
+          plist_set LSMinimumSystemVersion     "11.0"
+          plist_set CFBundleDisplayName        "PaperFormat Pro"
+          /usr/libexec/PlistBuddy -c "Print" "$PLIST"
+
+          # Drop the old signature folder first so a stale CodeResources can't fight the new one.
+          rm -rf "$APP/Contents/_CodeSignature"
+          codesign --force --deep --sign - "$APP" || codesign --force --sign - "$APP"
+          codesign --verify --verbose=2 "$APP" 2>&1 | head -10 || true
+
           mkdir -p release
-          ditto -c -k -v "dist/paperformatpro.app" "release/paperformatpro-macos.zip"
+          # --keepParent keeps paperformatpro.app as the top-level entry in the zip.
+          ditto -c -k --keepParent -v "$APP" "release/paperformatpro-macos.zip"
+          # Fail the build if the top level is wrong — that is exactly the bug above.
+          python3 - <<'PY'
+          import sys, zipfile
+          z = zipfile.ZipFile("release/paperformatpro-macos.zip")
+          tops = sorted({n.split("/")[0] for n in z.namelist()})
+          print("zip top level:", tops)
+          if tops != ["paperformatpro.app"]:
+              print("!! top level is not paperformatpro.app; unpacking gives a useless folder")
+              sys.exit(1)
+          print("OK top level correct")
+          PY
+
+          # dmg: the app, a shortcut to /Applications, and first-launch notes.
+          STAGE="dmg-stage"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          cat > "$STAGE/Read Me First.txt" <<'TXT'
+          PaperFormat Pro for macOS
+          =========================
+
+          Install
+            1. Drag "PaperFormat Pro.app" onto the Applications folder.
+            2. Open Applications and double-click PaperFormat Pro.
+
+          First launch blocked?
+
+            macOS refuses to open apps that aren't notarized by Apple. You'll see
+            "cannot be opened" or "is damaged". The download is fine — this is the
+            gatekeeper check doing its job.
+
+            macOS 15 (Sequoia) or later
+              Open System Settings > Privacy & Security and scroll to Security.
+              You'll see "PaperFormat Pro was blocked from use." Click Open Anyway
+              and enter your login password.
+
+            macOS 14 (Sonoma) or earlier
+              Right-click the app, choose Open, then click Open again in the dialog.
+
+          Requirements
+            macOS 11.0 (Big Sur) or later
+            Apple Silicon only (M1 / M2 / M3 / M4)
+            Intel Macs aren't supported yet. Email us if you need one.
+
+          Support
+            hi@paperformatpro.com
+            https://paperformatpro.com
+          TXT
+
+          hdiutil create -volname "PaperFormat Pro" -srcfolder "$STAGE" \
+            -ov -format UDZO "release/paperformatpro-macos.dmg"
+          ls -la release/
+          hdiutil attach "release/paperformatpro-macos.dmg" -nobrowse -readonly -mountpoint /tmp/dmgchk
+          test -d "/tmp/dmgchk/paperformatpro.app" && echo "OK dmg contains the app"
+          test -f "/tmp/dmgchk/Read Me First.txt" && echo "OK dmg contains the readme"
+          hdiutil detach /tmp/dmgchk -force
 
       - name: Package (Linux)
         if: matrix.os == 'linux'
@@ -197,6 +290,7 @@ jobs:
             paperformatpro-setup.exe
             release/paperformatpro-windows.zip
             release/paperformatpro-macos.zip
+            release/paperformatpro-macos.dmg
             release/paperformatpro-linux.zip
           if-no-files-found: ignore
           retention-days: 1
@@ -237,10 +331,11 @@ jobs:
           done
           ls -la release
           # 产物清单校验：缺任何一个都直接失败，避免发出「少东西」的 Release。
-          # 期望 4 个：windows.zip / setup.exe / macos.zip / linux.zip
+          # 期望 5 个：windows.zip / setup.exe / macos.zip / macos.dmg / linux.zip
           EXPECTED="paperformatpro-windows.zip
           paperformatpro-setup.exe
           paperformatpro-macos.zip
+          paperformatpro-macos.dmg
           paperformatpro-linux.zip"
           missing=""
           for f in $EXPECTED; do
@@ -250,7 +345,7 @@ jobs:
             echo "::error::Release assets missing:$missing"
             exit 1
           fi
-          echo "Asset check passed: 4/4"
+          echo "Asset check passed: 5/5"
 
       - name: Determine version
         id: ver
