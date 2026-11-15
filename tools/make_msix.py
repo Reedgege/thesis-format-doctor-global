@@ -26,6 +26,14 @@ import shutil
 import subprocess
 import sys
 
+# 🔴 Windows CI 上 stdout 走管道时是 cp1252，打印任何中文都会 UnicodeEncodeError
+# （报错点还落在无关的 print 行上，极难猜）。这里统一改成 UTF-8 兜底。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MSIX_DIR = os.path.join(HERE, "msix")
