@@ -60,10 +60,17 @@ jobs:
           cd pkg
           unzip -q *.zip -d out
           APP=$(find out -maxdepth 2 -name "*.app" | head -1)
+          # 🔴 必须转绝对路径：GITHUB_ENV 传过去的是变量，但**工作目录每个 step 会重置**，
+          # 相对路径到下一步就不存在了（第一版就是这么假失败了两轮）
+          APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
           echo "APP=$APP" >> "$GITHUB_ENV"
-          BIN="$APP/Contents/MacOS/$(defaults read "$PWD/$APP/Contents/Info" CFBundleExecutable 2>/dev/null || basename "$APP" .app)"
+          EXENAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist" 2>/dev/null || basename "$APP" .app)
+          BIN="$APP/Contents/MacOS/$EXENAME"
           if [ ! -x "$BIN" ]; then BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm +111 | head -1); fi
           echo "BIN=$BIN" >> "$GITHUB_ENV"
+          echo "APP=$APP"
+          echo "BIN=$BIN"
+          ls -l "$BIN"
           echo "这是一个 .app 包"
           file "$BIN"
           echo "::notice::主程序架构 = $(lipo -archs "$BIN" 2>/dev/null || echo 未知) （单架构 arm64 = Intel Mac 跑不了）"
