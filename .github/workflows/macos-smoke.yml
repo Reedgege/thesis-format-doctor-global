@@ -1,7 +1,7 @@
 name: macOS smoke
 
 # 目的：macOS 包从来只有「打包成功 + 资源清单校验」，**从没真启动过一次**。
-# 这个流水线把线上 Release 里那个 macos.zip 下下来，在真 Mac 上跑一遍，
+# 这个流水线把线上 Release 里的 macos.zip 下下来，在真 Mac 上跑一遍，
 # 把架构、签名状态、启动存活结果打成注解（注解不需要鉴权，本地能读到）。
 #
 # 它证明什么：二进制本身能在这台 Mac 上起来并活过 20 秒。
@@ -13,113 +13,84 @@ name: macOS smoke
 # 连诊断注解都发不出来。所以这里解压/看架构/启动全在一个 step 里，不传变量。
 
 on:
-  # 改本文件时自动跑一次（省得手点）
+  # 改本文件时自动跑一次（省得手点），三个产品一起验
   push:
     paths:
       - ".github/workflows/macos-smoke.yml"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "从哪个 Release 取 macOS 包（如 v2.3.122）"
-        required: true
-        default: "v2.3.122"
-      repo:
-        description: "产物所在仓库（owner/repo）"
-        required: true
-        default: "Reedgege/thesis-format-doctor-global"
-      asset_name:
-        description: "Release 里的 macOS zip（留空自动找 *macos*.zip）"
-        required: false
-        default: ""
 
 jobs:
   smoke:
+    name: ${{ matrix.label }}
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: 海外 PaperFormat Pro
+            repo: Reedgege/thesis-format-doctor-global
+            tag: v2.3.122
+            asset: paperformatpro-macos.zip
+            exe: paperformatpro
+          - label: 学生 文档格式先生
+            repo: Reedgege/thesis-format-doctor-desktop
+            tag: v1.3.162
+            asset: MDF-Stu-macos.zip
+            exe: MDF-Stu
+          - label: 导师 文档格式先生·导师版
+            repo: Reedgege/tfd-mentor
+            tag: v1.1.58
+            asset: MDF-Advisor-macos.zip
+            exe: MDF-Advisor
     env:
-      TAG: ${{ inputs.tag || 'v2.3.122' }}
-      REL_REPO: ${{ inputs.repo || 'Reedgege/thesis-format-doctor-global' }}
-      ASSET: ${{ inputs.asset_name || '' }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: 解压、看架构、真启动一次
         shell: bash
         run: |
           set -o pipefail
-
           fail() { echo "::error::$1"; exit 1; }
 
-          name="$ASSET"
-          if [ -z "$name" ]; then
-            name=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-              "https://api.github.com/repos/$REL_REPO/releases/tags/$TAG" \
-              | python3 -c "import json,sys;d=json.load(sys.stdin);print([a['name'] for a in d['assets'] if 'macos' in a['name'] and a['name'].endswith('.zip')][0])") \
-              || fail "解析 Release 资产名失败（tag=$TAG repo=$REL_REPO）"
-          fi
-          echo "资产：$name"
+          NAME="${{ matrix.asset }}"
+          URL="https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.tag }}/$NAME"
+          echo "下载 $URL"
           mkdir -p pkg && cd pkg
-          curl -fL --retry 3 -o "$name" \
-            "https://github.com/$REL_REPO/releases/download/$TAG/$name" \
-            || fail "下载失败：$name"
-          unzip -q "$name" -d out || fail "解压失败：$name"
+          curl -fL --retry 3 -o "$NAME" "$URL" || fail "下载失败：$URL"
+          unzip -q "$NAME" -d out || fail "解压失败：$NAME"
 
           APP=$(find out -maxdepth 2 -name "*.app" | head -1)
-          [ -n "$APP" ] || fail "包里没有 .app 目录（AppleScript 布局变了？）"
+          [ -n "$APP" ] || fail "包里没有 .app 目录"
           APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
-          echo "APP = $APP"
-
-          EXENAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist" 2>/dev/null)
-          [ -n "$EXENAME" ] || EXENAME=$(basename "$APP" .app)
-          BIN="$APP/Contents/MacOS/$EXENAME"
-          if [ ! -f "$BIN" ]; then
-            BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 | head -1)
-          fi
+          EXEN="${{ matrix.exe }}"
+          BIN="$APP/Contents/MacOS/$EXEN"
+          if [ ! -f "$BIN" ]; then BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 | head -1); fi
           [ -n "$BIN" ] || fail "Contents/MacOS 下找不到可执行文件"
-          echo "BIN = $BIN"
+          echo "APP = $APP"
           ls -l "$BIN"
-
-          echo "--- 架构 ---"
           file "$BIN"
-          ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo 未知)
-          echo "::notice::主程序架构 = $ARCHS（单架构 arm64 意味着 Intel Mac 跑不了）"
-          echo "::notice::runner 架构 = $(uname -m)"
+          ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo unknown)
+          echo "notice-arch=$ARCHS"
+          echo "::notice::[${{ matrix.label }}] 主程序架构 = $ARCHS ；runner = $(uname -m)"
 
           echo "--- 签名/公证现状（只报告，不判红）---"
-          codesign -dv --verbose=2 "$BIN" 2>&1 | head -8 || true
-          spctl --assess --type execute --verbose "$BIN" 2>&1 | head -3 || true
+          codesign -dv --verbose=2 "$BIN" 2>&1 | head -6 || true
+          spctl --assess --type execute --verbose "$BIN" 2>&1 | head -2 || true
 
-          dump_log() {
-            echo "::error::$1：进程没起来，日志前 10 行如下"
-            head -10 /tmp/app.log 2>/dev/null | while IFS= read -r line; do
-              line="${line//'%'/'%25'}"
-              echo "::error::  $line"
-            done
-          }
-
-          # 方式一：直接执行 .app 里的二进制
-          echo "== 方式一：直接执行二进制 =="
+          echo "== 真启动：直接执行二进制，看能否活过 20 秒 =="
           "$BIN" > /tmp/app.log 2>&1 &
           PID=$!
           sleep 20
           if kill -0 "$PID" 2>/dev/null; then
-            echo "::notice::✅ 方式一成功：直接执行二进制，存活 20 秒（PID $PID）"
             kill "$PID" 2>/dev/null || true
-            head -20 /tmp/app.log || true
+            echo "::notice::[${{ matrix.label }}] ✅ 启动成功，存活 20 秒（PID $PID）"
+            head -15 /tmp/app.log || true
             exit 0
           fi
-          echo "方式一没活下来，日志尾部："
-          tail -30 /tmp/app.log 2>/dev/null || true
-          dump_log "方式一"
-
-          # 方式二：走 LaunchServices（最接近用户双击）
-          echo "== 方式二：open -a =="
-          open -a "$APP" 2>/tmp/open.log || true
-          sleep 20
-          PIDS=$(pgrep -f "$EXENAME" | tr '\n' ' ')
-          if [ -n "$PIDS" ]; then
-            echo "::notice::✅ 方式二成功：open -a 拉起的进程存活 20 秒（PID $PIDS）"
-            pkill -f "$EXENAME" || true
-            exit 0
-          fi
-          echo "open 的报错："
-          cat /tmp/open.log 2>/dev/null || true
-          fail "两种启动方式都没活过 20 秒 —— 这个 macOS 包在这台 runner 上跑不起来"
+          echo "进程已退出，日志："
+          tail -40 /tmp/app.log || true
+          echo "::error::[${{ matrix.label }}] ❌ 启动即退出，这个包有问题"
+          head -10 /tmp/app.log 2>/dev/null | while IFS= read -r line; do
+            line="${line//'%'/'%25'}"
+            echo "::error::  $line"
+          done
+          exit 1
