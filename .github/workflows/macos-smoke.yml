@@ -1,17 +1,16 @@
-name: macOS smoke
+name: macOS launch smoke
 
-# 目的：macOS 包以前只验"打包成功 + 资源清单"，从没真跑过业务逻辑。
-# 这个流水线把线上 Release 里的 macos.zip 下下来，在真 Mac 上分两级验证：
+# 目的：macOS 包以前只验"打包成功 + 资源清单"，从没真启动过。这一步把线上
+# Release 里的 macos.zip 下下来，在真 Mac 上验证**启动级**：
+#   二进制能不能起来、活过 20 秒、架构是什么、运行时资源齐不齐、签名状态。
 #
-#   一级（三款都做）启动级：二进制能不能起来、活过 20 秒、架构是什么、签名状态。
-#   二级（海外版做）功能级：用打包好的二进制跑一遍真实论文的
-#                          「体检 → 一键修正 → 复检」，
-#                          再与 Windows 产物产出的基准**逐条比对**。
-#                          见 tools/crossplat/verify_cli.py。
+# 分工：**功能级**验证（体检 → 修正 → 复检，与基准逐条比对）不在这里，
+# 统一由 crossplat.yml 在 Windows / macOS / Linux 三平台同时跑。
+# 那个流水线能一次跑出三平台数据，出现差异时才能分辨"平台特有"还是"通用问题"。
 #
-# 为什么国内两版只到启动级：它们的引擎（tfd_app/core/*.py）在打包时被编译进
+# 为什么国内两版只能验到启动级：它们的引擎（tfd_app/core/*.py）打包时被编译进
 # 主程序，产物里没有可独立执行的引擎脚本，也没有 check 子命令（main.py 直接起 GUI）。
-# 所以对它们只能验"运行时数据齐全 + GUI 真能起来"，逻辑等价性靠 Windows 侧回归。
+# 所以对它们只能验"运行时数据齐全 + GUI 真能起来"。
 #
 # 它证明不了什么：用户从网上下载后 Gatekeeper 会不会放行（取决于公证/签名，
 # 而 CI 里 curl 下载的文件不带 quarantine 属性）。那一条只能真机验。
@@ -45,15 +44,12 @@ jobs:
           - label: 海外 PaperFormat Pro
             repo: Reedgege/thesis-format-doctor-global
             pattern: "paperformatpro-macos.zip"
-            mode: cli+
           - label: 学生 文档格式先生
             repo: Reedgege/thesis-format-doctor-desktop
             pattern: "MDF-Stu-macos.zip"
-            mode: gui
           - label: 导师 文档格式先生·导师版
             repo: Reedgege/tfd-mentor
             pattern: "MDF-Advisor-macos.zip"
-            mode: gui
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG_INPUT: ${{ github.event.inputs.tag }}
@@ -160,22 +156,3 @@ jobs:
             echo "::error::  $line"
           done
           exit 1
-
-      - name: 功能级验证：体检 → 一键修正 → 复检，与 Windows 基准逐条比对
-        if: matrix.mode == 'cli+'
-        shell: bash
-        run: |
-          set -o pipefail
-          BIN=$(cat /tmp/pkg/exe_path.txt)
-          [ -n "$BIN" ] || { echo "::error::上一步没留下可执行文件路径"; exit 1; }
-          echo "受测：$BIN"
-          python3 --version
-          python3 tools/crossplat/verify_cli.py \
-            --exe "$BIN" \
-            --label "${{ matrix.label }} ($(uname -m))" \
-            --workdir /tmp/xplat \
-            || {
-              RC=$?
-              echo "::error::[${{ matrix.label }}] 功能级验证未通过（verify_cli 退出码 $RC），详见上方逐条差异"
-              exit $RC
-            }

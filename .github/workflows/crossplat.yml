@@ -1,0 +1,68 @@
+name: Cross-platform functional check
+
+# 同一个版本、同一份文档，在三个操作系统上跑同样的「体检 → 一键修正 → 复检」，
+# 结果与 Windows 基准逐条比对。
+#
+# 为什么要在 CI 的三个平台都跑同一套：
+#   只在 macOS 上跑，看到差异时无法判断"是 macOS 特有"还是"未激活试用路径特有"
+#   —— CI 每次都是全新机器指纹，走的正是客户首次安装时的试用路径。
+#   三个平台同时跑，差异一出现就能立刻分辨。
+#
+# 只测海外版 PaperFormat Pro：它有三段式 CLI（check / fix --preview / fix），
+# 国内两版的引擎被编译进主程序、没有子命令，只能验到启动级（见 macos-smoke.yml）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "指定 tag（留空=最新 release）"
+        required: false
+        default: ""
+  push:
+    paths:
+      - ".github/workflows/crossplat.yml"
+      - "tools/crossplat/**"
+
+jobs:
+  functional:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x64
+            asset: "paperformatpro-windows*.zip"
+            exe: paperformatpro.exe
+          - os: macos-latest
+            label: macOS
+            asset: "paperformatpro-macos*.zip"
+            exe: paperformatpro
+          - os: ubuntu-latest
+            label: Linux x64
+            asset: "paperformatpro-linux*.zip"
+            exe: paperformatpro
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG_INPUT: ${{ github.event.inputs.tag }}
+    steps:
+      - name: 取测试工具与基准（本仓）
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            tools/crossplat
+          sparse-checkout-cone-mode: false
+
+      - name: 下载产物 → 三步验证 → 与基准比对
+        shell: bash
+        run: |
+          set -o pipefail
+          EXTRA=""
+          if [ -n "${TAG_INPUT:-}" ]; then EXTRA="--tag $TAG_INPUT"; fi
+          python tools/crossplat/fetch_and_verify.py \
+            --repo Reedgege/thesis-format-doctor-global \
+            --label "${{ matrix.label }} ($(uname -m 2>/dev/null || echo win))" \
+            --asset "${{ matrix.asset }}" \
+            --exe "${{ matrix.exe }}" \
+            $EXTRA
