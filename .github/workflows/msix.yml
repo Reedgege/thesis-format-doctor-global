@@ -198,6 +198,10 @@ jobs:
             $msix = Get-Item "build/$env:PRODUCT.msix"
             # ::notice:: 注解不需要鉴权，是我唯一能离线读到的成功遥测
             Write-Host ("::notice::.msix 打好了：{0}  {1:N2} MiB" -f $msix.Name, ($msix.Length / 1MB))
+            # 商店上传要的是**未签名**包（微软那边签），先留一份干净副本，
+            # 后面那步 signtool 是就地签名，不留副本就没有未签名的了
+            Copy-Item $msix.FullName "build/$env:PRODUCT-unsigned.msix"
+            Write-Host "已留未签名副本：$env:PRODUCT-unsigned.msix"
           } catch {
             Show-Fail "打包失败" $_
             throw
