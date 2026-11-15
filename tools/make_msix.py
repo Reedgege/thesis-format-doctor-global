@@ -214,7 +214,17 @@ def main():
         os.remove(out)
     cmd = [makeappx, "pack", "/d", stage, "/p", out, "/o"]
     print("STEP %s" % " ".join(cmd))
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    # makeappx 的输出动辄十几万字符，CI 里 stdout 只能看到一截，
+    # 所以**全量落盘**，失败排查以这个文件为准。
+    log_path = os.path.join(os.path.dirname(os.path.abspath(out)) or ".", "makeappx.log")
+    try:
+        with open(log_path, "w", encoding="utf-8") as fh:
+            fh.write("CMD: %s\n\n--- stdout ---\n%s\n\n--- stderr ---\n%s\n"
+                     % (" ".join(cmd), r.stdout or "", r.stderr or ""))
+        print("完整 makeappx 日志：%s" % log_path)
+    except OSError as exc:
+        print("写 makeappx 日志失败：%s" % exc)
     print(r.stdout.strip()[-3000:] if r.stdout else "")
     if r.returncode != 0:
         print(r.stderr.strip()[-3000:] if r.stderr else "")

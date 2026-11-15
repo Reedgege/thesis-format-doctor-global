@@ -43,6 +43,12 @@ on:
       - "tools/msix/**"
       - ".github/workflows/msix.yml"
 
+# job logs 与 artifacts 都要鉴权，本地读不到；issue 是公开可读的。
+# 所以失败时把完整诊断写进一个 issue，成功后自动关掉。
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   probe:
     runs-on: windows-latest
@@ -187,6 +193,7 @@ jobs:
               --out "build/$env:PRODUCT.msix" 2>&1 | Out-String)
             $code = $LASTEXITCODE
             Write-Host $out
+            $out | Out-File -FilePath build/diag.txt -Encoding utf8
             if ($code -ne 0) { throw ("make_msix.py 退出码 " + $code + "`n" + $out) }
             Get-Item "build/$env:PRODUCT.msix" | Format-List Name, Length
           } catch {
@@ -290,3 +297,63 @@ jobs:
           path: build/*.msix
           if-no-files-found: warn
           retention-days: 7
+
+      # 完整诊断走 issue（公开可读），注解只放结论：注解每步最多 10 条，装不下 makeappx 的全量输出
+      - name: 失败时把诊断发到 issue
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $parts = @()
+          $parts += "运行：$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $parts += "产品：$env:PRODUCT   tag：$env:TAG   产物仓库：$env:REL_REPO"
+          if (Test-Path build/makeappx.log) {
+            $raw = Get-Content build/makeappx.log -Raw
+            $show = $raw
+            if ($raw.Length -gt 50000) {
+              $show = $raw.Substring(0, 30000) + "`n`n...(中间省略 $($raw.Length - 50000) 字符)...`n`n" + $raw.Substring($raw.Length - 20000)
+            }
+            $parts += "## build/makeappx.log（原长 $($raw.Length)）`n``````n$show`n``````"
+          }
+          if (Test-Path build/diag.txt) {
+            $txt = Get-Content build/diag.txt -Raw
+            if ($txt.Length -gt 55000) { $txt = $txt.Substring(0, 55000) + "`n...(截断)" }
+            $parts += "## build/diag.txt`n``````n$txt`n``````"
+          }
+          foreach ($d in @("build/payload/paperformatpro", "build/payload", "build/msix-stage")) {
+            if (Test-Path $d) {
+              $files = @(Get-ChildItem -Path $d -Recurse -File)
+              $sum = ($files | Measure-Object Length -Sum).Sum
+              $parts += "## 产物清点 $d ：$($files.Count) 个文件，共 $([math]::Round($sum / 1MB, 2)) MiB"
+              $odd = @($files | Where-Object { $_.Name -match '[<>:"|?*]' -or $_.Name -ne $_.Name.Trim() -or $_.Name.EndsWith(".") })
+              if ($odd.Count -gt 0) {
+                $parts += "### 名字可疑`n" + (($odd | Select-Object -First 20 | ForEach-Object { $_.FullName }) -join "`n")
+              } else { $parts += "### 名字可疑：无" }
+              $parts += "### 最长 8 条路径`n" + (($files | Sort-Object { $_.FullName.Length } -Descending | Select-Object -First 8 | ForEach-Object { "$($_.FullName.Length)  $($_.FullName)" }) -join "`n")
+              break
+            }
+          }
+          $body = ($parts -join "`n")
+          $payload = @{ title = "[msix-probe] 失败诊断 run $env:GITHUB_RUN_ID"; body = $body } | ConvertTo-Json -Depth 4
+          $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "msix-probe"; Accept = "application/vnd.github+json" }
+          try {
+            $r = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues" -Headers $hdr -Body $payload -ContentType "application/json; charset=utf-8"
+            Write-Host "::error::诊断已发到 issue #$($r.number)"
+          } catch {
+            Write-Host "::error::发 issue 失败：$($_.Exception.Message)"
+          }
+
+      - name: 成功时关掉历史诊断 issue
+        if: success()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "msix-probe"; Accept = "application/vnd.github+json" }
+          try {
+            $open = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues?state=open&per_page=30" -Headers $hdr
+            foreach ($i in @($open | Where-Object { $_.title -like "[msix-probe]*" })) {
+              $b = @{ state = "closed" } | ConvertTo-Json
+              Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues/$($i.number)" -Headers $hdr -Body $b -ContentType "application/json" | Out-Null
+              Write-Host "已关闭 #$($i.number)"
+            }
+          } catch { Write-Host "关 issue 失败：$($_.Exception.Message)" }
