@@ -1,0 +1,90 @@
+name: macOS smoke
+
+# 目的：macOS 包从来只有「打包成功 + 资源清单校验」，**从没真启动过一次**。
+# 这个流水线把线上 Release 里那个 macos.zip 下下来，在真 Mac 上跑一遍，
+# 把架构、启动结果、日志打成注解（注解不需要鉴权，本地能读到）。
+#
+# 它证明什么：二进制本身能在这台 Mac 上起来并活过 20 秒。
+# 它证明不了什么：用户从网上下载后 Gatekeeper 会不会放行（那取决于公证/签名，
+# 而 CI 里 curl 下载的文件不带 quarantine 属性）。这一条只能真机验。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "从哪个 Release 取 macOS 包（如 v2.3.122）"
+        required: true
+        default: "v2.3.122"
+      repo:
+        description: "产物所在仓库（owner/repo）"
+        required: true
+        default: "Reedgege/thesis-format-doctor-global"
+      asset_name:
+        description: "Release 里的 macOS zip（留空自动找 *macos*.zip）"
+        required: false
+        default: ""
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || 'v2.3.122' }}
+      REL_REPO: ${{ inputs.repo || 'Reedgege/thesis-format-doctor-global' }}
+      ASSET: ${{ inputs.asset_name || '' }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 下载线上 macOS 包
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="$ASSET"
+          if [ -z "$name" ]; then
+            name=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$REL_REPO/releases/tags/$TAG" \
+              | python3 -c "import json,sys;d=json.load(sys.stdin);print([a['name'] for a in d['assets'] if 'macos' in a['name'] and a['name'].endswith('.zip')][0])")
+          fi
+          echo "资产：$name"
+          mkdir -p pkg
+          curl -fL --retry 3 -o "pkg/$name" \
+            "https://github.com/$REL_REPO/releases/download/$TAG/$name"
+          ls -l pkg
+
+      - name: 解压并看架构
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd pkg
+          unzip -q *.zip -d out
+          APP=$(find out -maxdepth 2 -name "*.app" | head -1)
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          BIN="$APP/Contents/MacOS/$(defaults read "$PWD/$APP/Contents/Info" CFBundleExecutable 2>/dev/null || basename "$APP" .app)"
+          if [ ! -x "$BIN" ]; then BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm +111 | head -1); fi
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          echo "这是一个 .app 包"
+          file "$BIN"
+          echo "::notice::主程序架构 = $(lipo -archs "$BIN" 2>/dev/null || echo 未知) （单架构 arm64 = Intel Mac 跑不了）"
+          echo "runner 自身架构 = $(uname -m)"
+          # 签名/公证现状（只报告，不判红：ad-hoc 签名是我们现在的常态）
+          codesign -dv --verbose=2 "$BIN" 2>&1 | head -8 || true
+          spctl --assess --type execute --verbose "$BIN" 2>&1 | head -3 || true
+
+      - name: 真启动一次（等 20 秒看进程还在不在）
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BIN" > /tmp/app.log 2>&1 &
+          PID=$!
+          echo "已启动 PID=$PID，等 20 秒…"
+          sleep 20
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "进程仍然活着"
+            echo "::notice::macOS 启动成功：进程存活 20 秒（PID $PID）"
+            kill "$PID" 2>/dev/null || true
+          else
+            echo "进程已退出，日志："
+            tail -40 /tmp/app.log || true
+            echo "::error::macOS 包启动即退出 —— 这个包有问题"
+            exit 1
+          fi
+          echo "--- 前 20 行日志 ---"
+          head -20 /tmp/app.log || true
