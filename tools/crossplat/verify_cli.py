@@ -160,6 +160,73 @@ def sha_of(triples) -> str:
     ).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# 取证：把修正稿的页眉/页脚结构摊平打印
+# ---------------------------------------------------------------------------
+# 为什么需要它：跨平台差异跑出来时，注解里只有「哪个维度不一致」，
+# 看不到"写进去没有 / 写成什么样"。而 CI 的完整日志要鉴权才读得到，
+# 注解是唯一匿名可读的通道。所以把关键结构压成几行短文本走注解。
+def diagnose_docx(path: str, max_lines: int = 8) -> list[str]:
+    import zipfile
+
+    out = []
+    try:
+        z = zipfile.ZipFile(path)
+    except Exception as e:
+        return ["cannot open %s: %s" % (os.path.basename(path), e)]
+    try:
+        names = z.namelist()
+        hf = sorted(n for n in names
+                    if re.match(r"word/(header|footer)\d*\.xml$", n))
+        out.append("zip_entries=%d hf_parts=%s"
+                   % (len(names), ",".join(x.split("/")[-1] for x in hf) or "(none)"))
+
+        # 正文 sectPr：有没有 titlePg、引用了几个页眉页脚
+        try:
+            doc = z.read("word/document.xml").decode("utf-8", "replace")
+            title_pg = len(re.findall(r"<w:titlePg\b", doc))
+            href = len(re.findall(r"<w:headerReference\b", doc))
+            fref = len(re.findall(r"<w:footerReference\b", doc))
+            # 分节数
+            nsect = len(re.findall(r"<w:sectPr\b", doc))
+            out.append("sectPr=%d titlePg=%d headerRef=%d footerRef=%d"
+                       % (nsect, title_pg, href, fref))
+        except Exception as e:
+            out.append("document.xml unreadable: %s" % e)
+
+        for n in hf:
+            try:
+                x = z.read(n).decode("utf-8", "replace")
+            except Exception:
+                continue
+            npara = len(re.findall(r"<w:p\b", x))
+            # PAGE 域：instrText 里出现 PAGE
+            npage = len(re.findall(r"<w:instrText[^>]*>\s*PAGE\b", x))
+            # 每段的对齐与 tab
+            jcs = []
+            tabs = []
+            texts = []
+            for pm in re.finditer(r"<w:p\b.*?</w:p>", x, re.S):
+                seg = pm.group(0)
+                m = re.search(r'<w:jc w:val="([^"]+)"', seg)
+                jcs.append(m.group(1) if m else "-")
+                ntab = len(re.findall(r"<w:tab/>", seg))
+                right_tab = 1 if re.search(r'<w:tab w:val="right"', seg) else 0
+                tabs.append("%d%s" % (ntab, "R" if right_tab else ""))
+                plain = re.sub(r"<[^>]+>", "", seg).strip()
+                texts.append(plain[:24])
+            out.append("%s paras=%d PAGE=%d jc=[%s] tabs=[%s] text=%s"
+                       % (n.split("/")[-1], npara, npage,
+                          ",".join(jcs), ",".join(tabs),
+                          json.dumps(texts, ensure_ascii=False)))
+    finally:
+        try:
+            z.close()
+        except Exception:
+            pass
+    return out[:max_lines]
+
+
 def diff_findings(expect, actual, limit: int = 12):
     """逐条列出差异，让人一眼看出"哪个检查项在这台机器上行为不同"。"""
     exp = {tuple(x) for x in expect}
@@ -387,6 +454,19 @@ def main(argv=None) -> int:
             print("修正效果：warn+fail %d -> %d ✓" % (b_fail, a_fail))
     except Exception:
         pass
+
+    # ---- 不一致时取证：把修正稿的结构摊平，随注解一起发出去 ----
+    if failures:
+        step("取证：修正稿结构")
+        for line in diagnose_docx(doc_out):
+            print(line)
+            error(tag + "诊断 | " + line)
+        # 修前文档的结构也打一份，便于对照"本来什么样 / 变成什么样"
+        try:
+            for line in diagnose_docx(doc_in):
+                print("[输入] " + line)
+        except Exception:
+            pass
 
     return finish(failures, soft, tag)
 
