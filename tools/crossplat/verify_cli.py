@@ -494,6 +494,17 @@ def main(argv=None) -> int:
     except Exception:
         pass
 
+    # ---- 无论通过与否，都发一条修正稿结构证据 ----
+    # 为什么通过时也要发：summary 从 warn 变 pass 只说明「报告说修好了」，
+    # 而 2.3.122 的 mac 版恰恰是「报告说页码已改、文档里连页眉都没创建」。
+    # 唯一能证明修好了的证据，是修正稿里真的存在带 PAGE 域的 header part。
+    try:
+        struct = diagnose_docx(doc_out, max_lines=6)
+        if struct:
+            notice(tag + "修正稿结构 | " + " ; ".join(struct)[:900])
+    except Exception as e:  # 取证失败不影响判定
+        print("struct evidence failed: %s" % e)
+
     # ---- 不一致时取证：把修正稿的结构摊平，随注解一起发出去 ----
     if failures:
         step("取证")

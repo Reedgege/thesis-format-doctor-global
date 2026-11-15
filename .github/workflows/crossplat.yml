@@ -25,10 +25,16 @@ on:
         description: "同时从源码构建产物并验证（true/false，约 10 分钟）"
         required: false
         default: "false"
+      skip_release_check:
+        description: "跳过「验已发布包」只跑源码构建验证（true/false）。修 bug 期间用：已发布的老包明知有问题，不必再跑一遍刷红灯"
+        required: false
+        default: "false"
 
 jobs:
   functional:
     name: ${{ matrix.label }}
+    # 修 bug 期间只验新构建的产物：老包的问题已经知道了，跑它只会多一封失败邮件。
+    if: github.event.inputs.skip_release_check != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
