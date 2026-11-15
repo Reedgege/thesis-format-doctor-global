@@ -12,16 +12,15 @@ name: Cross-platform functional check
 # 国内两版的引擎被编译进主程序、没有子命令，只能验到启动级（见 macos-smoke.yml）。
 
 on:
+  # 🔴 只手动触发，**不要**挂 push。
+  # 这是排查/验收用的流水线，迭代期间每次 push 都会跑，失败邮件会刷屏。
+  # 需要时点 Run workflow（可指定 tag），或由发版流程显式调用。
   workflow_dispatch:
     inputs:
       tag:
         description: "指定 tag（留空=最新 release）"
         required: false
         default: ""
-  push:
-    paths:
-      - ".github/workflows/crossplat.yml"
-      - "tools/crossplat/**"
 
 jobs:
   functional:
