@@ -69,14 +69,17 @@ jobs:
           # 逐行 echo ::notice:: 会在第 8 行之后被静默丢掉（上一轮就只看到
           # fix_dims 之前的内容，误以为脚本挂了）。
           set -o pipefail
-          python3 -m pip install --quiet python-docx==1.2.0 pyyaml==6.0.3 --break-system-packages 2>/dev/null \
-            || python3 -m pip install --quiet python-docx==1.2.0 pyyaml==6.0.3
+          # 🔴 Windows runner 上没有 python3（只有 python），统一探测一次
+          PY=$(command -v python3 2>/dev/null || command -v python)
+          echo "PY = $PY"
+          "$PY" -m pip install --quiet python-docx==1.2.0 pyyaml==6.0.3 2>/dev/null \
+            || "$PY" -m pip install --quiet --break-system-packages python-docx==1.2.0 pyyaml==6.0.3
           D="$RUNNER_TEMP/dbg.txt"
-          python3 tools/crossplat/debug_page_number.py \
+          "$PY" tools/crossplat/debug_page_number.py \
             tools/crossplat/fixtures/bad_apa.docx \
             "$RUNNER_TEMP/debug_out.docx" > "$D" 2>&1 || true
           cat "$D"
-          python3 - "$D" <<'PY'
+          "$PY" - "$D" <<'PY'
           import sys, io
           p = sys.argv[1]
           s = io.open(p, encoding="utf-8", errors="replace").read()
@@ -90,7 +93,9 @@ jobs:
           set -o pipefail
           EXTRA=""
           if [ -n "${TAG_INPUT:-}" ]; then EXTRA="--tag $TAG_INPUT"; fi
-          python tools/crossplat/fetch_and_verify.py \
+          PY=$(command -v python3 2>/dev/null || command -v python)
+          echo "PY = $PY"
+          "$PY" tools/crossplat/fetch_and_verify.py \
             --repo Reedgege/thesis-format-doctor-global \
             --label "${{ matrix.label }} ($(uname -m 2>/dev/null || echo win))" \
             --asset "${{ matrix.asset }}" \
@@ -133,10 +138,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pip install --quiet nuitka python-docx==1.2.0 2>/dev/null \
-            || python -m pip install --quiet --break-system-packages nuitka python-docx==1.2.0
+          PY=$(command -v python3 2>/dev/null || command -v python)
+          echo "PY = $PY"
+          "$PY" -m pip install --quiet nuitka python-docx==1.2.0 2>/dev/null \
+            || "$PY" -m pip install --quiet --break-system-packages nuitka python-docx==1.2.0
           cd tools/crossplat/nuitka_repro
-          python -m nuitka --standalone --assume-yes-for-downloads \
+          "$PY" -m nuitka --standalone --assume-yes-for-downloads \
             --output-dir=build repro.py > /tmp/compile.log 2>&1 \
             || { tail -30 /tmp/compile.log; echo "::error::Nuitka 编译失败"; exit 1; }
           BIN=$(ls build/repro.dist/repro build/repro.dist/repro.exe 2>/dev/null | head -1)
