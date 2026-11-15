@@ -2,14 +2,18 @@ name: macOS smoke
 
 # 目的：macOS 包从来只有「打包成功 + 资源清单校验」，**从没真启动过一次**。
 # 这个流水线把线上 Release 里那个 macos.zip 下下来，在真 Mac 上跑一遍，
-# 把架构、启动结果、日志打成注解（注解不需要鉴权，本地能读到）。
+# 把架构、签名状态、启动存活结果打成注解（注解不需要鉴权，本地能读到）。
 #
 # 它证明什么：二进制本身能在这台 Mac 上起来并活过 20 秒。
-# 它证明不了什么：用户从网上下载后 Gatekeeper 会不会放行（那取决于公证/签名，
-# 而 CI 里 curl 下载的文件不带 quarantine 属性）。这一条只能真机验。
+# 它证明不了什么：用户从网上下载后 Gatekeeper 会不会放行（取决于公证/签名，
+# 而 CI 里 curl 下载的文件不带 quarantine 属性）。那一条只能真机验。
+#
+# 🔴 血泪：别把 .app 路径用 $GITHUB_ENV 传给下一步 —— 每个 step 的工作目录都会重置，
+# 相对路径必然找不到文件；而且 `set -u` 遇到未定义变量会**在打印任何东西之前**直接退出，
+# 连诊断注解都发不出来。所以这里解压/看架构/启动全在一个 step 里，不传变量。
 
 on:
-  # 改本文件时自动跑一次（省得手点），默认参数打的是最新那个 tag
+  # 改本文件时自动跑一次（省得手点）
   push:
     paths:
       - ".github/workflows/macos-smoke.yml"
@@ -37,86 +41,85 @@ jobs:
       ASSET: ${{ inputs.asset_name || '' }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: 下载线上 macOS 包
+      - name: 解压、看架构、真启动一次
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
+
+          fail() { echo "::error::$1"; exit 1; }
+
           name="$ASSET"
           if [ -z "$name" ]; then
             name=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/$REL_REPO/releases/tags/$TAG" \
-              | python3 -c "import json,sys;d=json.load(sys.stdin);print([a['name'] for a in d['assets'] if 'macos' in a['name'] and a['name'].endswith('.zip')][0])")
+              | python3 -c "import json,sys;d=json.load(sys.stdin);print([a['name'] for a in d['assets'] if 'macos' in a['name'] and a['name'].endswith('.zip')][0])") \
+              || fail "解析 Release 资产名失败（tag=$TAG repo=$REL_REPO）"
           fi
           echo "资产：$name"
-          mkdir -p pkg
-          curl -fL --retry 3 -o "pkg/$name" \
-            "https://github.com/$REL_REPO/releases/download/$TAG/$name"
-          ls -l pkg
+          mkdir -p pkg && cd pkg
+          curl -fL --retry 3 -o "$name" \
+            "https://github.com/$REL_REPO/releases/download/$TAG/$name" \
+            || fail "下载失败：$name"
+          unzip -q "$name" -d out || fail "解压失败：$name"
 
-      - name: 解压并看架构
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd pkg
-          unzip -q *.zip -d out
           APP=$(find out -maxdepth 2 -name "*.app" | head -1)
-          # 🔴 必须转绝对路径：GITHUB_ENV 传过去的是变量，但**工作目录每个 step 会重置**，
-          # 相对路径到下一步就不存在了（第一版就是这么假失败了两轮）
+          [ -n "$APP" ] || fail "包里没有 .app 目录（AppleScript 布局变了？）"
           APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
-          echo "APP=$APP" >> "$GITHUB_ENV"
-          EXENAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist" 2>/dev/null || basename "$APP" .app)
+          echo "APP = $APP"
+
+          EXENAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist" 2>/dev/null)
+          [ -n "$EXENAME" ] || EXENAME=$(basename "$APP" .app)
           BIN="$APP/Contents/MacOS/$EXENAME"
-          if [ ! -x "$BIN" ]; then BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm +111 | head -1); fi
-          echo "BIN=$BIN" >> "$GITHUB_ENV"
-          echo "APP=$APP"
-          echo "BIN=$BIN"
+          if [ ! -f "$BIN" ]; then
+            BIN=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 | head -1)
+          fi
+          [ -n "$BIN" ] || fail "Contents/MacOS 下找不到可执行文件"
+          echo "BIN = $BIN"
           ls -l "$BIN"
-          echo "这是一个 .app 包"
+
+          echo "--- 架构 ---"
           file "$BIN"
-          echo "::notice::主程序架构 = $(lipo -archs "$BIN" 2>/dev/null || echo 未知) （单架构 arm64 = Intel Mac 跑不了）"
-          echo "runner 自身架构 = $(uname -m)"
-          # 签名/公证现状（只报告，不判红：ad-hoc 签名是我们现在的常态）
+          ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo 未知)
+          echo "::notice::主程序架构 = $ARCHS（单架构 arm64 意味着 Intel Mac 跑不了）"
+          echo "::notice::runner 架构 = $(uname -m)"
+
+          echo "--- 签名/公证现状（只报告，不判红）---"
           codesign -dv --verbose=2 "$BIN" 2>&1 | head -8 || true
           spctl --assess --type execute --verbose "$BIN" 2>&1 | head -3 || true
 
-      - name: 真启动一次（等 20 秒看进程还在不在）
-        shell: bash
-        run: |
-          set -uo pipefail
-          # 失败详情必须打成注解 —— 日志接口要鉴权，注解不用
           dump_log() {
-            local tag="$1"
-            echo "::error::$tag 失败，日志如下（最多 10 行）"
+            echo "::error::$1：进程没起来，日志前 10 行如下"
             head -10 /tmp/app.log 2>/dev/null | while IFS= read -r line; do
-              line="${line//'%'/'%25'}"; line="${line//$'\r'/}"
+              line="${line//'%'/'%25'}"
               echo "::error::  $line"
             done
           }
 
-          echo "== 方式一：直接执行 .app 里的二进制 =="
-          echo "BIN=$BIN"
+          # 方式一：直接执行 .app 里的二进制
+          echo "== 方式一：直接执行二进制 =="
           "$BIN" > /tmp/app.log 2>&1 &
           PID=$!
           sleep 20
           if kill -0 "$PID" 2>/dev/null; then
-            echo "::notice::方式一成功：直接执行二进制，存活 20 秒（PID $PID）"
+            echo "::notice::✅ 方式一成功：直接执行二进制，存活 20 秒（PID $PID）"
             kill "$PID" 2>/dev/null || true
+            head -20 /tmp/app.log || true
             exit 0
           fi
-          echo "方式一没起来（进程已退出），日志尾部："
-          tail -30 /tmp/app.log || true
+          echo "方式一没活下来，日志尾部："
+          tail -30 /tmp/app.log 2>/dev/null || true
           dump_log "方式一"
 
-          echo "== 方式二：走 LaunchServices（open -a，最接近用户双击）=="
-          open -a "$APP" --args --smoke 2>/tmp/open.log || true
+          # 方式二：走 LaunchServices（最接近用户双击）
+          echo "== 方式二：open -a =="
+          open -a "$APP" 2>/tmp/open.log || true
           sleep 20
-          PIDS=$(pgrep -f "paperformatpro" || true)
+          PIDS=$(pgrep -f "$EXENAME" | tr '\n' ' ')
           if [ -n "$PIDS" ]; then
-            echo "::notice::方式二成功：open -a 拉起来的进程存活 20 秒（PID $PIDS）"
-            pkill -f "paperformatpro" || true
+            echo "::notice::✅ 方式二成功：open -a 拉起的进程存活 20 秒（PID $PIDS）"
+            pkill -f "$EXENAME" || true
             exit 0
           fi
-          echo "方式二也没起来，open 的报错："
+          echo "open 的报错："
           cat /tmp/open.log 2>/dev/null || true
-          echo "::error::两种启动方式都没活过 20 秒，这个 macOS 包在本 runner 上跑不起来"
-          exit 1
+          fail "两种启动方式都没活过 20 秒 —— 这个 macOS 包在这台 runner 上跑不起来"
