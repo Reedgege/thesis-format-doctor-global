@@ -118,6 +118,53 @@ def resolve_payload(payload):
     raise SystemExit("在 %s 里找不到 .exe 主程序" % payload)
 
 
+# 🔴 MSIX / OPC 保留名：包里任何路径含 `_rels` 目录，makeappx 直接
+# `0x8007007b - The filename, directory name, or volume label syntax is incorrect.`
+# 而且报错发生在**写完所有 payload 之后**，逐文件日志全是 Processing ... 成功，
+# 极难看出是谁。实测（makeappx 10.0.26100）：`a\_rels\.rels`、`a\_rels\item.rels`
+# 一放就挂，`a\.rels`、`a\[Content_Types].xml` 反而没事 —— 命中的是 `_rels` 这一级目录。
+#
+# 我们产物里唯一的 `_rels` 来自 python-docx 1.2.0 的
+# `docx/templates/default-docx-template/`（未压缩的 default.docx）。
+# 那是它的**构建期源文件**：整个 python-docx 库里对 `default-docx-template`
+# 零引用，运行时只用同目录的 `default.docx`（docx/api.py:_default_docx_path）。
+# 所以不进包不是删功能，是丢掉一份死数据。
+OPC_RESERVED_DIRS = ("_rels",)
+
+
+def is_opc_reserved(rel):
+    parts = [p for p in re.split(r"[\\/]", rel) if p]
+    return any(p.lower() in OPC_RESERVED_DIRS for p in parts[:-1])
+
+
+def copy_payload_filtered(src, dst):
+    """按 OPC 保留名过滤后复制，并如实报告被跳过了什么。"""
+    skipped = []
+    kept = 0
+    for base, _dirs, files in os.walk(src):
+        rel_base = os.path.relpath(base, src)
+        for name in files:
+            rel = name if rel_base == "." else os.path.join(rel_base, name)
+            if is_opc_reserved(rel):
+                skipped.append(rel)
+                continue
+            target = os.path.join(dst, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(os.path.join(base, name), target)
+            kept += 1
+    if skipped:
+        tops = sorted({re.split(r"[\\/]", s)[0] for s in skipped})
+        print("  跳过 %d 个 OPC 保留路径（含 _rels 目录），顶部目录：%s"
+              % (len(skipped), ", ".join(tops)))
+        odd = [s for s in skipped if "default-docx-template" not in s.replace("\\", "/")]
+        if odd:
+            print("  ⚠️ 以下跳过项不在 python-docx 的 default-docx-template 里，"
+                  "若真有功能依赖请人工确认：")
+            for s in odd[:20]:
+                print("      %s" % s)
+    return kept, skipped
+
+
 def build_manifest(prod, version, executable):
     tmpl_path = os.path.join(MSIX_DIR, "AppxManifest.xml.tmpl")
     with open(tmpl_path, encoding="utf-8") as fh:
@@ -195,7 +242,7 @@ def main():
     # ② 程序本体：整体放进 app\ 子目录，清单里的 Executable 相应写 app\<exe>
     app_dir = os.path.join(stage, "app")
     print("  复制程序文件 ...")
-    shutil.copytree(payload, app_dir)
+    kept, skipped = copy_payload_filtered(payload, app_dir)
 
     # ③ 清单
     manifest = build_manifest(prod, version, "app\\" + exe)
