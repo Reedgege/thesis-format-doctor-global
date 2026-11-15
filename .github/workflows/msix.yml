@@ -351,7 +351,8 @@ jobs:
           $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "msix-probe"; Accept = "application/vnd.github+json" }
           try {
             $open = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues?state=open&per_page=30" -Headers $hdr
-            foreach ($i in @($open | Where-Object { $_.title -like "[msix-probe]*" })) {
+            # 🔴 别用 -like "[msix-probe]*"：PowerShell 里方括号是字符集通配，永远匹配不上
+            foreach ($i in @($open | Where-Object { $_.title.StartsWith("[msix-probe]") })) {
               $b = @{ state = "closed" } | ConvertTo-Json
               Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues/$($i.number)" -Headers $hdr -Body $b -ContentType "application/json" | Out-Null
               Write-Host "已关闭 #$($i.number)"
