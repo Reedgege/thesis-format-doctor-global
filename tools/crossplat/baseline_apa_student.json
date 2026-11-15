@@ -1,0 +1,370 @@
+{
+  "note": "Windows x64 产物（v2.3.122）跑出的基准。macOS 同版本必须逐条一致；不一致=跨平台功能性回归。",
+  "spec": "APA-Student",
+  "app_version": "2.3.122",
+  "produced_on": "windows-x64 (local, D://AgentSpace//_smoke//_func)",
+  "fixture": "tools/crossplat/fixtures/bad_apa.docx",
+  "fixture_sha256": "2134884ef6d2f96ea949ccca234b2ba217fe84219fa1361af0c8584826a854af",
+  "before": {
+    "summary": {
+      "pass": 9,
+      "info": 19,
+      "warn": 6,
+      "fail": 0
+    },
+    "findings_sha256": "1287920538c810638891a0196893612933ebc1644b708fe85d3107b6b2830472",
+    "findings": [
+      [
+        "abstract_heading",
+        "info",
+        "Abstract heading"
+      ],
+      [
+        "abstract_indent",
+        "info",
+        "Abstract first-line indent"
+      ],
+      [
+        "abstract_new_page",
+        "info",
+        "Abstract on new page"
+      ],
+      [
+        "alignment",
+        "pass",
+        "Body alignment"
+      ],
+      [
+        "caption_position_figure",
+        "info",
+        "Figure caption position"
+      ],
+      [
+        "caption_position_table",
+        "info",
+        "Table caption position"
+      ],
+      [
+        "columns",
+        "pass",
+        "Column layout"
+      ],
+      [
+        "first_line_indent",
+        "warn",
+        "Body first-line indent"
+      ],
+      [
+        "font",
+        "info",
+        "Body font"
+      ],
+      [
+        "font_size",
+        "info",
+        "Body font size"
+      ],
+      [
+        "heading",
+        "warn",
+        "Heading levels"
+      ],
+      [
+        "keywords",
+        "info",
+        "Keywords line"
+      ],
+      [
+        "line_spacing",
+        "info",
+        "Line spacing"
+      ],
+      [
+        "margins",
+        "info",
+        "left margin"
+      ],
+      [
+        "margins",
+        "info",
+        "right margin"
+      ],
+      [
+        "margins",
+        "pass",
+        "bottom margin"
+      ],
+      [
+        "margins",
+        "pass",
+        "top margin"
+      ],
+      [
+        "page_number",
+        "warn",
+        "Page number"
+      ],
+      [
+        "paper_size",
+        "pass",
+        "Paper size"
+      ],
+      [
+        "reference",
+        "warn",
+        "No reference entries detected (missing References / Bibliography / Works Cited section)"
+      ],
+      [
+        "reference_hanging_indent",
+        "info",
+        "Reference hanging indent"
+      ],
+      [
+        "reference_heading",
+        "info",
+        "Reference heading format"
+      ],
+      [
+        "reference_new_page",
+        "info",
+        "References on new page"
+      ],
+      [
+        "reference_spacing",
+        "info",
+        "Reference entry line spacing"
+      ],
+      [
+        "space_after",
+        "pass",
+        "Space after paragraph"
+      ],
+      [
+        "space_before",
+        "pass",
+        "Space before paragraph"
+      ],
+      [
+        "table_gap",
+        "info",
+        "Spacing between tables and the text"
+      ],
+      [
+        "table_lines",
+        "info",
+        "Table rules (three-line academic table)"
+      ],
+      [
+        "template_boilerplate",
+        "pass",
+        "Template guidance text still in the document"
+      ],
+      [
+        "text_new_page",
+        "info",
+        "Text starts on a new page"
+      ],
+      [
+        "title_page",
+        "info",
+        "Title page format"
+      ],
+      [
+        "title_page_content",
+        "pass",
+        "Title page content"
+      ],
+      [
+        "title_page_layout",
+        "warn",
+        "Title page position and spacing"
+      ],
+      [
+        "title_page_new_page",
+        "warn",
+        "Title page on its own page"
+      ]
+    ]
+  },
+  "after": {
+    "summary": {
+      "pass": 19,
+      "info": 13,
+      "warn": 2,
+      "fail": 0
+    },
+    "findings_sha256": "fd7440e06d78588ad9c8ad746a84ecd962f54a680bf80ba22a21922eaf75c288",
+    "findings": [
+      [
+        "abstract_heading",
+        "info",
+        "Abstract heading"
+      ],
+      [
+        "abstract_indent",
+        "info",
+        "Abstract first-line indent"
+      ],
+      [
+        "abstract_new_page",
+        "info",
+        "Abstract on new page"
+      ],
+      [
+        "alignment",
+        "pass",
+        "Body alignment"
+      ],
+      [
+        "caption_position_figure",
+        "info",
+        "Figure caption position"
+      ],
+      [
+        "caption_position_table",
+        "info",
+        "Table caption position"
+      ],
+      [
+        "columns",
+        "pass",
+        "Column layout"
+      ],
+      [
+        "first_line_indent",
+        "pass",
+        "Body first-line indent"
+      ],
+      [
+        "font",
+        "pass",
+        "Body font"
+      ],
+      [
+        "font_allowlist",
+        "pass",
+        "Body font (APA allowlist)"
+      ],
+      [
+        "heading",
+        "warn",
+        "Heading levels"
+      ],
+      [
+        "keywords",
+        "info",
+        "Keywords line"
+      ],
+      [
+        "line_spacing",
+        "pass",
+        "Line spacing"
+      ],
+      [
+        "margins",
+        "pass",
+        "bottom margin"
+      ],
+      [
+        "margins",
+        "pass",
+        "left margin"
+      ],
+      [
+        "margins",
+        "pass",
+        "right margin"
+      ],
+      [
+        "margins",
+        "pass",
+        "top margin"
+      ],
+      [
+        "page_number",
+        "pass",
+        "Page number"
+      ],
+      [
+        "paper_size",
+        "pass",
+        "Paper size"
+      ],
+      [
+        "reference",
+        "warn",
+        "No reference entries detected (missing References / Bibliography / Works Cited section)"
+      ],
+      [
+        "reference_hanging_indent",
+        "info",
+        "Reference hanging indent"
+      ],
+      [
+        "reference_heading",
+        "info",
+        "Reference heading format"
+      ],
+      [
+        "reference_new_page",
+        "info",
+        "References on new page"
+      ],
+      [
+        "reference_spacing",
+        "info",
+        "Reference entry line spacing"
+      ],
+      [
+        "space_after",
+        "pass",
+        "Space after paragraph"
+      ],
+      [
+        "space_before",
+        "pass",
+        "Space before paragraph"
+      ],
+      [
+        "table_gap",
+        "info",
+        "Spacing between tables and the text"
+      ],
+      [
+        "table_lines",
+        "info",
+        "Table rules (three-line academic table)"
+      ],
+      [
+        "template_boilerplate",
+        "pass",
+        "Template guidance text still in the document"
+      ],
+      [
+        "text_new_page",
+        "info",
+        "Text starts on a new page"
+      ],
+      [
+        "title_page",
+        "pass",
+        "Title page format"
+      ],
+      [
+        "title_page_content",
+        "pass",
+        "Title page content"
+      ],
+      [
+        "title_page_layout",
+        "pass",
+        "Title page position and spacing"
+      ],
+      [
+        "title_page_new_page",
+        "pass",
+        "Title page on its own page"
+      ]
+    ]
+  }
+}

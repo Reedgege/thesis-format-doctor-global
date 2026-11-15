@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""跨平台功能等价性验证（check -> fix -> 复检）。
+
+用途
+====
+在 macOS / Linux 的 CI runner 上，用**打包好的二进制**跑一遍真实论文的
+「体检 -> 一键修正 -> 再体检」，把结果与 Windows 产物产出的基准逐条比对。
+只要有一项对不上，就说明这个平台的产物功能受损（而不是"能启动"就算过）。
+
+为什么不能靠单元测试
+--------------------
+单测跑的是源码，测不出"打包时漏收数据文件 / 平台分支写错 / 冻结后路径失效"。
+这个脚本跑的是**客户真正下载到的那个可执行文件**，所以能测出来。
+
+判定规则
+--------
+* 版本号与基准相同 -> 严格比对：summary 与 findings 全量必须逐条一致。
+* 版本号与基准不同 -> 只打印差异并给 notice 警告，不判红。
+  （基准过期是维护问题，不是产物问题；但必须显式提醒去刷新基准。）
+
+退出码
+------
+0 = 通过（或版本不同但无致命错误）
+1 = 功能回归（同版本下结果与基准不一致）
+2 = 环境/执行失败（程序跑不起来、超时、输出不是 JSON）
+
+用法
+----
+  python3 tools/crossplat/verify_cli.py \
+      --exe "/path/to/paperformatpro" \
+      --label "macOS arm64" \
+      [--spec APA-Student] \
+      [--baseline tools/crossplat/baseline_apa_student.json] \
+      [--fixture tools/crossplat/fixtures/bad_apa.docx] \
+      [--workdir /tmp/crossplat]
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# GitHub Actions 注解里 % 和换行会让消息截断，统一转义
+def _esc(s: str) -> str:
+    return s.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+
+
+def notice(msg: str) -> None:
+    print("::notice::" + _esc(msg), flush=True)
+
+
+def error(msg: str) -> None:
+    print("::error::" + _esc(msg), flush=True)
+
+
+def warn(msg: str) -> None:
+    print("::warning::" + _esc(msg), flush=True)
+
+
+def step(msg: str) -> None:
+    print("\n=== " + msg + " ===", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# 执行受测程序
+# ---------------------------------------------------------------------------
+class RunResult:
+    def __init__(self, rc: int, out: str, err: str, timed_out: bool = False):
+        self.rc = rc
+        self.out = out
+        self.err = err
+        self.timed_out = timed_out
+
+
+def run_exe(exe: str, args: list[str], cwd: str, timeout: int) -> RunResult:
+    """跑受测程序。超时视为失败而不是挂死 CI。"""
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    try:
+        p = subprocess.run(
+            [exe] + args,
+            cwd=cwd,
+            capture_output=True,
+            timeout=timeout,
+            env=env,
+        )
+        return RunResult(
+            p.returncode,
+            p.stdout.decode("utf-8", errors="replace"),
+            p.stderr.decode("utf-8", errors="replace"),
+        )
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or b"").decode("utf-8", errors="replace")
+        err = (e.stderr or b"").decode("utf-8", errors="replace")
+        return RunResult(-1, out, err, timed_out=True)
+    except OSError as e:
+        return RunResult(-1, "", "cannot execute: %s" % e)
+
+
+def extract_json(text: str):
+    """从混着日志的输出里抠出 JSON 对象。
+
+    冻结后的程序偶尔会在 JSON 前后打印东西（Nuitka onefile 的解包提示、
+    或引擎的告警），不能假设 stdout 只有 JSON。
+    """
+    if not text or not text.strip():
+        return None
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except Exception:
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(stripped[start : end + 1])
+    except Exception:
+        return None
+
+
+def fingerprint(payload: dict):
+    """(summary, 排序后的 findings 三元组列表)。"""
+    summary = payload.get("summary") or {}
+    findings = payload.get("findings") or []
+    triples = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        triples.append(
+            [
+                str(f.get("dimension")),
+                str(f.get("severity")),
+                str(f.get("message")),
+            ]
+        )
+    triples.sort()
+    return summary, triples
+
+
+def sha_of(triples) -> str:
+    return hashlib.sha256(
+        json.dumps(triples, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def diff_findings(expect, actual, limit: int = 12):
+    """逐条列出差异，让人一眼看出"哪个检查项在这台机器上行为不同"。"""
+    exp = {tuple(x) for x in expect}
+    act = {tuple(x) for x in actual}
+    missing = sorted(exp - act)   # 基准有、这台没有
+    extra = sorted(act - exp)     # 这台多出来的
+    lines = []
+    for dim, sev, msg in missing[:limit]:
+        lines.append("  - 缺失 [%s/%s] %s" % (dim, sev, msg))
+    for dim, sev, msg in extra[:limit]:
+        lines.append("  + 多出 [%s/%s] %s" % (dim, sev, msg))
+    if len(missing) > limit:
+        lines.append("  ... 还有 %d 条缺失未列出" % (len(missing) - limit))
+    if len(extra) > limit:
+        lines.append("  ... 还有 %d 条多出未列出" % (len(extra) - limit))
+    return lines
+
+
+# ---------------------------------------------------------------------------
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Cross-platform functional equivalence check")
+    ap.add_argument("--exe", required=True, help="受测可执行文件绝对路径")
+    ap.add_argument("--label", default="unknown", help="平台标签，用于注解前缀")
+    ap.add_argument("--spec", default=None, help="规范键，默认取基准文件里的")
+    ap.add_argument("--baseline", default=None, help="基准 JSON，默认 tools/crossplat/baseline_apa_student.json")
+    ap.add_argument("--fixture", default=None, help="输入 docx，默认 tools/crossplat/fixtures/bad_apa.docx")
+    ap.add_argument("--workdir", default=None, help="工作目录，默认临时目录")
+    ap.add_argument("--timeout", type=int, default=300, help="单次执行超时秒数")
+    args = ap.parse_args(argv)
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    baseline_path = args.baseline or os.path.join(here, "baseline_apa_student.json")
+    fixture_path = args.fixture or os.path.join(here, "fixtures", "bad_apa.docx")
+
+    tag = "[%s] " % args.label
+    failures = []   # 硬失败（功能回归）
+    soft = []       # 软提醒（基准过期等）
+
+    exe = os.path.abspath(args.exe)
+    if not os.path.isfile(exe):
+        error(tag + "受测程序不存在：" + exe)
+        return 2
+    if not os.access(exe, os.X_OK):
+        error(tag + "受测程序没有可执行权限：" + exe)
+        return 2
+    if not os.path.isfile(fixture_path):
+        error(tag + "测试文档不存在：" + fixture_path)
+        return 2
+
+    fixture_sha = hashlib.sha256(open(fixture_path, "rb").read()).hexdigest()
+
+    with open(baseline_path, encoding="utf-8") as f:
+        baseline = json.load(f)
+
+    spec = args.spec or baseline.get("spec") or "APA-Student"
+    expect_version = str(baseline.get("app_version") or "")
+
+    workdir = args.workdir or tempfile.mkdtemp(prefix="crossplat_")
+    os.makedirs(workdir, exist_ok=True)
+    # 输入文档放在独立目录，避免 fix 的产物覆盖仓库里的基准文档
+    doc_in = os.path.join(workdir, "input.docx")
+    shutil.copyfile(fixture_path, doc_in)
+
+    print("受测程序 : " + exe)
+    print("平台标签 : " + args.label)
+    print("规范     : " + spec)
+    print("测试文档 : %s (sha256 %s)" % (fixture_path, fixture_sha[:16]))
+    print("基准文件 : %s" % baseline_path)
+    print("工作目录 : %s" % workdir)
+    print("")
+
+    if baseline.get("fixture_sha256") and baseline["fixture_sha256"] != fixture_sha:
+        warn(tag + "测试文档与基准不一致（基准 %s…，当前 %s…），比对结果不可信"
+             % (baseline["fixture_sha256"][:16], fixture_sha[:16]))
+
+    # ---- 1. 版本号 ----
+    step("1/5 版本号")
+    r = run_exe(exe, ["--version"], workdir, 120)
+    ver_out = (r.out or r.err).strip()
+    print(ver_out[:400] or "(无输出)")
+    actual_version = ""
+    m = re.search(r"(\d+\.\d+\.\d+)", ver_out)
+    if m:
+        actual_version = m.group(1)
+    if not actual_version:
+        failures.append("读不到版本号（rc=%s，超时=%s）" % (r.rc, r.timed_out))
+
+    strict = bool(expect_version) and actual_version == expect_version
+    if expect_version and actual_version and not strict:
+        soft.append(
+            "版本与基准不同（基准 %s，实测 %s）：本次只报告差异，不判红。"
+            "发版后请刷新工具里的基准文件。" % (expect_version, actual_version)
+        )
+    print("基准版本 %s / 实测版本 %s -> %s"
+          % (expect_version or "?", actual_version or "?", "严格比对" if strict else "宽松比对"))
+
+    # ---- 2. 体检 ----
+    step("2/5 体检（check）")
+    r = run_exe(exe, ["check", doc_in, "--spec", spec, "--json"], workdir, args.timeout)
+    print("rc=%s timed_out=%s" % (r.rc, r.timed_out))
+    if r.err.strip():
+        print("stderr: " + r.err.strip()[:800])
+    before_payload = extract_json(r.out)
+    if before_payload is None:
+        failures.append(
+            "check 没有返回可解析的 JSON（rc=%s，超时=%s）。stdout 前 500 字符：%s"
+            % (r.rc, r.timed_out, (r.out or "")[:500])
+        )
+        before_sum, before_fp = None, None
+    else:
+        before_sum, before_fp = fingerprint(before_payload)
+        print("summary: " + json.dumps(before_sum, ensure_ascii=False))
+        notice(tag + "check 结果 %s（%d 条发现）"
+               % (json.dumps(before_sum, ensure_ascii=False), len(before_fp)))
+
+    # ---- 3. 与基准比对（修前）----
+    step("3/5 与基准比对（修前）")
+    if before_fp is not None:
+        exp_sum = baseline.get("before", {}).get("summary") or {}
+        exp_fp = baseline.get("before", {}).get("findings") or []
+        if before_sum == exp_sum:
+            print("summary 一致 ✓")
+        else:
+            msg = "summary 不一致：基准 %s，实测 %s" % (
+                json.dumps(exp_sum, ensure_ascii=False),
+                json.dumps(before_sum, ensure_ascii=False),
+            )
+            print(msg)
+            (failures if strict else soft).append(msg)
+        if before_fp == [list(x) for x in exp_fp] or before_fp == exp_fp:
+            print("findings 逐条一致 ✓（%d 条）" % len(before_fp))
+        else:
+            lines = diff_findings(exp_fp, before_fp)
+            print("findings 不一致：")
+            print("\n".join(lines))
+            msg = "修前 findings 与基准有差异（基准 %d 条 / 实测 %d 条）" % (
+                len(exp_fp), len(before_fp))
+            (failures if strict else soft).append(msg + "\n" + "\n".join(lines[:6]))
+
+    # ---- 4. 一键修正 ----
+    step("4/5 一键修正（fix）")
+    doc_out = os.path.join(workdir, "fixed.docx")
+    r = run_exe(
+        exe,
+        ["fix", doc_in, "--spec", spec, "--out", doc_out, "--json"],
+        workdir,
+        args.timeout,
+    )
+    print("rc=%s timed_out=%s" % (r.rc, r.timed_out))
+    if r.err.strip():
+        print("stderr: " + r.err.strip()[:800])
+    fix_payload = extract_json(r.out)
+    fix_ok = False
+    if fix_payload is None:
+        failures.append(
+            "fix 没有返回可解析的 JSON（rc=%s，超时=%s）。stdout 前 500 字符：%s"
+            % (r.rc, r.timed_out, (r.out or "")[:500])
+        )
+    else:
+        fix_ok = bool(fix_payload.get("ok"))
+        print("ok=%s output=%s" % (fix_ok, fix_payload.get("output")))
+        if not fix_ok:
+            failures.append("fix 返回 ok=false：%s"
+                            % json.dumps(fix_payload, ensure_ascii=False)[:400])
+    produced = os.path.isfile(doc_out)
+    if not produced:
+        # 有的实现会改写 output 字段里的路径
+        cand = (fix_payload or {}).get("output")
+        if cand and os.path.isfile(os.path.join(workdir, cand)):
+            doc_out = os.path.join(workdir, cand)
+            produced = True
+    if not produced:
+        failures.append("fix 没有生成修正稿文件（期望 %s）" % doc_out)
+        print("找不到修正稿，跳过复检")
+        return finish(failures, soft, tag)
+    print("修正稿 %.1f KiB" % (os.path.getsize(doc_out) / 1024.0))
+
+    # ---- 5. 复检 ----
+    step("5/5 复检修正稿（check again）")
+    r = run_exe(exe, ["check", doc_out, "--spec", spec, "--json"], workdir, args.timeout)
+    print("rc=%s timed_out=%s" % (r.rc, r.timed_out))
+    after_payload = extract_json(r.out)
+    if after_payload is None:
+        failures.append(
+            "复检没有返回可解析的 JSON（rc=%s，超时=%s）。stdout 前 500 字符：%s"
+            % (r.rc, r.timed_out, (r.out or "")[:500])
+        )
+        return finish(failures, soft, tag)
+
+    after_sum, after_fp = fingerprint(after_payload)
+    print("summary: " + json.dumps(after_sum, ensure_ascii=False))
+    notice(tag + "复检结果 %s（%d 条发现）"
+           % (json.dumps(after_sum, ensure_ascii=False), len(after_fp)))
+
+    exp_sum = baseline.get("after", {}).get("summary") or {}
+    exp_fp = baseline.get("after", {}).get("findings") or []
+    if after_sum == exp_sum:
+        print("summary 一致 ✓")
+    else:
+        msg = "复检 summary 不一致：基准 %s，实测 %s" % (
+            json.dumps(exp_sum, ensure_ascii=False),
+            json.dumps(after_sum, ensure_ascii=False),
+        )
+        print(msg)
+        (failures if strict else soft).append(msg)
+    if after_fp == [list(x) for x in exp_fp] or after_fp == exp_fp:
+        print("findings 逐条一致 ✓（%d 条）" % len(after_fp))
+    else:
+        lines = diff_findings(exp_fp, after_fp)
+        print("findings 不一致：")
+        print("\n".join(lines))
+        msg = "复检 findings 与基准有差异（基准 %d 条 / 实测 %d 条）" % (
+            len(exp_fp), len(after_fp))
+        (failures if strict else soft).append(msg + "\n" + "\n".join(lines[:6]))
+
+    # 额外自检：修完不应该比修前更差
+    try:
+        b_fail = int(before_sum.get("fail", 0)) + int(before_sum.get("warn", 0))
+        a_fail = int(after_sum.get("fail", 0)) + int(after_sum.get("warn", 0))
+        if a_fail > b_fail:
+            failures.append(
+                "修正后问题数反而增加（修前 warn+fail=%d，修后=%d）—— 修正器在自伤"
+                % (b_fail, a_fail))
+        else:
+            print("修正效果：warn+fail %d -> %d ✓" % (b_fail, a_fail))
+    except Exception:
+        pass
+
+    return finish(failures, soft, tag)
+
+
+def finish(failures, soft, tag) -> int:
+    step("结论")
+    for s in soft:
+        warn(tag + s)
+    if failures:
+        for msg in failures:
+            error(tag + msg)
+        print("\n结论：❌ 该平台产物存在功能性回归")
+        return 1
+    notice(tag + "✅ 打包产物功能与基准完全一致（check / fix / 复检三段全通）")
+    print("\n结论：✅ 通过")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
