@@ -86,6 +86,30 @@ _ALIGN_ENUM = {
 
 _MARGIN_KEYS = MARGIN_DIMS     # (page 字段, 分节属性, 标签)
 
+# ---------------------------------------------------------------------------
+# 软错误登记表
+# ---------------------------------------------------------------------------
+# 修正器里有若干处「这一项修不了也不能拖垮整篇」的兜底 try/except。
+# 兜住是必要的，但**兜住之后不能沉默** —— 2.3.122 的 macOS 版就是栽在这里：
+# 页码那一步抛异常被吞掉，fix 依旧返回 ok=true、报告还写着「页码已改到右上」，
+# 客户打开文档发现页码压根没动。任何被兜住的异常都记在这里，随 fix 回执一起
+# 返回（summary.soft_errors），并可由 `selfcheck` 打印。
+_SOFT_ERRORS = []
+
+
+def soft_errors() -> list:
+    """本进程内被兜住的异常（字符串形式），供回执与自检读取。"""
+    return list(_SOFT_ERRORS)
+
+
+def _soft_fail(where: str, exc: BaseException) -> None:
+    """登记一条被兜住的异常。绝不抛，绝不影响主流程。"""
+    try:
+        _SOFT_ERRORS.append("%s: %s: %s" % (where, type(exc).__name__, exc))
+    except Exception:
+        pass
+
+
 # 已带顺序编号的形态：[1] / (1) / 1. / 1)
 _LEADING_NUMBER_RE = re.compile(r"^\s*(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\d+\s*[.)])\s")
 
@@ -1448,7 +1472,12 @@ def _ensure_page_number_in_part(part, align: str) -> tuple:
     """
     try:
         paras = list(part.paragraphs)
-    except Exception:
+    except Exception as e:      # noqa: BLE001
+        # 🔴 这里必须留下痕迹：part.paragraphs 会**懒创建**页眉/页脚部件，
+        # 而创建要读 python-docx 自带的 default-header.xml。打包后路径失效时
+        # 异常正是从这里冒出来的，旧代码一声不响地 return，于是「页码没写进去」
+        # 这件事在回执、日志、报告里全都看不到。
+        _soft_fail("page_number:read_header_paragraphs", e)
         return "", False
     # ① 已有 PAGE 域：只校对齐
     for p in paras:
@@ -4396,6 +4425,12 @@ def fix_docx(input_path: str, output_path: str, target: TargetProfile,
     # 记录细分应用项，便于 CLI/GUI 展示与测试断言
     summary["applied"] = applied
     summary["headings_preserved"] = True   # 标题段恒被跳过（铁律）
+
+    # 被兜住的异常随回执一起走：客户/客服/CI 都能看到「哪一步没成、为什么」。
+    # 空列表时不写这个键，避免把回执格式变脏（老版本消费者无感）。
+    _soft = soft_errors()
+    if _soft:
+        summary["soft_errors"] = _soft
 
     try:
         doc.save(output_path)

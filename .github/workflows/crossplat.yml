@@ -279,7 +279,7 @@ jobs:
           O="/tmp/repro_${{ matrix.label }}.txt"
           "$BIN" ../fixtures/bad_apa.docx /tmp/repro_out.docx > "$O" 2>&1 || true
           cat "$O"
-          python - "$O" "${{ matrix.label }}" <<'PY'
+          "$PY" - "$O" "${{ matrix.label }}" <<'PY'
           import sys, io
           p, label = sys.argv[1], sys.argv[2]
           s = io.open(p, encoding="utf-8", errors="replace").read()

@@ -302,6 +302,39 @@ def main(argv=None) -> int:
         warn(tag + "测试文档与基准不一致（基准 %s…，当前 %s…），比对结果不可信"
              % (baseline["fixture_sha256"][:16], fixture_sha[:16]))
 
+    # ---- 0. 产物环境自检 ----
+    # 放在最前面：万一后面全线崩，这段也能说明「产物里的运行环境长什么样」。
+    # 上一次失败就是因为只看到「页码没写」，却看不到「为什么没写」。
+    step("0/6 产物环境自检（selfcheck）")
+    r = run_exe(exe, ["selfcheck"], workdir, 180)
+    print("rc=%s" % r.rc)
+    raw = (r.out or "").strip()
+    sc_payload = extract_json(raw)
+    if sc_payload is None:
+        print(raw[:1500] or (r.err or "")[:800])
+    else:
+        # 注解有长度上限，压成一行关键结论发出去
+        brief = {
+            "frozen": sc_payload.get("frozen"),
+            "platform": sc_payload.get("platform"),
+            "python": sc_payload.get("python"),
+            "argv0": sc_payload.get("argv0"),
+            "cwd": sc_payload.get("cwd"),
+            "header_create": (str(sc_payload.get("header_create"))[:220]),
+            "blank_doc": (str(sc_payload.get("blank_doc"))[:220]),
+            "tpl_found": sc_payload.get("header_template_found"),
+            "docx_relative": (sc_payload.get("docx_boot") or {}).get("relative")
+            if isinstance(sc_payload.get("docx_boot"), dict) else sc_payload.get("docx_boot"),
+            "templates_ok": (sc_payload.get("docx_boot") or {}).get("templates_ok")
+            if isinstance(sc_payload.get("docx_boot"), dict) else None,
+        }
+        print(json.dumps(brief, ensure_ascii=False, indent=2)[:2500])
+        notice(tag + "selfcheck | " + json.dumps(brief, ensure_ascii=False)[:900])
+        if brief["header_create"] not in ("ok", "None"):
+            failures.append(
+                "产物里连一个空页眉都建不起来：%s" % str(brief["header_create"])[:400]
+            )
+
     # ---- 1. 版本号 ----
     step("1/6 版本号")
     r = run_exe(exe, ["--version"], workdir, 120)
@@ -442,6 +475,76 @@ def main(argv=None) -> int:
         print("找不到修正稿，跳过复检")
         return finish(failures, soft, tag)
     print("修正稿 %.1f KiB" % (os.path.getsize(doc_out) / 1024.0))
+
+    # ---- 5b. fix 回执里「真干了哪些活」必须对得上 ----
+    # 为什么单独查这一层：2.3.122 的 mac 版 fix 返回 ok=true、复检报告也变好了，
+    # 唯独 page_number 这一步根本没执行（页眉 part 没创建）。只看 ok 和 summary
+    # 一辈子发现不了。applied 是修正器自己的作业回执，拿它当硬断言。
+    # 期望值来自基准文件，不写死在代码里（换规范只需换基准）。
+    if isinstance(fix_payload, dict):
+        fx_sum = fix_payload.get("summary") or {}
+        applied = fx_sum.get("applied")
+        n_comments = fx_sum.get("comments_added")
+        print("fix.applied=%s" % json.dumps(applied, ensure_ascii=False)[:500])
+        print("fix.comments_added=%s" % n_comments)
+
+        # 被修正器兜住的异常：兜住可以，沉默不行。
+        soft_errs = fx_sum.get("soft_errors")
+        if soft_errs:
+            print("fix.soft_errors（被兜住的异常）:")
+            for s in soft_errs[:10]:
+                print("  ! " + str(s))
+            failures.append(
+                "修正过程中有 %d 个异常被悄悄兜住（改不动的项不会告诉客户）：%s"
+                % (len(soft_errs), " | ".join(str(s) for s in soft_errs[:4]))
+            )
+        else:
+            print("无被兜住的异常 ✓")
+
+        for key in (baseline.get("required_applied") or []):
+            ok_key = isinstance(applied, dict) and applied.get(key)
+            if ok_key:
+                print("applied 含 %s ✓" % key)
+            else:
+                failures.append(
+                    "fix 回执的 applied 里没有 %s —— 修正器没执行这一步"
+                    "（applied=%s）。这类『报告说改了、实际没改』的静默失效，"
+                    "多半是打包后读不到自带资源。"
+                    % (key, json.dumps(applied, ensure_ascii=False)[:300])
+                )
+
+        min_c = baseline.get("min_comments_added")
+        if isinstance(min_c, int):
+            try:
+                got = int(n_comments)
+            except (TypeError, ValueError):
+                got = -1
+            if got >= min_c:
+                print("批注写入 %d 条 ✓（≥%d）" % (got, min_c))
+            else:
+                failures.append(
+                    "fix 只写了 %s 条批注（基准要求 ≥%d）—— 批注部件没建起来，"
+                    "客户拿到的修正稿里看不到任何改动说明。" % (n_comments, min_c)
+                )
+
+    # ---- 5c. 自带数据文件在产物里能不能定位到 ----
+    # 这次 bug 的本质是「打包后 __file__ 变相对路径 → 找不到自带资源」。
+    # 页码只是碰巧第一个暴露的；export-schema 走的是 src/data 下的资源，
+    # 用它可以低成本验证这条通路在所有平台都通。
+    step("5c 自带资源定位（export-schema）")
+    schema_out = os.path.join(workdir, "schema.yaml")
+    r = run_exe(exe, ["export-schema", schema_out], workdir, 120)
+    print("rc=%s" % r.rc)
+    if (r.out or r.err).strip():
+        print((r.out or r.err).strip()[:400])
+    size = os.path.getsize(schema_out) if os.path.isfile(schema_out) else 0
+    if size > 1000:
+        print("导出模板 %d 字节 ✓" % size)
+    else:
+        failures.append(
+            "export-schema 没导出内置模板（rc=%s，文件 %d 字节）—— "
+            "产物里定位不到自带数据文件，同一类冻结路径问题。" % (r.rc, size)
+        )
 
     # ---- 5. 复检 ----
     step("6/6 复检修正稿（check again）")

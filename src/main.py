@@ -234,6 +234,87 @@ def cmd_export_schema(args):
     return 0
 
 
+def cmd_selfcheck(args):
+    """输出产物环境自检（JSON），供跨平台排障。
+
+    不猜、只报事实：程序目录候选、docx 各模块的 __file__ 是相对还是绝对、
+    模板文件实际落在哪个目录、以及**真建一次页眉时抛出的原始异常**。
+
+    产品里 `_ensure_page_number_in_part` 为了不让单页失败拖垮整篇修正，
+    把异常兜住了 —— 兜住的代价是「改了但没改」完全无声。这个入口就是
+    那把没被吞掉的证据。
+    """
+    import json as _json
+    import traceback
+
+    info = {
+        "python": sys.version.split()[0],
+        "platform": sys.platform,
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "executable": sys.executable,
+        "argv0": (sys.argv[0] if getattr(sys, "argv", None) else ""),
+        "cwd": os.getcwd(),
+    }
+
+    # 程序目录候选：从 argv[0] 与 executable 逐级上溯
+    cands = []
+    for p in (info["argv0"], info["executable"]):
+        if not p:
+            continue
+        d = os.path.dirname(os.path.abspath(p))
+        for up in range(4):
+            base = d if up == 0 else os.path.abspath(os.path.join(d, *([".."] * up)))
+            if base not in cands:
+                cands.append(base)
+    info["program_dirs"] = cands
+
+    try:
+        from . import docx_boot
+
+        info["docx_boot"] = docx_boot.report()
+    except Exception:
+        info["docx_boot"] = traceback.format_exc(limit=4)
+
+    # docx 自带的模板文件在产物里到底落在哪
+    found = []
+    for base in cands:
+        if len(found) >= 4:
+            break
+        try:
+            for dirpath, dirnames, filenames in os.walk(base):
+                if os.path.basename(dirpath) == "templates" and "default-header.xml" in filenames:
+                    found.append(os.path.join(dirpath, "default-header.xml"))
+                if dirpath[len(base):].count(os.sep) >= 5:
+                    dirnames[:] = []
+        except Exception:
+            continue
+    info["header_template_found"] = found[:4]
+
+    # 关键一枪：真建一次页眉，把原始异常打出来
+    try:
+        import docx as _docx
+
+        doc = _docx.Document()
+        info["blank_doc"] = "ok"
+        try:
+            _ = doc.sections[0].header.paragraphs
+            info["header_create"] = "ok"
+        except Exception:
+            info["header_create"] = traceback.format_exc(limit=10)
+    except Exception:
+        info["blank_doc"] = traceback.format_exc(limit=6)
+
+    try:
+        from .engine import fixer as _fx
+
+        info["soft_errors"] = list(getattr(_fx, "soft_errors", lambda: [])())
+    except Exception:
+        info["soft_errors"] = traceback.format_exc(limit=3)
+
+    print(_json.dumps(info, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _default_fixed_path(input_path: str) -> str:
     """默认输出文件名：原名_fixed.docx。"""
     base, ext = os.path.splitext(input_path)
@@ -492,6 +573,11 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("export-schema", help="Export the AI questionnaire template")
     e.add_argument("out", help="Output YAML path")
     e.set_defaults(func=cmd_export_schema)
+
+    # 支持用自检：把「产物里到底在哪找资源、建页眉时抛的原始异常」原样打出来。
+    # 刻意不在 --help 里露出（面对终端用户它是噪音），但客服排障全靠它。
+    sc = sub.add_parser("selfcheck", help=argparse.SUPPRESS)
+    sc.set_defaults(func=cmd_selfcheck)
     return p
 
 

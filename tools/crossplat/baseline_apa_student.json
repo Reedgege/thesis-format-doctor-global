@@ -5,6 +5,9 @@
   "produced_on": "windows-x64 (local, D://AgentSpace//_smoke//_func)",
   "fixture": "tools/crossplat/fixtures/bad_apa.docx",
   "fixture_sha256": "2134884ef6d2f96ea949ccca234b2ba217fe84219fa1361af0c8584826a854af",
+  "required_applied": ["page_number"],
+  "min_comments_added": 1,
+  "observed_comments_added": 3,
   "before": {
     "summary": {
       "pass": 9,
