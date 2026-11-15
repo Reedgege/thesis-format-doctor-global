@@ -66,6 +66,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # 日志要鉴权，注解不需要 —— 失败详情一律打成 ::error:: 注解，便于本地取证
+          function Show-Fail($title, $text) {
+            Write-Host "::error::$title"
+            $lines = ($text -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 10
+            foreach ($l in $lines) {
+              $safe = $l -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+              Write-Host "::error::$safe"
+            }
+            "### $title`n``````n$($text | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
           function Find-Tool($name) {
             $kits = @("${env:ProgramFiles(x86)}\Windows Kits\10\bin", "$env:ProgramFiles\Windows Kits\10\bin")
             $hit = Get-ChildItem -Path $kits -Filter $name -Recurse -ErrorAction SilentlyContinue |
@@ -87,6 +97,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # 日志要鉴权，注解不需要 —— 失败详情一律打成 ::error:: 注解，便于本地取证
+          function Show-Fail($title, $text) {
+            Write-Host "::error::$title"
+            $lines = ($text -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 10
+            foreach ($l in $lines) {
+              $safe = $l -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+              Write-Host "::error::$safe"
+            }
+            "### $title`n``````n$($text | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
           try {
             New-Item -ItemType Directory -Force -Path build/download | Out-Null
             # 资产名不带版本号（paperformatpro-windows.zip），所以不写死：
@@ -112,7 +132,7 @@ jobs:
             Write-Host ("下载完成：{0}  {1:N2} MiB" -f $fi.Name, ($fi.Length / 1MB))
             if ($fi.Length -lt 5MB) { throw "下载的文件只有 $($fi.Length) 字节，不像完整包" }
           } catch {
-            "### 下载步骤失败`n``````n$($_ | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Show-Fail "下载步骤失败" $_
             throw
           }
 
@@ -120,13 +140,23 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # 日志要鉴权，注解不需要 —— 失败详情一律打成 ::error:: 注解，便于本地取证
+          function Show-Fail($title, $text) {
+            Write-Host "::error::$title"
+            $lines = ($text -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 10
+            foreach ($l in $lines) {
+              $safe = $l -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+              Write-Host "::error::$safe"
+            }
+            "### $title`n``````n$($text | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
           try {
             $zip = Get-ChildItem build/download -Filter *.zip | Select-Object -First 1
             Write-Host "解压 $($zip.Name)"
             Expand-Archive -Path $zip.FullName -DestinationPath build/payload -Force
             Get-ChildItem build/payload | Select-Object -First 10 Name, Length | Format-Table -AutoSize | Out-String | Write-Host
           } catch {
-            "### 解压失败`n``````n$($_ | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Show-Fail "解压失败" $_
             throw
           }
 
@@ -134,18 +164,30 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # 日志要鉴权，注解不需要 —— 失败详情一律打成 ::error:: 注解，便于本地取证
+          function Show-Fail($title, $text) {
+            Write-Host "::error::$title"
+            $lines = ($text -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 10
+            foreach ($l in $lines) {
+              $safe = $l -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+              Write-Host "::error::$safe"
+            }
+            "### $title`n``````n$($text | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
           try {
             Get-Content build/sdk.env | ForEach-Object {
               $k, $v = $_.Split("=", 2); Set-Item -Path "env:$k" -Value $v
             }
             Write-Host "MAKEAPPX=$env:MAKEAPPX"
-            python tools/make_msix.py --product "$env:PRODUCT" `
+            $out = (& python tools/make_msix.py --product "$env:PRODUCT" `
               --payload build/payload --makeappx "$env:MAKEAPPX" `
-              --out "build/$env:PRODUCT.msix"
-            if ($LASTEXITCODE -ne 0) { throw "make_msix.py 退出码 $LASTEXITCODE" }
+              --out "build/$env:PRODUCT.msix" 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            Write-Host $out
+            if ($code -ne 0) { throw ("make_msix.py 退出码 " + $code + "`n" + $out) }
             Get-Item "build/$env:PRODUCT.msix" | Format-List Name, Length
           } catch {
-            "### 打包失败`n``````n$($_ | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Show-Fail "打包失败" $_
             throw
           }
 
@@ -155,6 +197,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # 日志要鉴权，注解不需要 —— 失败详情一律打成 ::error:: 注解，便于本地取证
+          function Show-Fail($title, $text) {
+            Write-Host "::error::$title"
+            $lines = ($text -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 10
+            foreach ($l in $lines) {
+              $safe = $l -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+              Write-Host "::error::$safe"
+            }
+            "### $title`n``````n$($text | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
           try {
             Get-Content build/sdk.env | ForEach-Object {
               $k, $v = $_.Split("=", 2); Set-Item -Path "env:$k" -Value $v
@@ -177,7 +229,7 @@ jobs:
             Export-Certificate -Cert $cert -FilePath $cer | Out-Null
             Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" | Out-Null
           } catch {
-            "### 签名失败`n``````n$($_ | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Show-Fail "签名失败" $_
             throw
           }
 
@@ -185,6 +237,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # 日志要鉴权，注解不需要 —— 失败详情一律打成 ::error:: 注解，便于本地取证
+          function Show-Fail($title, $text) {
+            Write-Host "::error::$title"
+            $lines = ($text -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 10
+            foreach ($l in $lines) {
+              $safe = $l -replace "%", "%25" -replace "`r", "" -replace "`n", "%0A"
+              Write-Host "::error::$safe"
+            }
+            "### $title`n``````n$($text | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
           try {
             Add-AppxPackage -Path "build/$env:PRODUCT.msix"
             $p = Get-Content tools/msix/products.json -Raw | ConvertFrom-Json
@@ -205,7 +267,7 @@ jobs:
             "### ✅ MSIX 探路通过：打包 → 签名 → 安装 → 启动 全通（$($pkg.PackageFullName)）" |
               Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           } catch {
-            "### 安装/启动失败`n``````n$($_ | Out-String)`n``````n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Show-Fail "安装/启动失败" $_
             throw
           }
 
