@@ -233,10 +233,12 @@ def main():
         shutil.rmtree(stage)
     os.makedirs(stage)
 
-    # ① 素材
-    src_assets = os.path.join(MSIX_DIR, "assets")
+    # ① 素材（按产品分目录：三个产品品牌图标不同，共用一套会让商店磁贴显示错图标）
+    src_assets = os.path.join(MSIX_DIR, "assets", args.product)
     if not os.path.isdir(src_assets):
-        raise SystemExit("缺 MSIX 素材目录，先跑 python tools/msix/make_assets.py")
+        raise SystemExit(
+            "缺 %s 的 MSIX 素材：%s\n先跑：python tools/msix/make_assets.py --product %s --src <该产品的 icon.png>"
+            % (args.product, src_assets, args.product))
     shutil.copytree(src_assets, os.path.join(stage, "Assets"))
 
     # ② 程序本体：整体放进 app\ 子目录，清单里的 Executable 相应写 app\<exe>

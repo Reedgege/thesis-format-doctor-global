@@ -26,7 +26,7 @@
     "short_name": "文档格式先生",
     "description": "模板驱动的论文格式检查与一键修正工具。",
     "lang": "zh-cn",
-    "executable": "MDF-Stu.exe",
+    "executable": "1.文档格式先生.exe",
     "pfn": "Reedskill.630551E4884DA_v279h4yy6sm7g"
   },
   "mdf-advisor": {
@@ -38,7 +38,7 @@
     "short_name": "文档格式先生 导师版",
     "description": "导师用：批量检查学生论文格式，生成带批注的副本与检查报告。",
     "lang": "zh-cn",
-    "executable": "MDF-Advisor.exe",
+    "executable": "1.文档格式先生·导师版.exe",
     "pfn": "Reedskill.361659863A1F_v279h4yy6sm7g"
   }
 }
