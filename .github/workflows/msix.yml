@@ -29,9 +29,9 @@ on:
         required: true
         default: "Reedgege/thesis-format-doctor-global"
       asset_name:
-        description: "Release 里的 Windows 包文件名"
-        required: true
-        default: "paperformatpro-windows-v2.3.122.zip"
+        description: "Release 里的 Windows 包文件名（留空 = 按 tag 自动找 *windows*.zip）"
+        required: false
+        default: ""
   # 改打包脚本或本文件时自动跑一次，省得每次手点
   push:
     paths:
@@ -46,7 +46,8 @@ jobs:
       PRODUCT: ${{ inputs.product || 'paperformatpro' }}
       TAG: ${{ inputs.tag || 'v2.3.122' }}
       REL_REPO: ${{ inputs.repo || 'Reedgege/thesis-format-doctor-global' }}
-      ASSET: ${{ inputs.asset_name || 'paperformatpro-windows-v2.3.122.zip' }}
+      ASSET: ${{ inputs.asset_name || '' }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -74,11 +75,27 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path build/download | Out-Null
-          $url = "https://github.com/$env:REL_REPO/releases/download/$env:TAG/$env:ASSET"
+          # 资产名不带版本号（paperformatpro-windows.zip），所以不写死，
+          # 留空就按 tag 去 Release 里找 *windows*.zip；显式给了就直接用。
+          $assetName = $env:ASSET
+          if ([string]::IsNullOrWhiteSpace($assetName)) {
+            $hdr = @{ "User-Agent" = "msix-probe"; "Accept" = "application/vnd.github+json" }
+            if ($env:GH_TOKEN) { $hdr["Authorization"] = "Bearer $env:GH_TOKEN" }
+            $api = "https://api.github.com/repos/$env:REL_REPO/releases/tags/$env:TAG"
+            $rel = Invoke-RestMethod -Uri $api -Headers $hdr
+            $hit = $rel.assets | Where-Object { $_.name -match '(?i)windows.*\.zip$' } | Select-Object -First 1
+            if (-not $hit) {
+              Write-Error "该 Release 里找不到 windows zip，实际有：$($rel.assets.name -join ', ')"
+              exit 1
+            }
+            $assetName = $hit.name
+          }
+          Write-Host "资产名：$assetName"
+          $url = "https://github.com/$env:REL_REPO/releases/download/$env:TAG/$assetName"
           Write-Host "下载 $url"
-          curl.exe -fL --retry 3 -o "build/download/$env:ASSET" $url
+          curl.exe -fL --retry 3 -o "build/download/$assetName" $url
           if ($LASTEXITCODE -ne 0) { Write-Error "下载失败"; exit 1 }
-          Get-Item "build/download/$env:ASSET" | Format-List Name, Length
+          Get-Item "build/download/$assetName" | Format-List Name, Length
 
       - name: 解压出产物目录
         shell: powershell
