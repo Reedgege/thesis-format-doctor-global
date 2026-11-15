@@ -1,41 +1,51 @@
 # -*- coding: utf-8 -*-
-"""修正打包后 python-docx 的「相对 __file__」——否则模板文件定位不到。
+"""让打包后的 python-docx 找得到自带模板 —— 否则 macOS / Linux 上「建页眉」必挂。
 
 问题现象（2.3.122 实测）
 ------------------------
 macOS / Linux 发行版里「页码修正」完全失效，而且**不报错**：fix 返回成功、
-报告说页码已改，实际文档里连页眉都没创建；同一份代码在 Windows 上是好的，
-在 macOS 上用源码跑也正常。
+报告写着页码已改到右上，实际文档里连页眉都没被创建；同样的代码在 Windows 上
+是好的，用源码跑也是好的。
 
-根因
-----
-python-docx 读自带的模板文件时，路径是从模块的 ``__file__`` 推出来的：
+真根因（2026-11-15 从产物里取证，非推测）
+-----------------------------------------
+python-docx 读自带模板时这样拼路径（`docx/parts/hdrftr.py`）：
 
     path = os.path.join(os.path.split(__file__)[0], "..", "templates",
                         "default-header.xml")
 
-Nuitka 打包后，``__file__`` 在不同平台给的形态不同：
+打包（Nuitka standalone）后 docx 的代码被编进二进制，磁盘上只有作为**数据文件**
+拷出来的 ``docx/templates/*.xml``；``docx/parts/`` 已经不是真实目录了。于是上面的
+拼接结果形如 ``.../docx/parts/../templates/default-header.xml``：
 
-    Windows（产物里实测）：  docx\\parts\\hdrftr.py   → 运行时解析成绝对路径，正常
-    macOS / Linux（实测）：  docx/parts/hdrftr.py    → 保持相对路径
+    · POSIX（macOS / Linux）：解析路径时要求**中间每一级都真实存在**，
+      ``docx/parts`` 不存在 → 立刻 ENOENT；
+    · Windows：Win32 先把 ``..`` 词法归一化再打开 → 恰好没事。
 
-相对路径是按**进程当前工作目录**解析的。客户双击启动、或从任何别的目录调用时，
-cwd 根本不是程序目录，于是 ``open()`` 抛 FileNotFoundError；而调用方
-（``fixer._ensure_page_number_in_part``）用 ``except Exception`` 兜底，
-异常被彻底吞掉 —— 表现就是「修了但没改，还告诉你改好了」。
+所以这是"只有非 Windows 平台才会犯"的错，而且只影响带 ``..`` 的那 5 处。
+反证：``Document()`` 读的是 ``templates/default.docx``（没有 ``..``），
+在所有平台都正常 —— 与实测完全吻合（空白文档能建、页眉建不了）。
 
-受影响的都是「首次创建部件」这类操作（都要读模板）：
-    · 页眉 / 页脚（页码）      → _default_header_xml / _default_footer_xml
-    · 批注                     → _default_comments_xml
-    · 设置 / 样式              → _default_settings_xml / _default_styles_xml
+受影响的 5 个函数（都是「首次创建部件」时才调用）：
+    HeaderPart._default_header_xml      → 页眉（页码 / running head）
+    FooterPart._default_footer_xml      → 页脚
+    SettingsPart._default_settings_xml  → 文档设置
+    StylesPart._default_styles_xml      → 样式表
+    CommentsPart._default_comments_xml  → 批注
 
 修法
 ----
-启动时把 docx 各模块的相对 ``__file__`` 就地改成绝对路径（基准目录 = 可执行文件
-所在目录，也就是 Nuitka dist 根）。只处理确实能定位到同级 ``templates`` 目录的
-模块 —— 定位不到就不动，绝不硬塞一个错的路径。
+不猜 ``__file__`` 会是什么形态（实测它本来是绝对路径，改它没用），改为：
 
-源码运行时 ``__file__`` 本来就是绝对路径，本模块直接跳过，对开发环境无影响。
+1. 在程序目录附近找到真实的 ``docx/templates`` 目录；
+2. 把上面 5 个 classmethod 接管成"直接从该目录读文件"的版本。
+
+这样与 ``__file__`` 长什么样彻底解耦，也不依赖 python-docx 的拼接写法。
+找不到模板目录就原地不动（绝不硬塞一个错的路径），并把失败原因记进 ``reasons``
+供 ``selfcheck`` 输出 —— 排查时能一眼看到"是没找到，还是不需要"。
+
+源码运行时模板在 site-packages 里找得到，接管后行为与原生完全一致（读的是同一份
+文件），所以开发环境不受影响；找不到时更是直接跳过。
 """
 
 from __future__ import annotations
@@ -45,111 +55,165 @@ import sys
 
 _applied = False
 
-# 会去读 docx/templates 下文件的模块。必须确保它们已进入 sys.modules，
-# 否则 apply() 遍历时还没导入，等后面按需导入时又是相对路径了。
-_CRITICAL_SUBMODULES = (
-    "docx.parts.hdrftr",     # 页眉 / 页脚：default-header.xml / default-footer.xml
-    "docx.parts.comments",   # 批注：default-comments.xml
-    "docx.parts.settings",   # 文档设置：default-settings.xml
-    "docx.parts.styles",     # 样式：default-styles.xml
-    "docx.parts.document",   # 正文部件
-    "docx.parts.numbering",
-    "docx.opc.packuri",
-    "docx.section",
+# 被接管的目标：(模块名, 类名, 方法名, 模板文件名)
+_READERS = (
+    ("docx.parts.hdrftr", "HeaderPart", "_default_header_xml", "default-header.xml"),
+    ("docx.parts.hdrftr", "FooterPart", "_default_footer_xml", "default-footer.xml"),
+    ("docx.parts.settings", "SettingsPart", "_default_settings_xml", "default-settings.xml"),
+    ("docx.parts.styles", "StylesPart", "_default_styles_xml", "default-styles.xml"),
+    ("docx.parts.comments", "CommentsPart", "_default_comments_xml", "default-comments.xml"),
 )
 
+# 判定「这是个可用的 docx 模板目录」所需的最小文件集
+_MUST_HAVE = ("default-header.xml", "default-footer.xml")
 
-def _program_dir() -> str:
-    """可执行文件所在目录（Nuitka dist 根）；源码运行时返回空串。"""
-    exe = getattr(sys, "argv", None)
-    if not exe:
-        return ""
+# 自检/诊断用：上一次 apply 的结果
+_LAST = {"templates_dir": "", "patched": [], "reasons": [], "ok": None}
+
+
+def _program_dirs() -> list:
+    """可能放着 docx 模板的候选根目录（可执行文件所在目录优先）。"""
+    out = []
+
+    def _add(p):
+        if not p:
+            return
+        try:
+            d = os.path.dirname(os.path.abspath(p))
+        except Exception:
+            return
+        if d and d not in out:
+            out.append(d)
+
+    argv = getattr(sys, "argv", None) or []
+    _add(argv[0] if argv else "")
+    _add(getattr(sys, "executable", "") or "")
+    return out
+
+
+def _looks_like_templates(d: str) -> bool:
     try:
-        first = exe[0]
+        return all(os.path.isfile(os.path.join(d, n)) for n in _MUST_HAVE)
     except Exception:
-        return ""
-    if not first:
-        return ""
-    # 源码运行：sys.argv[0] 是 .py 脚本，此时不需要任何修正。
-    # "-" 是 `python -` / 交互式的写法，同理不当作程序目录。
-    base_name = os.path.basename(first)
-    if first.endswith(".py") or first.endswith(".pyc") or base_name in ("", "-"):
-        return ""
-    return os.path.dirname(os.path.abspath(first))
+        return False
 
 
-def _templates_dir_for(module_file: str) -> str:
-    """给定 docx 某模块的 __file__，返回它对应的 templates 目录（不保证存在）。"""
-    here = os.path.dirname(module_file)
-    return os.path.normpath(os.path.join(here, "..", "templates"))
+def _find_templates_dir(bases) -> str:
+    """在候选根目录下找真实的 docx/templates 目录。
+
+    先试最常见的 ``<base>/docx/templates``，再限深遍历（打包目录层级因平台而异，
+    尤其 macOS 的 .app 包）。遍历有深度上限，不会在客户机上乱翻。
+    """
+    for base in bases:
+        fast = os.path.join(base, "docx", "templates")
+        if _looks_like_templates(fast):
+            return fast
+    for base in bases:
+        try:
+            for dirpath, dirnames, _files in os.walk(base):
+                if os.path.basename(dirpath) == "templates" and _looks_like_templates(dirpath):
+                    return dirpath
+                # 限制下探深度：docx 不会藏太深，避免在大目录里浪费时间
+                rel = dirpath[len(base):]
+                if rel.count(os.sep) >= 5:
+                    dirnames[:] = []
+        except Exception:
+            continue
+    return ""
+
+
+def _patch_readers(tpl_dir: str) -> list:
+    """把 5 个读模板的 classmethod 接管掉，返回接管的清单。
+
+    只接管**确实存在**的方法；python-docx 若改了名字，这里会跳过而不是报错，
+    但下面的 verify 会把"接管之后仍读不到"暴露出来。
+    """
+    import importlib
+
+    patched = []
+
+    def _make_reader(fname: str):
+        cache = {"data": None}
+
+        def _reader(cls, *a, **kw):        # classmethod 形态：(cls)
+            if cache["data"] is None:
+                path = os.path.join(tpl_dir, fname)
+                with open(path, "rb") as f:
+                    cache["data"] = f.read()
+            return cache["data"]
+
+        return _reader
+
+    for mod_name, cls_name, meth, fname in _READERS:
+        try:
+            mod = importlib.import_module(mod_name)
+            cls = getattr(mod, cls_name, None)
+        except Exception as e:      # noqa: BLE001
+            _LAST["reasons"].append("import %s failed: %r" % (mod_name, e))
+            continue
+        if cls is None or not hasattr(cls, meth):
+            _LAST["reasons"].append("%s.%s 不存在（python-docx 版本差异）"
+                                    % (cls_name, meth))
+            continue
+        try:
+            setattr(cls, meth, classmethod(_make_reader(fname)))
+            patched.append("%s.%s" % (cls_name, meth))
+        except Exception as e:      # noqa: BLE001
+            _LAST["reasons"].append("patch %s.%s failed: %r" % (cls_name, meth, e))
+    return patched
+
+
+def _verify() -> object:
+    """接管之后真读一次页眉模板。返回读到的字节数，失败返回异常字符串。"""
+    try:
+        from docx.parts.hdrftr import HeaderPart
+
+        return len(HeaderPart._default_header_xml())
+    except Exception as e:      # noqa: BLE001
+        return "error: %r" % (e,)
 
 
 def apply(base_dir: str | None = None) -> int:
-    """就地修正，返回处理过的模块数（0 表示无需处理）。幂等。
+    """执行接管，返回接管的函数个数（0 = 不用接管或没找到模板目录）。
 
-    base_dir 仅供测试注入：源码运行时不需要修正（__file__ 本就是绝对路径），
-    但自动化测试要模拟「打包后相对 __file__」的场景，得能指定基准目录。
+    base_dir 仅供测试注入：测试要模拟"模板在旁边、但 ``__file__`` 指向的
+    中间目录不存在"的打包布局。显式传入时不受幂等标志限制。
     """
     global _applied
-    # 显式传入 base_dir 的是测试路径，不受幂等标志限制 ——
-    # 否则 src/__init__.py 在 import 时已用「源码模式」跑过一次并置位，
-    # 测试再想模拟打包环境就永远进不来。
     explicit = base_dir is not None
     if _applied and not explicit:
-        return 0
-
-    base = base_dir or _program_dir()
-    if not base:
-        _applied = True
-        return 0
-
-    # 先把会用模板的子模块拉进来，保证它们也在下面的遍历范围内
-    import importlib
-
-    for sub in _CRITICAL_SUBMODULES:
-        try:
-            importlib.import_module(sub)
-        except Exception:
-            pass
-
-    fixed = 0
-    for name, mod in list(sys.modules.items()):
-        if not name or not name.startswith("docx"):
-            continue
-        try:
-            cur = getattr(mod, "__file__", None)
-        except Exception:
-            continue
-        if not cur or os.path.isabs(cur):
-            continue
-        # 打包后是相对 dist 根的路径；拼回绝对路径并确认 templates 真的在那儿，
-        # 免得把一个同样错的路径塞进去，反而多一个难查的失败点。
-        cand = os.path.normpath(os.path.join(base, cur))
-        tpl = _templates_dir_for(cand)
-        if not os.path.isdir(tpl):
-            continue
-        try:
-            mod.__file__ = cand
-        except Exception:
-            continue
-        fixed += 1
+        return _LAST.get("count", 0)
 
     _applied = True
-    return fixed
+    _LAST.update({"templates_dir": "", "patched": [], "reasons": [], "ok": None,
+                  "count": 0})
+
+    bases = [base_dir] if base_dir else _program_dirs()
+    tpl = _find_templates_dir(bases)
+    if not tpl:
+        # 模板没跟着产物走，或压根没打包 —— 不猜、不动，只留证据。
+        # 源码运行时理论上总能找到（site-packages 里有），找不到就说明
+        # python-docx 本身装坏了，此时接管也没有意义。
+        _LAST["reasons"].append(
+            "未在候选目录下找到 docx/templates（候选：%s）" % ", ".join(bases or ["(无)"]))
+        return 0
+
+    _LAST["templates_dir"] = tpl
+    patched = _patch_readers(tpl)
+    _LAST["patched"] = patched
+    _LAST["count"] = len(patched)
+    _LAST["ok"] = _verify()
+    return len(patched)
 
 
 def report() -> dict:
-    """给自检用：当前 docx 模块里还有几个是相对路径、templates 定位得到吗。"""
-    info = {"program_dir": _program_dir(), "relative": [], "templates_ok": None}
-    for name, mod in list(sys.modules.items()):
-        if not name or not name.startswith("docx"):
-            continue
-        cur = getattr(mod, "__file__", None)
-        if cur and not os.path.isabs(cur):
-            info["relative"].append((name, cur))
-    try:
-        from docx.parts.hdrftr import HeaderPart
-        info["templates_ok"] = len(HeaderPart._default_header_xml())
-    except Exception as e:      # noqa: BLE001
-        info["templates_ok"] = "error: %r" % (e,)
+    """给 selfcheck 用：模板目录、接管清单、接管后能否读到模板。"""
+    info = {
+        "program_dirs": _program_dirs(),
+        "templates_dir": _LAST.get("templates_dir") or "",
+        "patched": list(_LAST.get("patched") or []),
+        "reasons": list(_LAST.get("reasons") or []),
+        # 现读一次，而不是回放 apply 时的结果：能反映"此刻"的真实状态
+        "templates_ok": _verify(),
+    }
     return info

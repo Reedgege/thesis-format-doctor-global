@@ -1,133 +1,151 @@
 # -*- coding: utf-8 -*-
-"""打包后「相对 __file__」的回归测试（v2.3.123 起的硬约束）。
+"""回归锁：打包后 python-docx 必须还能读到自带模板。
 
-真实事故（2.3.122 线上）
-------------------------
-macOS / Linux 发行版里**页码修正完全失效且不报错**：fix 返回成功、报告说页码
-已改，实际文档里连页眉都没创建；Windows 是好的，同一份源码在 macOS 上跑也是好的。
+被锁住的那个 bug（2.3.122，只在 macOS / Linux 上犯）
+----------------------------------------------------
+python-docx 拼模板路径用的是 ``dirname(__file__) + "/../templates/xxx.xml"``。
+打包后 ``docx/parts/`` 不是真实目录（代码进了二进制，只有 templates 作为数据拷出来），
+于是：
 
-根因：python-docx 用 ``os.path.split(__file__)[0]`` 拼自带模板的路径。
-Nuitka 打包后在 macOS/Linux 上 ``__file__`` 是**相对路径**（``docx/parts/hdrftr.py``），
-相对路径按进程当前目录解析 —— 客户从任何目录启动都读不到
-``docx/templates/default-header.xml``，``open()`` 抛 FileNotFoundError，
-而 ``fixer._ensure_page_number_in_part`` 用 ``except Exception`` 兜底，异常被吞掉。
+* POSIX：解析路径要求中间每一级都真实存在 → ``docx/parts`` 不存在 → ENOENT；
+* Windows：Win32 先把 ``..`` 词法归一化 → 恰好没事。
 
-``src/docx_boot.py`` 在 ``src`` 包初始化时把这些相对 ``__file__`` 修成绝对路径。
-本文件锁住这条行为：**只要有人把这个修复去掉或改坏，这里立刻红。**
+表现是「页码修正静默失效」：fix 返回 ok、报告说改好了，文档里连页眉都没创建。
 
-为什么不用「编译一份产物再验」来测：那要几分钟且依赖 CI；把 ``__file__``
-改成相对是等价的触发条件，本地毫秒级就能复现同一故障。
+这里的测试不依赖具体平台：先构造一个"模板在旁边、但 ``__file__`` 指向的中间目录
+不存在"的 dist 布局，然后断言 ``docx_boot.apply()`` 之后模板读得到、页眉真的写得进去。
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import sys
+import zipfile
 
 import pytest
 
-
-_DOCX_MODULES = (
-    "docx",
-    "docx.parts.hdrftr",
-    "docx.parts.comments",
-    "docx.parts.document",
-    "docx.oxml.settings",
-)
+from src import docx_boot
 
 
-@pytest.fixture
-def relative_docx_files():
-    """把 docx 各模块的 __file__ 改成相对路径（模拟 macOS/Linux 打包后的形态）。
-
-    退出时无条件还原，并重置 docx_boot 的幂等标志 —— 否则会污染同机其它用例。
-    """
-    import importlib
-
-    import src.docx_boot as boot
-
-    saved: dict[str, str] = {}
-    site_dir = ""
-    for name in _DOCX_MODULES:
-        mod = importlib.import_module(name)
-        cur = getattr(mod, "__file__", None)
-        if not cur:
-            continue
-        saved[name] = cur
-        cur_posix = cur.replace("\\", "/")
-        idx = cur_posix.find("docx/")
-        if idx >= 0:
-            mod.__file__ = cur_posix[idx:]
-        if name == "docx":
-            # site-packages 目录：docx 包的上一层
-            site_dir = os.path.dirname(os.path.dirname(os.path.abspath(cur)))
-
-    old_applied = boot._applied
-    boot._applied = False
-    try:
-        yield site_dir
-    finally:
-        for name, cur in saved.items():
-            importlib.import_module(name).__file__ = cur
-        boot._applied = old_applied
-
-
-def test_relative_file_breaks_and_boot_fixes_it(relative_docx_files):
-    """相对 __file__ 必须能复现故障，修完之后必须恢复。"""
-    from docx.parts.hdrftr import HeaderPart
-
-    site_dir = relative_docx_files
-    assert site_dir, "拿不到 site-packages 目录，夹具失效"
-
-    # ① 复现：此时读不到模板（这正是线上 macOS 的症状）
-    with pytest.raises(Exception):
-        HeaderPart._default_header_xml()
-
-    # ② 修复
-    import src.docx_boot as boot
-
-    fixed = boot.apply(base_dir=site_dir)
-    assert fixed >= 1, "docx_boot.apply() 一个模块都没修，等于没生效"
-
-    # ③ 恢复：模板读得到，且内容是合法的页眉 XML
-    raw = HeaderPart._default_header_xml()
-    assert raw and b"hdr" in raw, "读到的不是页眉模板"
-
-
-def test_page_number_can_be_written_under_relative_files(relative_docx_files, tmp_path):
-    """真正的验收：相对 __file__ 下，页码要能真的写进文档。
-
-    这一条直接对应客户看到的现象（「修完还是红的」），比只看模板能否读到更硬。
-    """
+def _installed_docx_dir() -> str:
     import docx
 
-    from src.engine import fixer
-    from src.engine.questionnaire import build_target
-    import src.docx_boot as boot
+    return os.path.dirname(os.path.abspath(docx.__file__))
 
-    site_dir = relative_docx_files
-    assert boot.apply(base_dir=site_dir) >= 1
 
-    fixture = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "tools", "crossplat", "fixtures", "bad_apa.docx")
-    if not os.path.isfile(fixture):
-        pytest.skip("缺跨平台测试文档 tools/crossplat/fixtures/bad_apa.docx")
+@pytest.fixture()
+def fake_dist(tmp_path):
+    """造一个仿打包布局：dist/docx/templates/*.xml 存在，dist/docx/parts/ 不存在。"""
+    src_tpl = os.path.join(_installed_docx_dir(), "templates")
+    dst_tpl = tmp_path / "dist" / "docx" / "templates"
+    dst_tpl.mkdir(parents=True)
+    for name in ("default-header.xml", "default-footer.xml",
+                 "default-settings.xml", "default-styles.xml",
+                 "default-comments.xml", "default.docx"):
+        s = os.path.join(src_tpl, name)
+        if os.path.isfile(s):
+            shutil.copyfile(s, dst_tpl / name)
 
-    d = docx.Document(fixture)
-    target = build_target("APA-Student")
-    info = fixer._apply_page_number(d, "top-right")
+    assert not (tmp_path / "dist" / "docx" / "parts").exists(), "parts 目录必须不存在"
 
-    assert info, "页码步骤什么都没做（就是线上那个静默失败）"
-    assert info.get("added") == 1, "页码应当被新增，实际 %r" % (info,)
-    assert info.get("location") == "header"
-    assert info.get("alignment") == "right"
+    # 把 docx 各模块的 __file__ 指向"不存在的中间目录"，模拟打包后的形态
+    import docx.parts.hdrftr as hdrftr
+    import docx.parts.settings as settings_mod
+    import docx.parts.styles as styles_mod
 
-    out = os.path.join(str(tmp_path), "fixed.docx")
-    d.save(out)
-    assert os.path.isfile(out)
+    mods = [hdrftr, settings_mod, styles_mod]
+    try:
+        import docx.parts.comments as comments_mod
+    except Exception:      # 老版本 python-docx 没有 comments
+        comments_mod = None
+    if comments_mod is not None:
+        mods.append(comments_mod)
 
-    import zipfile
+    saved = {m: m.__file__ for m in mods}
+    for m in mods:
+        m.__file__ = str(tmp_path / "dist" / "docx" / "parts" / (m.__name__.split(".")[-1] + ".py"))
 
+    # 还原：__file__ / 被接管的方法 / 幂等标志
+    saved_attrs = {}
+    for mod_name, cls_name, meth in (
+        ("docx.parts.hdrftr", "HeaderPart", "_default_header_xml"),
+        ("docx.parts.hdrftr", "FooterPart", "_default_footer_xml"),
+        ("docx.parts.settings", "SettingsPart", "_default_settings_xml"),
+        ("docx.parts.styles", "StylesPart", "_default_styles_xml"),
+        ("docx.parts.comments", "CommentsPart", "_default_comments_xml"),
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=["_"])
+            cls = getattr(mod, cls_name, None)
+            if cls is not None and hasattr(cls, meth):
+                saved_attrs[(cls, meth)] = cls.__dict__.get(meth)
+        except Exception:
+            continue
+
+    yield str(tmp_path / "dist")
+
+    for m, f in saved.items():
+        m.__file__ = f
+    for (cls, meth), orig in saved_attrs.items():
+        if orig is None:
+            try:
+                delattr(cls, meth)
+            except Exception:
+                pass
+        else:
+            setattr(cls, meth, orig)
+    docx_boot._applied = False
+
+
+def test_header_template_unreadable_then_fixed(fake_dist):
+    """核心断言：接管之后，页眉模板必须读得到（不论 __file__ 长什么样）。"""
+    from docx.parts.hdrftr import HeaderPart
+
+    # 修前：中间目录不存在，POSIX 上必然读失败。Windows 会归一化，所以只有非 Windows 才断言。
+    if sys.platform != "win32":
+        with pytest.raises(FileNotFoundError):
+            HeaderPart._default_header_xml()
+
+    n = docx_boot.apply(base_dir=fake_dist)
+    assert n >= 1, "应该至少接管 1 个读模板的方法：%r" % (docx_boot.report(),)
+
+    data = HeaderPart._default_header_xml()
+    assert isinstance(data, bytes) and len(data) > 500
+    assert b"hdr" in data, "读到的内容不像页眉模板"
+
+    rep = docx_boot.report()
+    assert rep["templates_dir"].endswith(os.path.join("docx", "templates"))
+    assert rep["templates_ok"] == len(data)
+
+
+def test_page_number_can_be_written_after_boot(fake_dist):
+    """端到端：接管之后页码真的能写进 header part。"""
+    import docx
+
+    docx_boot.apply(base_dir=fake_dist)
+
+    from src.engine.fixer import _apply_page_number
+
+    doc = docx.Document()
+    doc.add_paragraph("Body text for the page-number test.")
+    stats = _apply_page_number(doc, "top-right")
+    assert stats.get("added") == 1
+    assert stats.get("location") == "header"
+    assert stats.get("alignment") == "right"
+
+    out = os.path.join(os.path.dirname(fake_dist), "pn.docx")
+    doc.save(out)
     with zipfile.ZipFile(out) as z:
         names = z.namelist()
-    assert "word/header1.xml" in names, "修正稿里没有页眉部件，页码实际上没落地"
+    assert any(n == "word/header1.xml" for n in names), "页眉 part 没被创建：%s" % names
+
+
+def test_boot_is_noop_when_templates_missing(tmp_path):
+    """找不到模板目录时绝不硬塞路径，只留证据（否则会制造更难查的失败）。"""
+    empty = tmp_path / "empty_dist"
+    empty.mkdir()
+    assert docx_boot.apply(base_dir=str(empty)) == 0
+    rep = docx_boot.report()
+    assert rep["templates_dir"] == ""
+    assert rep["reasons"], "必须说明为什么没接管"

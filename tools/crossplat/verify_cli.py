@@ -323,10 +323,7 @@ def main(argv=None) -> int:
             "header_create": (str(sc_payload.get("header_create"))[:220]),
             "blank_doc": (str(sc_payload.get("blank_doc"))[:220]),
             "tpl_found": sc_payload.get("header_template_found"),
-            "docx_relative": (sc_payload.get("docx_boot") or {}).get("relative")
-            if isinstance(sc_payload.get("docx_boot"), dict) else sc_payload.get("docx_boot"),
-            "templates_ok": (sc_payload.get("docx_boot") or {}).get("templates_ok")
-            if isinstance(sc_payload.get("docx_boot"), dict) else None,
+            "docx_boot": sc_payload.get("docx_boot"),
         }
         print(json.dumps(brief, ensure_ascii=False, indent=2)[:2500])
         notice(tag + "selfcheck | " + json.dumps(brief, ensure_ascii=False)[:900])
