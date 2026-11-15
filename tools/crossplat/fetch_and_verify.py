@@ -197,6 +197,8 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", default="", help="留空取 latest")
     ap.add_argument("--workdir", default="")
     ap.add_argument("--spec", default="")
+    ap.add_argument("--exe-path-out", default="", help="把定位到的可执行路径写到这个文件")
+    ap.add_argument("--no-verify", action="store_true", help="只下载解压定位，不跑三步验证")
     args = ap.parse_args(argv)
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
@@ -285,6 +287,13 @@ def main(argv=None) -> int:
         return 2
     print("可执行文件 = " + exe)
     notice("[%s] 受测产物 %s（tag %s）" % (args.label, name, tag))
+    if args.exe_path_out:
+        with open(args.exe_path_out, "w", encoding="utf-8") as f:
+            f.write(exe)
+        print("路径已写入 " + args.exe_path_out)
+    if args.no_verify:
+        print("--no-verify：跳过三步验证")
+        return 0
 
     # 交给 verify_cli 做真正的比对
     vargs = ["--exe", exe, "--label", "%s %s" % (args.label, tag),

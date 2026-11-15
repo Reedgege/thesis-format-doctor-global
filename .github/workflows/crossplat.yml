@@ -91,6 +91,47 @@ jobs:
           print("::notice::" + s[:60000])
           PY
 
+      - name: 取证（仅 Linux）：strace 看产物到底去哪个路径找页眉模板
+        # 这是最直接的证据：python-docx 建页眉时要读 docx/templates/default-header.xml，
+        # 它靠 os.path.split(__file__) 推路径。若 Nuitka 打包后 __file__ 不可靠，
+        # open() 就会找不到文件 → 异常被 except 吞掉 → 页眉建不起来。
+        # strace 会把所有 openat 的完整路径打出来，带 ENOENT 的那几条就是答案。
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          PY=$(command -v python3 2>/dev/null || command -v python)
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq strace >/dev/null 2>&1 || { echo "::warning::装不上 strace，跳过取证"; exit 0; }
+          "$PY" tools/crossplat/fetch_and_verify.py             --repo Reedgege/thesis-format-doctor-global             --asset "paperformatpro-linux*.AppImage"             --exe paperformatpro             --label "Linux strace"             --exe-path-out /tmp/exe_path.txt             --no-verify || exit 0
+          BIN=$(cat /tmp/exe_path.txt)
+          echo "BIN = $BIN"
+          D=$(dirname "$BIN")
+          echo "--- 产物的 docx/templates 实际位置 ---"
+          find "$D" -name "default-header.xml" -o -name "default-footer.xml" 2>/dev/null | head
+          echo "--- __file__ 提示：templates 相对 docx 包的位置 ---"
+          ls -d "$D"/docx 2>/dev/null || true
+          strace -f -e trace=openat,stat,newfstatat -o /tmp/st.txt \
+            "$BIN" fix tools/crossplat/fixtures/bad_apa.docx --spec APA-Student \
+            --out /tmp/st_out.docx --json >/dev/null 2>&1 || true
+          R="$RUNNER_TEMP/strace_hdr.txt"
+          {
+            echo "### 产物里 templates 的实际路径"
+            find "$D" -name "default-*.xml" 2>/dev/null | head -6
+            echo "### strace 里所有涉及 template/header/footer 的 open 记录"
+            grep -iE "default-header|default-footer|templates" /tmp/st.txt 2>/dev/null | head -40
+            echo "### 其中带 ENOENT 的"
+            grep -iE "default-header|default-footer" /tmp/st.txt 2>/dev/null | grep ENOENT | head -10
+          } > "$R" 2>&1 || true
+          cat "$R"
+          "$PY" - "$R" <<'PY2'
+          import sys, io
+          s = io.open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          s = s.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print("::notice::[strace 取证] " + s[:50000])
+          PY2
+
       - name: 下载产物 → 三步验证 → 与基准比对
         shell: bash
         run: |
