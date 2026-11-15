@@ -41,7 +41,9 @@ jobs:
             exe: paperformatpro
           - os: ubuntu-latest
             label: Linux x64
-            asset: "paperformatpro-linux*.zip"
+            # Linux 发的是 AppImage / deb，没有 zip。取 AppImage：
+            # 用 --appimage-extract 解开，不依赖 FUSE。
+            asset: "paperformatpro-linux*.AppImage"
             exe: paperformatpro
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

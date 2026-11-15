@@ -116,45 +116,76 @@ def pick_asset(assets: list, want: str) -> dict | None:
     return None
 
 
+def _kind(path: str) -> str:
+    """读文件魔数判断可执行类型：pe / elf / macho / other。
+
+    为什么不靠扩展名和权限位：Python 的 zipfile 解压**不还原 Unix 可执行位**
+    （Windows 上 os.access(X_OK) 又恒为真），上一轮就是因此在 macOS 上
+    "解压后找不到可执行文件"而误判成产品故障。魔数是最硬的事实。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return "other"
+    if head[:2] == b"MZ":
+        return "pe"
+    if head == b"\x7fELF":
+        return "elf"
+    if head in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
+                b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+                b"\xca\xfe\xba\xbe"):
+        return "macho"
+    return "other"
+
+
 def find_executable(root: str, prefer: str | None) -> str | None:
     """在解压目录里找主程序。
 
-    Windows：优先 prefer 指定的名字，其次任意 *.exe（排除 uninstall 之类）。
-    macOS：沿 *.app/Contents/MacOS/ 找第一个可执行位文件。
-    Linux：优先同名的无扩展名文件。
+    判据：只认真正的可执行文件魔数（PE / ELF / Mach-O），排除随包携带的
+    解释器与辅助工具（Python、tclsh、wish、uninstall 之类），最后按体积取最大
+    —— 主程序一定是包里最大的那个可执行文件。
     """
+    want = "pe" if sys.platform.startswith("win") else (
+        "macho" if sys.platform == "darwin" else "elf")
     cands = []
     for dirpath, dirnames, filenames in os.walk(root):
-        # 跳过 macOS 的代码签名目录，里面全是无关文件
         if "_CodeSignature" in dirpath:
-            continue
-        if dirpath.replace("\\", "/").endswith(".app/Contents/MacOS"):
-            for fn in filenames:
-                p = os.path.join(dirpath, fn)
-                if os.access(p, os.X_OK):
-                    cands.append(p)
             continue
         for fn in filenames:
             p = os.path.join(dirpath, fn)
-            low = fn.lower()
-            if low.endswith(".exe"):
-                cands.append(p)
-            elif sys.platform.startswith("linux") and not os.path.splitext(fn)[1] \
-                    and os.access(p, os.X_OK):
+            # 体积太小的肯定不是主程序，先跳过省时间（.so/.dylib 小的也多）
+            try:
+                if os.path.getsize(p) < 512 * 1024:
+                    continue
+            except OSError:
+                continue
+            if _kind(p) == want:
                 cands.append(p)
     if not cands:
         return None
-    if prefer:
-        for p in cands:
-            if os.path.basename(p) == prefer:
-                return p
-    # 排除明显不是主程序的
-    bad = ("uninstall", "vc_redist", "vcredist", "python", "tclsh", "wish")
-    good = [p for p in cands if not any(b in os.path.basename(p).lower() for b in bad)]
-    pool = good or cands
-    # 主程序通常最大
-    pool.sort(key=lambda p: os.path.getsize(p), reverse=True)
-    return pool[0]
+
+    bad = ("uninstall", "vc_redist", "vcredist", "python", "tclsh", "wish",
+           "libtcl", "libtk", "apprun", "crasher", "helper")
+    def score(p):
+        base = os.path.basename(p).lower()
+        s = 0
+        if prefer and os.path.basename(p) == prefer:
+            s -= 10_000_000
+        if any(b in base for b in bad):
+            s += 5_000_000
+        # 主程序通常最大：体积越大排越前
+        return s - os.path.getsize(p)
+
+    cands.sort(key=score)
+    pick = cands[0]
+    # 解压丢了可执行位时补回来，否则 macOS/Linux 上根本起不来
+    try:
+        mode = os.stat(pick).st_mode
+        os.chmod(pick, mode | 0o755)
+    except OSError:
+        pass
+    return pick
 
 
 def main(argv=None) -> int:
@@ -202,9 +233,48 @@ def main(argv=None) -> int:
         return 2
 
     out = os.path.join(work, "unpacked")
+    low = name.lower()
     try:
-        with zipfile.ZipFile(zpath) as z:
-            z.extractall(out)
+        if low.endswith(".appimage"):
+            # AppImage 在 ubuntu-latest 上不一定有 FUSE，用 --appimage-extract
+            # 解包（内建能力，不需要挂载）。解到 <cwd>/squashfs-root。
+            import shutil
+            import subprocess
+
+            os.chmod(zpath, 0o755)
+            os.makedirs(out, exist_ok=True)
+            p = subprocess.run([zpath, "--appimage-extract"], cwd=out,
+                               capture_output=True)
+            if p.returncode != 0:
+                tail = (p.stderr or b"").decode("utf-8", "replace")[-400:]
+                fail("AppImage 解包失败（rc=%s）：%s" % (p.returncode, tail.strip()))
+                return 2
+            inner = os.path.join(out, "squashfs-root")
+            if not os.path.isdir(inner):
+                fail("AppImage 解包后没有 squashfs-root")
+                return 2
+            out = inner
+        elif low.endswith(".deb"):
+            import subprocess
+
+            os.makedirs(out, exist_ok=True)
+            p = subprocess.run(["dpkg-deb", "-x", zpath, out], capture_output=True)
+            if p.returncode != 0:
+                tail = (p.stderr or b"").decode("utf-8", "replace")[-400:]
+                fail("dpkg-deb 解包失败：%s" % tail.strip())
+                return 2
+        else:
+            with zipfile.ZipFile(zpath) as z:
+                z.extractall(out)
+                # 还原 Unix 权限位：zipfile.extractall 会把可执行位丢掉，
+                # 之后二进制在 macOS/Linux 上根本起不来（真实下载解压不会丢）。
+                for info in z.infolist():
+                    mode = (info.external_attr >> 16) & 0o777
+                    if mode:
+                        try:
+                            os.chmod(os.path.join(out, info.filename), mode)
+                        except OSError:
+                            pass
     except Exception as e:
         fail("解压失败：%s（%s）" % (name, e))
         return 2
