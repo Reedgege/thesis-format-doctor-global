@@ -303,7 +303,7 @@ def main(argv=None) -> int:
              % (baseline["fixture_sha256"][:16], fixture_sha[:16]))
 
     # ---- 1. 版本号 ----
-    step("1/5 版本号")
+    step("1/6 版本号")
     r = run_exe(exe, ["--version"], workdir, 120)
     ver_out = (r.out or r.err).strip()
     print(ver_out[:400] or "(无输出)")
@@ -324,7 +324,7 @@ def main(argv=None) -> int:
           % (expect_version or "?", actual_version or "?", "严格比对" if strict else "宽松比对"))
 
     # ---- 2. 体检 ----
-    step("2/5 体检（check）")
+    step("2/6 体检（check）")
     r = run_exe(exe, ["check", doc_in, "--spec", spec, "--json"], workdir, args.timeout)
     print("rc=%s timed_out=%s" % (r.rc, r.timed_out))
     if r.err.strip():
@@ -343,7 +343,7 @@ def main(argv=None) -> int:
                % (json.dumps(before_sum, ensure_ascii=False), len(before_fp)))
 
     # ---- 3. 与基准比对（修前）----
-    step("3/5 与基准比对（修前）")
+    step("3/6 与基准比对（修前）")
     if before_fp is not None:
         exp_sum = baseline.get("before", {}).get("summary") or {}
         exp_fp = baseline.get("before", {}).get("findings") or []
@@ -366,8 +366,47 @@ def main(argv=None) -> int:
                 len(exp_fp), len(before_fp))
             (failures if strict else soft).append(msg + "\n" + "\n".join(lines[:6]))
 
-    # ---- 4. 一键修正 ----
-    step("4/5 一键修正（fix）")
+    # ---- 4. 预览可修项 ----
+    # preview 不落盘、不消耗试用，能安全地把「这台机器认为哪些维度可修」暴露出来。
+    # 为什么值得单独一步：findings 的指纹只含 dimension/severity/message，
+    # 不含「有没有绑修复动作」这一层。曾出现两平台 findings 34 条逐条一致、
+    # 但 macOS 上就是不肯写页码的情况 —— 差异恰好藏在这层里。
+    step("4/6 预览可修项（preview）")
+    r = run_exe(exe, ["fix", doc_in, "--spec", spec, "--preview", "--json"],
+                workdir, args.timeout)
+    print("rc=%s timed_out=%s" % (r.rc, r.timed_out))
+    preview_changes = None
+    preview_payload = extract_json(r.out)
+    if preview_payload is None:
+        print("preview 没有返回 JSON（rc=%s）" % r.rc)
+        if r.err.strip():
+            print("stderr: " + r.err.strip()[:600])
+    else:
+        preview_changes = preview_payload.get("changes") or []
+        print("可修 %d 项：" % len(preview_changes))
+        for c in preview_changes:
+            print("  - " + str(c))
+        notice(tag + "可修 %d 项：%s"
+               % (len(preview_changes),
+                  " | ".join(str(c) for c in preview_changes))[:900])
+        has_pn = any("page number" in str(c).lower() for c in preview_changes)
+        if not has_pn:
+            msg = ("preview 的可修项里没有 Page number —— 说明这台机器上 "
+                   "checker 没有给页码绑修复动作（fix_dims 缺 page_number）")
+            print(msg)
+            (failures if strict else soft).append(msg)
+        else:
+            print("可修项含 Page number ✓")
+        # 与基准记录的可修项数量对照（数量变了说明修复范围变了）
+        exp_n = baseline.get("preview_change_count")
+        if isinstance(exp_n, int) and exp_n != len(preview_changes):
+            msg = "可修项数量与基准不同（基准 %d 项 / 实测 %d 项）" % (
+                exp_n, len(preview_changes))
+            print(msg)
+            (failures if strict else soft).append(msg)
+
+    # ---- 5. 一键修正 ----
+    step("5/6 一键修正（fix）")
     doc_out = os.path.join(workdir, "fixed.docx")
     r = run_exe(
         exe,
@@ -405,7 +444,7 @@ def main(argv=None) -> int:
     print("修正稿 %.1f KiB" % (os.path.getsize(doc_out) / 1024.0))
 
     # ---- 5. 复检 ----
-    step("5/5 复检修正稿（check again）")
+    step("6/6 复检修正稿（check again）")
     r = run_exe(exe, ["check", doc_out, "--spec", spec, "--json"], workdir, args.timeout)
     print("rc=%s timed_out=%s" % (r.rc, r.timed_out))
     after_payload = extract_json(r.out)
@@ -457,7 +496,21 @@ def main(argv=None) -> int:
 
     # ---- 不一致时取证：把修正稿的结构摊平，随注解一起发出去 ----
     if failures:
-        step("取证：修正稿结构")
+        step("取证")
+        # ① fix 回执里到底认了什么活（applied 为空 = 修正器根本没动手）
+        if isinstance(fix_payload, dict):
+            applied = (fix_payload.get("summary") or {}).get("applied")
+            line = "fix.applied=" + json.dumps(applied, ensure_ascii=False)
+            print(line[:600])
+            error(tag + "诊断 | " + line[:600])
+            if isinstance(applied, dict) and "page_number" not in applied:
+                error(tag + "诊断 | fix 回执里没有 page_number —— 修正器没执行页码这一步")
+        # ② preview 的可修项
+        if preview_changes is not None:
+            line = "preview=%d项 %s" % (len(preview_changes),
+                                       " | ".join(str(c) for c in preview_changes))
+            error(tag + "诊断 | " + line[:700])
+        # ③ 修正稿的页眉页脚结构
         for line in diagnose_docx(doc_out):
             print(line)
             error(tag + "诊断 | " + line)

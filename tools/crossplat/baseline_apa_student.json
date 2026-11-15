@@ -1,5 +1,5 @@
 {
-  "note": "Windows x64 产物（v2.3.122）跑出的基准。macOS 同版本必须逐条一致；不一致=跨平台功能性回归。",
+  "note": "Windows x64 产物（v2.3.122）跑出的基准。macOS 同版本必须逐条一致；不一致=跨平台功能性回归。 preview_change_count 来自 Windows v2.3.122 的 fix --preview。",
   "spec": "APA-Student",
   "app_version": "2.3.122",
   "produced_on": "windows-x64 (local, D://AgentSpace//_smoke//_func)",
@@ -366,5 +366,6 @@
         "Title page on its own page"
       ]
     ]
-  }
+  },
+  "preview_change_count": 13
 }
