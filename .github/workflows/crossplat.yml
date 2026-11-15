@@ -54,7 +54,24 @@ jobs:
         with:
           sparse-checkout: |
             tools/crossplat
+            src
+            VERSION
           sparse-checkout-cone-mode: false
+
+      - name: 源码诊断：页码修正到底断在哪一环
+        shell: bash
+        run: |
+          # 只用源码 + 同版本 python-docx 复现这一环，逐环打印中间值。
+          # 不需要激活码：只跑 check 并直接调用一个内部函数，不走授权门禁。
+          # 三平台都跑，输出并排一看就知道是"平台差异"还是"打包差异"。
+          set -o pipefail
+          python3 -m pip install --quiet python-docx==1.2.0 pyyaml==6.0.3 --break-system-packages 2>/dev/null \
+            || python3 -m pip install --quiet python-docx==1.2.0 pyyaml==6.0.3
+          python3 tools/crossplat/debug_page_number.py \
+            tools/crossplat/fixtures/bad_apa.docx \
+            "$RUNNER_TEMP/debug_out.docx" 2>&1 | while IFS= read -r l; do
+              echo "::notice::$l"
+            done || true
 
       - name: 下载产物 → 三步验证 → 与基准比对
         shell: bash
