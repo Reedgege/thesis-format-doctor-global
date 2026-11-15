@@ -1534,14 +1534,31 @@ def _strip_page_numbers_in_part(part) -> int:
         has_field = _para_has_page_field(p)
         if not (is_static or has_field):
             continue
+
+        # 🔴 先单独清 fldSimple 简单域：**它不是 w:r**，下面的「删 run」扫不到它。
+        # Word 自己的「插入 → 页码」生成的正是这种形态，客户原页码十有八九长这样。
+        # 只删 run 的后果：页脚那条 PAGE 域原地留着，页面上**同时出现两个页码**
+        # （页眉右上 + 页脚居中），而 stats["removed_elsewhere"] 还报"已清理"——
+        # 报告说改好了、文档里却多一个页码，比不改更糟。
+        did = False
+        for fs in list(p._p.iter(qn("w:fldSimple"))):
+            try:
+                if "PAGE" in (fs.get(qn("w:instr")) or "").upper():
+                    fs.getparent().remove(fs)
+                    did = True
+            except Exception:
+                pass
+
         if is_static:
             # 整段就是手打页码（「第 1 页」）→ 清空该段（前后缀一起去掉，否则留下「第  页」）
             for r in list(p.runs):
                 try:
                     r._r.getparent().remove(r._r)
+                    did = True
                 except Exception:
                     pass
-            removed += 1
+            if did:
+                removed += 1
             continue
         # 含 PAGE 域：看这段除了页码还有没有别的实质文字
         reside = _para_text_excl_fields(p)
@@ -1551,6 +1568,7 @@ def _strip_page_numbers_in_part(part) -> int:
             for r in list(p.runs):
                 try:
                     r._r.getparent().remove(r._r)
+                    did = True
                 except Exception:
                     pass
         else:
@@ -1559,9 +1577,11 @@ def _strip_page_numbers_in_part(part) -> int:
                     if r._r.find(qn("w:fldChar")) is not None \
                             or r._r.find(qn("w:instrText")) is not None:
                         r._r.getparent().remove(r._r)
+                        did = True
                 except Exception:
                     pass
-        removed += 1
+        if did:
+            removed += 1
     return removed
 
 

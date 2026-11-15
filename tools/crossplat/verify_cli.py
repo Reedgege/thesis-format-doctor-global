@@ -245,6 +245,36 @@ def diff_findings(expect, actual, limit: int = 12):
     return lines
 
 
+def _page_field_parts(path: str) -> tuple:
+    """统计「含 PAGE 域的页眉 part 数」与「页脚 part 数」。
+
+    用来抓「两个页码」：页眉一处 + 页脚一处同时存在时，客户打印出来每页会有两个
+    页码。这不是理论风险 —— 2026-11-15 实测过：Word「插入 → 页码」写的是
+    ``w:fldSimple`` 简单域，而清理函数只遍历 ``w:r``（fldSimple 不是 run），
+    于是页脚那条清不掉，回执却报"已清理 1 处"。
+    多分节时页眉侧会有多个 part，都算一处，不误报。
+    """
+    import zipfile
+
+    hdr = ftr = 0
+    try:
+        with zipfile.ZipFile(path) as z:
+            for n in z.namelist():
+                if not re.match(r"word/(header|footer)\d*\.xml$", n):
+                    continue
+                x = z.read(n).decode("utf-8", "replace")
+                has = (re.search(r'<w:fldSimple[^>]*w:instr="[^"]*PAGE', x, re.I)
+                       or re.search(r"<w:instrText[^>]*>\s*PAGE\b", x, re.I))
+                if has:
+                    if "/header" in n:
+                        hdr += 1
+                    else:
+                        ftr += 1
+    except Exception:
+        pass
+    return hdr, ftr
+
+
 # ---------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Cross-platform functional equivalence check")
@@ -259,7 +289,10 @@ def main(argv=None) -> int:
 
     here = os.path.dirname(os.path.abspath(__file__))
     baseline_path = args.baseline or os.path.join(here, "baseline_apa_student.json")
-    fixture_path = args.fixture or os.path.join(here, "fixtures", "bad_apa.docx")
+    # 素材来自 make_fixture.py：结构自洽（题名页 / 摘要 / 三级标题 / References 标题
+    # + 6 条条目），格式故意全错。旧的 bad_apa.docx 有条目却没 References 标题，
+    # 参考文献重排那条路径根本走不到，已被淘汰（仍留给 nuitka_repro 用）。
+    fixture_path = args.fixture or os.path.join(here, "fixtures", "paper_apa_student.docx")
 
     tag = "[%s] " % args.label
     failures = []   # 硬失败（功能回归）
@@ -594,8 +627,22 @@ def main(argv=None) -> int:
     except Exception:
         pass
 
-    # ---- 无论通过与否，都发一条修正稿结构证据 ----
-    # 为什么通过时也要发：summary 从 warn 变 pass 只说明「报告说修好了」，
+    # ---- 6b. 客户视角：每页只能有一个页码 ----
+    step("6b 页码数量（每页只许一处）")
+    hdr_n, ftr_n = _page_field_parts(doc_out)
+    print("含 PAGE 域的 part：页眉 %d 个 / 页脚 %d 个" % (hdr_n, ftr_n))
+    if hdr_n and ftr_n:
+        failures.append(
+            "页眉和页脚同时有页码（页眉 %d 处 / 页脚 %d 处）—— "
+            "客户打印出来每页会有两个页码。多半是清页脚那条时漏了 fldSimple 简单域。"
+            % (hdr_n, ftr_n)
+        )
+    elif not hdr_n and not ftr_n:
+        failures.append("修正稿里找不到任何页码（页眉页脚都没有 PAGE 域）")
+    else:
+        print("页码只在一处 ✓")
+
+    # ---- 无论通过与否，都发一条修正稿结构证据 ----    # 为什么通过时也要发：summary 从 warn 变 pass 只说明「报告说修好了」，
     # 而 2.3.122 的 mac 版恰恰是「报告说页码已改、文档里连页眉都没创建」。
     # 唯一能证明修好了的证据，是修正稿里真的存在带 PAGE 域的 header part。
     try:

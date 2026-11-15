@@ -1,21 +1,22 @@
 {
-  "note": "Windows x64 产物（v2.3.122）跑出的基准。macOS 同版本必须逐条一致；不一致=跨平台功能性回归。 preview_change_count 来自 Windows v2.3.122 的 fix --preview。",
+  "note": "Windows 侧跑出的基准（源码）。macOS / Linux 同版本必须逐条一致；不一致 = 跨平台功能性回归。素材结构自洽：题名页 / 摘要 / 多级标题 / References 标题 + 6 条条目，格式故意全错。",
   "spec": "APA-Student",
   "app_version": "2.3.122",
-  "produced_on": "windows-x64 (local, D://AgentSpace//_smoke//_func)",
-  "fixture": "tools/crossplat/fixtures/bad_apa.docx",
-  "fixture_sha256": "2134884ef6d2f96ea949ccca234b2ba217fe84219fa1361af0c8584826a854af",
-  "required_applied": ["page_number"],
+  "produced_on": "source (python -m src.main)",
+  "fixture": "tools/crossplat/fixtures/paper_apa_student.docx",
+  "fixture_sha256": "d8f2405e469c44c06945331929192236038abf15eebc2208e5c6073fb6296176",
+  "required_applied": [
+    "page_number"
+  ],
   "min_comments_added": 1,
-  "observed_comments_added": 3,
+  "observed_comments_added": 17,
   "before": {
     "summary": {
-      "pass": 9,
-      "info": 19,
-      "warn": 6,
-      "fail": 0
+      "pass": 13,
+      "info": 13,
+      "warn": 9,
+      "fail": 3
     },
-    "findings_sha256": "1287920538c810638891a0196893612933ebc1644b708fe85d3107b6b2830472",
     "findings": [
       [
         "abstract_heading",
@@ -24,12 +25,12 @@
       ],
       [
         "abstract_indent",
-        "info",
+        "pass",
         "Abstract first-line indent"
       ],
       [
         "abstract_new_page",
-        "info",
+        "warn",
         "Abstract on new page"
       ],
       [
@@ -59,28 +60,43 @@
       ],
       [
         "font",
-        "info",
+        "pass",
         "Body font"
       ],
       [
-        "font_size",
+        "font_size_by_font",
         "info",
-        "Body font size"
+        "Body text size for this font"
+      ],
+      [
+        "heading",
+        "pass",
+        "Heading levels"
       ],
       [
         "heading",
         "warn",
-        "Heading levels"
+        "Level 1 heading format"
+      ],
+      [
+        "heading",
+        "warn",
+        "Level 2 heading format"
       ],
       [
         "keywords",
-        "info",
+        "warn",
         "Keywords line"
       ],
       [
         "line_spacing",
         "info",
         "Line spacing"
+      ],
+      [
+        "margins",
+        "info",
+        "bottom margin"
       ],
       [
         "margins",
@@ -94,18 +110,13 @@
       ],
       [
         "margins",
-        "pass",
-        "bottom margin"
-      ],
-      [
-        "margins",
-        "pass",
+        "info",
         "top margin"
       ],
       [
         "page_number",
         "warn",
-        "Page number"
+        "Page number position"
       ],
       [
         "paper_size",
@@ -114,27 +125,37 @@
       ],
       [
         "reference",
-        "warn",
-        "No reference entries detected (missing References / Bibliography / Works Cited section)"
+        "info",
+        "Reference italics"
+      ],
+      [
+        "reference",
+        "pass",
+        "[APA] Detected author-year form with '(year)' (6 entries)"
       ],
       [
         "reference_hanging_indent",
-        "info",
+        "fail",
         "Reference hanging indent"
       ],
       [
         "reference_heading",
-        "info",
+        "pass",
         "Reference heading format"
       ],
       [
         "reference_new_page",
-        "info",
+        "fail",
         "References on new page"
       ],
       [
+        "reference_sort",
+        "pass",
+        "Reference list order"
+      ],
+      [
         "reference_spacing",
-        "info",
+        "fail",
         "Reference entry line spacing"
       ],
       [
@@ -164,7 +185,7 @@
       ],
       [
         "text_new_page",
-        "info",
+        "warn",
         "Text starts on a new page"
       ],
       [
@@ -191,26 +212,25 @@
   },
   "after": {
     "summary": {
-      "pass": 19,
-      "info": 13,
-      "warn": 2,
+      "pass": 32,
+      "info": 6,
+      "warn": 0,
       "fail": 0
     },
-    "findings_sha256": "fd7440e06d78588ad9c8ad746a84ecd962f54a680bf80ba22a21922eaf75c288",
     "findings": [
       [
         "abstract_heading",
-        "info",
+        "pass",
         "Abstract heading"
       ],
       [
         "abstract_indent",
-        "info",
+        "pass",
         "Abstract first-line indent"
       ],
       [
         "abstract_new_page",
-        "info",
+        "pass",
         "Abstract on new page"
       ],
       [
@@ -244,18 +264,28 @@
         "Body font"
       ],
       [
-        "font_allowlist",
-        "pass",
-        "Body font (APA allowlist)"
+        "font_size_by_font",
+        "info",
+        "Body text size for this font"
       ],
       [
         "heading",
-        "warn",
+        "pass",
         "Heading levels"
       ],
       [
+        "heading",
+        "pass",
+        "Level 1 heading format"
+      ],
+      [
+        "heading",
+        "pass",
+        "Level 2 heading format"
+      ],
+      [
         "keywords",
-        "info",
+        "pass",
         "Keywords line"
       ],
       [
@@ -295,27 +325,37 @@
       ],
       [
         "reference",
-        "warn",
-        "No reference entries detected (missing References / Bibliography / Works Cited section)"
+        "info",
+        "Reference italics"
+      ],
+      [
+        "reference",
+        "pass",
+        "[APA] Detected author-year form with '(year)' (6 entries)"
       ],
       [
         "reference_hanging_indent",
-        "info",
+        "pass",
         "Reference hanging indent"
       ],
       [
         "reference_heading",
-        "info",
+        "pass",
         "Reference heading format"
       ],
       [
         "reference_new_page",
-        "info",
+        "pass",
         "References on new page"
       ],
       [
+        "reference_sort",
+        "pass",
+        "Reference list order"
+      ],
+      [
         "reference_spacing",
-        "info",
+        "pass",
         "Reference entry line spacing"
       ],
       [
@@ -345,7 +385,7 @@
       ],
       [
         "text_new_page",
-        "info",
+        "pass",
         "Text starts on a new page"
       ],
       [
@@ -370,5 +410,46 @@
       ]
     ]
   },
-  "preview_change_count": 13
+  "preview_change_count": 16,
+  "preview_changes": [
+    "Top margin: 1.25\" → 1.0\"",
+    "Bottom margin: 1.25\" → 1.0\"",
+    "Left margin: 1.25\" → 1.0\"",
+    "Right margin: 1.25\" → 1.0\"",
+    "Line spacing: 1.0x → 2.0x",
+    "First-line indent: 0.0\" → 0.5\"",
+    "Page number: footer (center) → top-right of the header",
+    "Abstract on new page: same page → new page",
+    "Title page on its own page: same page → own page",
+    "Title page position and spacing: title 3 lines (72.0 pt) below the top margin; one blank line (24.0 pt) kept after the title",
+    "Body starts on a new page: continues after abstract → new page",
+    "Reference hanging indent: 0.0\" → 0.5\"",
+    "Reference entry line spacing: 1.0x → 2.0x",
+    "References on new page: on the same page → new page",
+    "Level 1 heading: Left → Center, space before 24pt → 0pt, line spacing 1x → 2x",
+    "Level 2 heading: space before 10pt → 0pt, line spacing 1x → 2x"
+  ],
+  "observed_applied": [
+    "first_line_indent_in",
+    "keywords",
+    "line_spacing",
+    "margins",
+    "page_number",
+    "text_new_page",
+    "title_page_layout",
+    "title_page_new_page"
+  ],
+  "observed_changes": [
+    "Margins → top 1.0″, bottom 1.0″, left 1.0″, right 1.0″",
+    "Line spacing → 2.0x",
+    "Body first-line indent → 0.5″",
+    "Page number → top-right of the header",
+    "Title page → now on its own page",
+    "Title page spacing → title moved to sit 3 line(s) below the top margin (72 pt); extra paragraph spacing on the title page cleared to 0 pt",
+    "Body text → the first paragraph after the abstract starts on a new page",
+    "Keywords line → label set in italics, 0.5″ indent",
+    "References → APA (hanging indent 0.5″, Author-Year)",
+    "Headings excluded from body-text formatting (hierarchy preserved)"
+  ],
+  "soft_errors": null
 }

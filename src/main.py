@@ -329,19 +329,62 @@ def _summary_lines(summary: dict) -> list:
     if page:
         margins = {k.replace("margin_", "").replace("_in", ""): v
                    for k, v in page.items() if k.startswith("margin_") and v is not None}
-        if margins:
+        # 🔴 这三条必须看 applied（真正改了什么），不能看 page（目标是什么）。
+        # 旧写法看的是 page：只要客户在规范下拉里选了内置规范，无论改没改都会打印
+        # 「Body font → Times New Roman 12pt」「Line spacing → 2.0x」。
+        # 实测踩过：文档用 Arial 10pt，APA §2.19 允许 Arial 但配对字号应为 11pt，
+        # 按既有裁定（C-4）字体不做自动替换 → 一个字都没改，而客户拿到的改动清单
+        # 上赫然写着「正文字体已改为 Times New Roman 12pt」。打开文档一看还是 Arial，
+        # 从此不再信任这份报告。同函数后面几条一直是看 applied 的，只有这里口径不一。
+        if applied.get("margins") is not None and margins:
             out.append("Margins → " + ", ".join(f"{s} {v}″" for s, v in margins.items()))
-        if page.get("font_family"):
-            sz = f" {page['font_size_pt']}pt" if page.get("font_size_pt") else ""
-            out.append(f"Body font → {page['font_family']}{sz}")
-        if page.get("line_spacing") is not None:
-            out.append(f"Line spacing → {page['line_spacing']}x")
+        if applied.get("font_family"):
+            sz = f" {applied['font_size_pt']}pt" if applied.get("font_size_pt") else ""
+            out.append(f"Body font → {applied['font_family']}{sz}")
+        if applied.get("line_spacing") is not None:
+            out.append(f"Line spacing → {applied['line_spacing']}x")
         if applied.get("body_alignment"):
             out.append(f"Body alignment → {applied['body_alignment']}")
         if applied.get("first_line_indent_in") is not None:
             out.append(f"Body first-line indent → {applied['first_line_indent_in']}″")
         if applied.get("space_after_pt") is not None:
             out.append(f"Space after paragraph → {applied['space_after_pt']}pt")
+    # 页码 / 页眉短标题 / 首页结构：这几项客户一打开文档就看得见，
+    # 以前一条都没列（只写进了 applied），客户会以为页码没动。
+    # 一律只读 applied —— 没改就一个字都不说。
+    _pn = applied.get("page_number")
+    if isinstance(_pn, dict) and (_pn.get("added") or _pn.get("replaced")
+                                  or _pn.get("aligned_only")):
+        _loc = _pn.get("location") or "header"
+        _al = _pn.get("alignment") or "right"
+        _where = "top-right of the header" if (_loc == "header" and _al == "right") \
+            else "%s, %s-aligned" % (_loc, _al)
+        out.append(f"Page number → {_where}")
+    if applied.get("running_head"):
+        out.append("Running head → short title placed in the header next to the page number")
+    if applied.get("title_page_new_page"):
+        out.append("Title page → now on its own page")
+    _tl = applied.get("title_page_layout")
+    if isinstance(_tl, dict) and _tl.get("changed"):
+        _bits = []
+        if _tl.get("lines") is not None:
+            _bits.append("title moved to sit %g line(s) below the top margin "
+                         "(%g pt)" % (float(_tl["lines"]), float(_tl.get("want_pt") or 0)))
+        if _tl.get("zeroed"):
+            _bits.append("extra paragraph spacing on the title page cleared to 0 pt")
+        out.append("Title page spacing → " + "; ".join(_bits))
+    if applied.get("text_new_page"):
+        out.append("Body text → the first paragraph after the abstract starts on a new page")
+    if applied.get("abstract_new_page"):
+        out.append("Abstract → starts on a new page")
+    _kw = applied.get("keywords")
+    if isinstance(_kw, dict):
+        _bits = []
+        if _kw.get("label_italic"):
+            _bits.append("label set in italics")
+        if _kw.get("indent_in") is not None:
+            _bits.append("%g″ indent" % float(_kw["indent_in"]))
+        out.append("Keywords line → " + (", ".join(_bits) or "formatted"))
     if summary.get("reference_style"):
         kind = "Numbered [n]" if summary.get("reference_numbered") else "Author-Year"
         out.append(f"References → {summary['reference_style']}"
@@ -372,7 +415,14 @@ def _summary_lines(summary: dict) -> list:
         out.append("Equation font size → %g pt" % applied["equation_size_pt"])
     if applied.get("equation_line_spacing") is not None:
         out.append("Equation line spacing → %gx" % applied["equation_line_spacing"])
-    out.append("Heading paragraphs skipped (heading size/font unchanged, original visual hierarchy preserved)")
+    # 这条只在**真有改动**时出现：什么都没改却列出「跳过了标题」，
+    # 客户会以为自己收到了一份改过的文档。
+    #
+    # 措辞也跟着改了：旧文案写 "heading size/font unchanged"，但实测标题是会被
+    # 按规范改字号、并套用正文字体的（APA 一级 14pt / 二级 13pt），并不"未改"。
+    # 真正一直成立的是「没把标题当正文处理」（不刷首行缩进、不刷正文行距）。
+    if applied:
+        out.append("Headings excluded from body-text formatting (hierarchy preserved)")
     return out
 
 
