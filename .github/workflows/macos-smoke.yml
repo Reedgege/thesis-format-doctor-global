@@ -21,11 +21,7 @@ name: macOS launch smoke
 # 解压/看架构/启动全在一个 step 里，不跨 step 传变量。
 
 on:
-  # 改本文件时自动跑一次（省得手点），三个产品一起验
-  push:
-    paths:
-      - ".github/workflows/macos-smoke.yml"
-      - "tools/crossplat/**"
+  # 只手动触发：这是启动级验收，挂 push 会在迭代期刷失败邮件。
   workflow_dispatch:
     inputs:
       tag:
