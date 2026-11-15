@@ -21,6 +21,10 @@ on:
         description: "指定 tag（留空=最新 release）"
         required: false
         default: ""
+      build_from_source:
+        description: "同时从源码构建产物并验证（true/false，约 10 分钟）"
+        required: false
+        default: "false"
 
 jobs:
   functional:
@@ -146,6 +150,73 @@ jobs:
             --asset "${{ matrix.asset }}" \
             --exe "${{ matrix.exe }}" \
             $EXTRA
+
+  # ---------------------------------------------------------------------------
+  # 从当前源码构建产物，就地跑三步功能验证
+  #
+  # 为什么要它：crossplat 的 functional job 验的是**已发布**的包，改完代码要等发版
+  # 才能验；而 mac 版页码这个 bug 恰恰只能靠"真打包产物"才暴露（源码跑是好的）。
+  # 这个 job 用与发版完全相同的 build.py 构建，然后立刻验 —— 不占版本号、可反复跑，
+  # 修法是否真管用当场就有答案。
+  # ---------------------------------------------------------------------------
+  build-verify:
+    name: 构建并验证 ${{ matrix.label }}
+    if: github.event.inputs.build_from_source == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            bin: paperformatpro.app/Contents/MacOS/paperformatpro
+          - os: windows-latest
+            label: Windows
+            bin: paperformatpro/paperformatpro.exe
+          - os: ubuntu-latest
+            label: Linux
+            bin: paperformatpro/paperformatpro
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: 装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --upgrade nuitka
+
+      - name: Tk 运行时（Linux）
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tk tcl
+
+      - name: 生成 icon.icns（macOS）
+        if: matrix.os == 'macos-latest'
+        run: |
+          python -m pip install --quiet pillow
+          python -c "from PIL import Image; Image.open('assets/icon.png').save('assets/icon.icns', format='ICNS', sizes=[(16,16),(32,32),(64,64),(128,128),(256,256),(512,512),(1024,1024)])"
+
+      - name: 用 build.py 构建（与发版同一套参数）
+        run: python build.py
+
+      - name: 功能验证：体检 → 预览 → 修正 → 复检
+        shell: bash
+        run: |
+          set -o pipefail
+          BIN="dist/${{ matrix.bin }}"
+          [ -x "$BIN" ] || { ls -R dist | head -40; echo "::error::找不到构建产物 $BIN"; exit 1; }
+          ls -l "$BIN"
+          PY=$(command -v python3 2>/dev/null || command -v python)
+          "$PY" tools/crossplat/verify_cli.py \
+            --exe "$BIN" \
+            --label "${{ matrix.label }}(源码构建)" \
+            --workdir "$RUNNER_TEMP/build_verify"
 
   # ---------------------------------------------------------------------------
   # 最小复现：只用 Nuitka 打包 python-docx，验证「创建页眉」在产物里能不能成

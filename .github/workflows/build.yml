@@ -439,6 +439,35 @@ jobs:
         shell: bash
         run: python tools/verify_bundle.py dist
 
+      # 功能验证：拿刚构建出来的产物跑一份真论文的「体检 → 预览 → 一键修正 → 复检」，
+      # 结果与 Windows 基准逐条比对。
+      #
+      # 为什么必须做：上面那些自检只证明「包能起来、资源齐全」。2.3.122 的
+      # macOS / Linux 版因此一路绿灯发出去，实际上「页码修正」完全失效且不报错
+      # （fix 返回成功、报告说页码已改，文档里连页眉都没创建）—— 根因是打包后
+      # python-docx 的 __file__ 变成相对路径，读不到自带模板，异常又被 except 吞掉。
+      # 只有真跑一遍业务逻辑才照得出来。见 tools/crossplat/verify_cli.py。
+      - name: Functional check (real document, vs Windows baseline)
+        shell: bash
+        run: |
+          set -o pipefail
+          case "${{ matrix.os }}" in
+            macos)   BIN="dist/paperformatpro.app/Contents/MacOS/paperformatpro" ;;
+            windows) BIN="dist/paperformatpro/paperformatpro.exe" ;;
+            *)       BIN="dist/paperformatpro/paperformatpro" ;;
+          esac
+          if [ ! -e "$BIN" ]; then
+            echo "::error::找不到构建产物 $BIN"
+            ls -R dist 2>/dev/null | head -40
+            exit 1
+          fi
+          ls -l "$BIN"
+          PY=$(command -v python3 2>/dev/null || command -v python)
+          "$PY" tools/crossplat/verify_cli.py \
+            --exe "$BIN" \
+            --label "build-${{ matrix.os }} ($(uname -m 2>/dev/null || echo win))" \
+            --workdir "$RUNNER_TEMP/func_check"
+
       # 商店包：MSIX（微软商店 / 企业内部分发要的格式）。
       # 只在 windows 上打；商店上传要**未签名**包（微软上传时自己签），
       # 所以这里不签名、不碰任何证书 —— 也就没有证书要管。
