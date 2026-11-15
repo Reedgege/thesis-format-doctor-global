@@ -59,6 +59,8 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: 源码诊断：页码修正到底断在哪一环
+        # 诊断是辅助手段，绝不能让它的失败掩盖真正的功能验证结果
+        continue-on-error: true
         shell: bash
         run: |
           # 只用源码 + 同版本 python-docx 复现这一环，逐环打印中间值。
@@ -70,10 +72,12 @@ jobs:
           # fix_dims 之前的内容，误以为脚本挂了）。
           set -o pipefail
           # 🔴 Windows runner 上没有 python3（只有 python），统一探测一次
-          PY=$(command -v python3 2>/dev/null || command -v python)
-          echo "PY = $PY"
+          PY=$(command -v python3 2>/dev/null || command -v python || true)
+          if [ -z "$PY" ]; then PY=python; fi
+          echo "PY = $PY ($("$PY" --version 2>&1 || echo 无法执行))"
           "$PY" -m pip install --quiet python-docx==1.2.0 pyyaml==6.0.3 2>/dev/null \
-            || "$PY" -m pip install --quiet --break-system-packages python-docx==1.2.0 pyyaml==6.0.3
+            || "$PY" -m pip install --quiet --break-system-packages python-docx==1.2.0 pyyaml==6.0.3 \
+            || echo "::warning::pip 安装 python-docx 失败，继续用系统已有的版本"
           D="$RUNNER_TEMP/dbg.txt"
           "$PY" tools/crossplat/debug_page_number.py \
             tools/crossplat/fixtures/bad_apa.docx \
@@ -93,8 +97,9 @@ jobs:
           set -o pipefail
           EXTRA=""
           if [ -n "${TAG_INPUT:-}" ]; then EXTRA="--tag $TAG_INPUT"; fi
-          PY=$(command -v python3 2>/dev/null || command -v python)
-          echo "PY = $PY"
+          PY=$(command -v python3 2>/dev/null || command -v python || true)
+          if [ -z "$PY" ]; then PY=python; fi
+          echo "PY = $PY ($("$PY" --version 2>&1 || echo 无法执行))"
           "$PY" tools/crossplat/fetch_and_verify.py \
             --repo Reedgege/thesis-format-doctor-global \
             --label "${{ matrix.label }} ($(uname -m 2>/dev/null || echo win))" \
@@ -115,6 +120,8 @@ jobs:
   # ---------------------------------------------------------------------------
   nuitka-repro:
     name: Nuitka 最小复现 ${{ matrix.label }}
+    # 纯诊断 job：结论只用于定位，不该把流水线整体判红
+    continue-on-error: true
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -138,10 +145,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          PY=$(command -v python3 2>/dev/null || command -v python)
-          echo "PY = $PY"
+          PY=$(command -v python3 2>/dev/null || command -v python || true)
+          if [ -z "$PY" ]; then PY=python; fi
+          echo "PY = $PY ($("$PY" --version 2>&1 || echo 无法执行))"
           "$PY" -m pip install --quiet nuitka python-docx==1.2.0 2>/dev/null \
-            || "$PY" -m pip install --quiet --break-system-packages nuitka python-docx==1.2.0
+            || "$PY" -m pip install --quiet --break-system-packages nuitka python-docx==1.2.0 \
+            || { echo "::error::pip 安装 nuitka 失败"; exit 1; }
           cd tools/crossplat/nuitka_repro
           "$PY" -m nuitka --standalone --assume-yes-for-downloads \
             --output-dir=build repro.py > /tmp/compile.log 2>&1 \
