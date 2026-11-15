@@ -401,6 +401,37 @@ jobs:
           fi
           echo "OK AppImage launches"
 
+      # Windows runner 默认 cp1252，中文会炸；见 build.py 同款兜底。
+      # macOS 打包完**真启动一次**：之前只有「打包成功 + 资源清单校验」，
+      # 从没验证过它能不能起来（2026-11-15 首次实测：arm64 二进制存活 20 秒）。
+      # 直接执行 .app 内的二进制，活过 20 秒算通过；起不来就让发版红。
+      - name: Smoke test (macOS — the .app actually launches)
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -o pipefail
+          APP=$(find dist -maxdepth 2 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "::error::dist 里没有 .app"; exit 1; fi
+          APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
+          EXE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Contents/Info.plist" 2>/dev/null)
+          if [ -z "$EXE" ]; then EXE=$(basename "$APP" .app); fi
+          BIN="$APP/Contents/MacOS/$EXE"
+          echo "BIN = $BIN"
+          ls -l "$BIN"
+          echo "archs = $(lipo -archs "$BIN" 2>/dev/null || echo unknown)"
+          "$BIN" > /tmp/mac.log 2>&1 &
+          PID=$!
+          sleep 20
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null || true
+            echo "OK: .app launches and stays alive for 20s (pid $PID)"
+            exit 0
+          fi
+          echo "the .app exited immediately; last lines of its output:"
+          tail -30 /tmp/mac.log || true
+          echo "::error::macOS .app does not launch"
+          exit 1
+
       # 构建后自检：运行时资源（图标 / AI 问卷模板 / VERSION）必须真的进了产物。
       # 姊妹项目导师版真栽过 —— build.py 漏数据目录，打包版「二维码不显示、水印图
       # 丢失」却能一路绿灯发出去（读取方都有 isfile 守卫 → 全程静默）。
