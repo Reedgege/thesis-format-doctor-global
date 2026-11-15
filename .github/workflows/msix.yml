@@ -195,7 +195,9 @@ jobs:
             Write-Host $out
             $out | Out-File -FilePath build/diag.txt -Encoding utf8
             if ($code -ne 0) { throw ("make_msix.py 退出码 " + $code + "`n" + $out) }
-            Get-Item "build/$env:PRODUCT.msix" | Format-List Name, Length
+            $msix = Get-Item "build/$env:PRODUCT.msix"
+            # ::notice:: 注解不需要鉴权，是我唯一能离线读到的成功遥测
+            Write-Host ("::notice::.msix 打好了：{0}  {1:N2} MiB" -f $msix.Name, ($msix.Length / 1MB))
           } catch {
             Show-Fail "打包失败" $_
             throw
@@ -267,12 +269,14 @@ jobs:
             $pkg = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $pfn }
             if (-not $pkg) { throw "包没装上（Get-AppxPackage 查不到 $pfn）" }
             Write-Host "已安装：$($pkg.PackageFullName)"
+            Write-Host "::notice::安装成功：$($pkg.PackageFullName)  安装位置：$($pkg.InstallLocation)"
             # 通过 AppsFolder 启动，等价于用户点开始菜单里的图标
             Start-Process "shell:AppsFolder\$pfn!App"
             Start-Sleep -Seconds 25
             $proc = Get-Process -Name $exe -ErrorAction SilentlyContinue
             if (-not $proc) { throw "装上了但进程没起来 —— 这条链还没通" }
             Write-Host "OK 进程在跑：$($proc[0].ProcessName) (PID $($proc[0].Id))"
+            Write-Host "::notice::启动成功：$($proc[0].ProcessName) 存活 25 秒仍在前台，PID $($proc[0].Id)"
             Stop-Process -Id $proc[0].Id -Force
             "### ✅ MSIX 探路通过：打包 → 签名 → 安装 → 启动 全通（$($pkg.PackageFullName)）" |
               Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
