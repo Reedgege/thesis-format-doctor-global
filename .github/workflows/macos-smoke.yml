@@ -9,6 +9,10 @@ name: macOS smoke
 # 而 CI 里 curl 下载的文件不带 quarantine 属性）。这一条只能真机验。
 
 on:
+  # 改本文件时自动跑一次（省得手点），默认参数打的是最新那个 tag
+  push:
+    paths:
+      - ".github/workflows/macos-smoke.yml"
   workflow_dispatch:
     inputs:
       tag:
