@@ -1,0 +1,44 @@
+{
+  "_note": [
+    "MSIX 打包参数：每个产品一份。Identity/Name 与 Publisher 必须与 Partner Center",
+    "「产品标识」逐字符一致，改错一个字 makeappx 能打出来但商店会拒。",
+    "pfn 只做留档参考，打包时不用。",
+    "中文名的产品，后台会把 Identity/Name 分配成 Reedskill.<哈希> 的形式，正常。"
+  ],
+  "paperformatpro": {
+    "label": "海外版 PaperFormat Pro",
+    "identity_name": "Reedskill.PaperFormatPro",
+    "publisher": "CN=EE808675-19B8-40DB-B0B1-AA1DA391F891",
+    "publisher_display_name": "Reedskill",
+    "display_name": "PaperFormat Pro",
+    "short_name": "PaperFormat Pro",
+    "description": "Check and fix thesis formatting against APA, MLA and IEEE styles.",
+    "lang": "en-us",
+    "executable": "paperformatpro.exe",
+    "pfn": "Reedskill.PaperFormatPro_v279h4yy6sm7g"
+  },
+  "mdf-stu": {
+    "label": "学生版 文档格式先生",
+    "identity_name": "Reedskill.630551E4884DA",
+    "publisher": "CN=EE808675-19B8-40DB-B0B1-AA1DA391F891",
+    "publisher_display_name": "Reedskill",
+    "display_name": "文档格式先生",
+    "short_name": "文档格式先生",
+    "description": "模板驱动的论文格式检查与一键修正工具。",
+    "lang": "zh-cn",
+    "executable": "MDF-Stu.exe",
+    "pfn": "Reedskill.630551E4884DA_v279h4yy6sm7g"
+  },
+  "mdf-advisor": {
+    "label": "导师版 文档格式先生·导师版",
+    "identity_name": "Reedskill.361659863A1F",
+    "publisher": "CN=EE808675-19B8-40DB-B0B1-AA1DA391F891",
+    "publisher_display_name": "Reedskill",
+    "display_name": "文档格式先生·导师版",
+    "short_name": "文档格式先生 导师版",
+    "description": "导师用：批量检查学生论文格式，生成带批注的副本与检查报告。",
+    "lang": "zh-cn",
+    "executable": "MDF-Advisor.exe",
+    "pfn": "Reedskill.361659863A1F_v279h4yy6sm7g"
+  }
+}

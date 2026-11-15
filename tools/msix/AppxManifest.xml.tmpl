@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX 清单模板。占位符由 tools/make_msix.py 替换，不要手改成实际值。
+
+  🔴 三条硬规则（错一条 makeappx 或商店校验就会拒）：
+    1. Identity/@Name、Identity/@Publisher 必须与 Partner Center「产品标识」里
+       那两行**逐字符一致**；
+    2. Version 必须是四段（Major.Minor.Build.Revision），我们的 VERSION 是三段，
+       打包脚本会补一个 .0；
+    3. 桌面程序（Nuitka/Python 打出来的）必须声明 EntryPoint=Windows.FullTrustApplication
+       且申请 rescap:runFullTrust，否则跑不出沙盒、读写用户文件与联网都会受限。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity Name="@IDENTITY_NAME@"
+            Publisher="@PUBLISHER@"
+            Version="@VERSION@"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>@DISPLAY_NAME@</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                        MinVersion="10.0.17763.0"
+                        MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="@LANG@" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+                 Executable="@EXECUTABLE@"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="@DISPLAY_NAME@"
+        Description="@DESCRIPTION@"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png"
+          ShortName="@SHORT_NAME@" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#0F5C4E" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

@@ -1,0 +1,157 @@
+name: MSIX probe
+
+# 探路用工作流，**不参与正式发版**。
+# 目的只有一个：证明「现有 Windows 产物 → .msix → 装上 → 能启动」这条链是通的，
+# 跑通之后再谈上传商店。正式发版仍在 build.yml 里，两边互不干扰。
+#
+# 为什么单独一个文件：build.yml 已经在发 6 个资产，Assets 清单、发版清单、
+# R2 备料脚本、站点 SHA 表全是按 6 个写的。往里面塞第 7 个产物会牵动四处，
+# 探路阶段不值得冒这个险。
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: "products.json 里的产品键"
+        required: true
+        default: "paperformatpro"
+        type: choice
+        options:
+          - paperformatpro
+          - mdf-stu
+          - mdf-advisor
+      tag:
+        description: "从哪个 Release 取 Windows 包（如 v2.3.122）"
+        required: true
+        default: "v2.3.122"
+      repo:
+        description: "产物所在的仓库（owner/repo）"
+        required: true
+        default: "Reedgege/thesis-format-doctor-global"
+      asset_name:
+        description: "Release 里的 Windows 包文件名"
+        required: true
+        default: "paperformatpro-windows-v2.3.122.zip"
+  # 改打包脚本或本文件时自动跑一次，省得每次手点
+  push:
+    paths:
+      - "tools/make_msix.py"
+      - "tools/msix/**"
+      - ".github/workflows/msix.yml"
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    env:
+      PRODUCT: ${{ inputs.product || 'paperformatpro' }}
+      TAG: ${{ inputs.tag || 'v2.3.122' }}
+      REL_REPO: ${{ inputs.repo || 'Reedgege/thesis-format-doctor-global' }}
+      ASSET: ${{ inputs.asset_name || 'paperformatpro-windows-v2.3.122.zip' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # GitHub 的 windows 镜像自带 Windows SDK，makeappx.exe 就在 Kits 目录下。
+      # 这一步把路径写进 GITHUB_ENV，后面统一用 $env:MAKEAPPX。
+      - name: 定位 makeappx / signtool
+        shell: powershell
+        run: |
+          $kits = @("${env:ProgramFiles(x86)}\Windows Kits\10\bin", "$env:ProgramFiles\Windows Kits\10\bin")
+          $ma = Get-ChildItem -Path $kits -Filter makeappx.exe -Recurse -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending | Select-Object -First 1
+          $st = Get-ChildItem -Path $kits -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $ma) { Write-Error "镜像里没有 makeappx.exe"; exit 1 }
+          Write-Host "makeappx: $($ma.FullName)"
+          Write-Host "signtool: $($st.FullName)"
+          "MAKEAPPX=$($ma.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "SIGNTOOL=$($st.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: 下载 Release 里的 Windows 包
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build/download | Out-Null
+          $url = "https://github.com/$env:REL_REPO/releases/download/$env:TAG/$env:ASSET"
+          Write-Host "下载 $url"
+          curl.exe -fL --retry 3 -o "build/download/$env:ASSET" $url
+          if ($LASTEXITCODE -ne 0) { Write-Error "下载失败"; exit 1 }
+          Get-Item "build/download/$env:ASSET" | Format-List Name, Length
+
+      - name: 解压出产物目录
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem build/download -Filter *.zip | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath build/payload -Force
+          Get-ChildItem build/payload | Select-Object -First 8 Name, Length
+
+      - name: 打 .msix
+        shell: powershell
+        run: |
+          python tools/make_msix.py --product "$env:PRODUCT" `
+            --payload build/payload --makeappx "$env:MAKEAPPX" `
+            --out "build/$env:PRODUCT.msix"
+          if ($LASTEXITCODE -ne 0) { Write-Error "打包失败"; exit 1 }
+
+      # 商店上传不需要自己签名（微软会签），但**本机安装验证必须有签名**，
+      # 所以这里造一张自签证书只为跑通安装。证书绝不用于对外分发。
+      - name: 自签 + 签名（仅用于本机验证）
+        shell: powershell
+        run: |
+          $p = Get-Content tools/msix/products.json -Raw | ConvertFrom-Json
+          $prod = $p.PSObject.Properties["$env:PRODUCT"].Value
+          $publisher = $prod.publisher
+          Write-Host "Publisher: $publisher"
+          $cert = New-SelfSignedCertificate -Type Custom -Subject $publisher `
+            -KeyUsage DigitalSignature -FriendlyName "msix-probe" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          $pwd = ConvertTo-SecureString -String "probe" -Force -AsPlainText
+          $pfx = Join-Path $env:RUNNER_TEMP "probe.pfx"
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $pwd | Out-Null
+          & $env:SIGNTOOL sign /fd SHA256 /a /f $pfx /p "probe" "build/$env:PRODUCT.msix"
+          if ($LASTEXITCODE -ne 0) { Write-Error "签名失败"; exit 1 }
+          # 让本机信任这张证书，否则 Add-AppxPackage 会以「不受信任」拒绝
+          $cer = Join-Path $env:RUNNER_TEMP "probe.cer"
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" | Out-Null
+
+      - name: 装上去并启动
+        shell: powershell
+        run: |
+          Add-AppxPackage -Path "build/$env:PRODUCT.msix"
+          $p = Get-Content tools/msix/products.json -Raw | ConvertFrom-Json
+          $prod = $p.PSObject.Properties["$env:PRODUCT"].Value
+          $pfn = $prod.pfn
+          $exe = $prod.executable -replace '\.exe$', ''
+          Write-Host "PFN: $pfn  exe: $exe"
+          $pkg = Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $pfn }
+          if (-not $pkg) { Write-Error "包没装上"; exit 1 }
+          Write-Host "已安装：$($pkg.PackageFullName)"
+          # 通过 AppsFolder 启动，等价于用户点开始菜单里的图标
+          Start-Process "shell:AppsFolder\$pfn!App"
+          Start-Sleep -Seconds 25
+          $proc = Get-Process -Name $exe -ErrorAction SilentlyContinue
+          if (-not $proc) {
+            Write-Error "装上了但进程没起来 —— 这条链还没通"
+            exit 1
+          }
+          Write-Host "OK 进程在跑：$($proc[0].ProcessName) (PID $($proc[0].Id))"
+          Stop-Process -Id $proc[0].Id -Force
+
+      - name: 收工清理
+        if: always()
+        shell: powershell
+        run: |
+          $p = Get-Content tools/msix/products.json -Raw | ConvertFrom-Json
+          $prod = $p.PSObject.Properties["$env:PRODUCT"].Value
+          Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq $prod.pfn } |
+            Remove-AppxPackage -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msix-probe-${{ inputs.product || 'paperformatpro' }}
+          path: build/*.msix
+          retention-days: 7
