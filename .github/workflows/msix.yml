@@ -25,9 +25,9 @@ on:
           - mdf-stu
           - mdf-advisor
       tag:
-        description: "从哪个 Release 取 Windows 包（如 v2.3.122）"
+        description: "从哪个 Release 取 Windows 包（如 v2.3.123）"
         required: true
-        default: "v2.3.122"
+        default: "v2.3.123"
       repo:
         description: "产物所在的仓库（owner/repo）"
         required: true
@@ -54,7 +54,7 @@ jobs:
     runs-on: windows-latest
     env:
       PRODUCT: ${{ inputs.product || 'paperformatpro' }}
-      TAG: ${{ inputs.tag || 'v2.3.122' }}
+      TAG: ${{ inputs.tag || 'v2.3.123' }}
       REL_REPO: ${{ inputs.repo || 'Reedgege/thesis-format-doctor-global' }}
       ASSET: ${{ inputs.asset_name || '' }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
