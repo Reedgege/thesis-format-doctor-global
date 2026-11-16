@@ -73,12 +73,22 @@ jobs:
               print("::error::selfcheck produced no JSON:\n%s" % raw[:800])
               sys.exit(1)
           d = json.loads(raw[i:j + 1])
-          bad = {k: d.get(k) for k in ("header_create", "engine_import")
-                 if str(d.get(k)) != "ok"}
-          if bad:
-              print("::error::selfcheck failed: %s" % bad)
+          # 这个 selfcheck 的字段集与国内版不同：没有 engine_import，
+          # 有的是 blank_doc（空白文档能建）、header_create（页眉能建）、
+          # header_template_found（模板落点）、soft_errors（被兜住的异常）。
+          problems = []
+          if str(d.get("header_create")) != "ok":
+              problems.append("header_create=%r" % (str(d.get("header_create"))[:400],))
+          if d.get("blank_doc") not in (None, "ok"):
+              problems.append("blank_doc=%r" % (str(d.get("blank_doc"))[:400],))
+          if problems:
+              print("::error::selfcheck failed: %s" % "; ".join(problems))
               sys.exit(1)
-          print("selfcheck ok: templates found, header creatable, engine importable")
+          if not d.get("header_template_found"):
+              print("::warning::selfcheck found no header template on disk "
+                    "(python-docx may still resolve it natively)")
+          print("selfcheck ok: blank doc creatable, header creatable, "
+                "templates at %s" % (d.get("header_template_found") or "?"))
           PY
 
       # Customer-path check: check -> fix -> recheck, with structural evidence.
