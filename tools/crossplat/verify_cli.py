@@ -317,7 +317,10 @@ def main(argv=None) -> int:
     spec = args.spec or baseline.get("spec") or "APA-Student"
     expect_version = str(baseline.get("app_version") or "")
 
-    workdir = args.workdir or tempfile.mkdtemp(prefix="crossplat_")
+    # 绝对路径：产物以 cwd=<workdir> 调起，相对的 workdir 会让参数里的
+    # <workdir>/input.docx 叠成 <workdir>/<workdir>/input.docx。
+    workdir = (os.path.abspath(args.workdir) if args.workdir
+               else tempfile.mkdtemp(prefix="crossplat_"))
     os.makedirs(workdir, exist_ok=True)
     # 输入文档放在独立目录，避免 fix 的产物覆盖仓库里的基准文档
     doc_in = os.path.join(workdir, "input.docx")
