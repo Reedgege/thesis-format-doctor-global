@@ -1,0 +1,103 @@
+name: macOS functional test (real app + evidence)
+run-name: macOS instance test ${{ inputs.note }}
+
+# Why a separate workflow
+# -----------------------
+# `build.yml` only runs on a tag and produces installers for three platforms.
+# What we need here is evidence for one question: does the macOS build actually
+# fix a real paper? So this runs macOS only, builds the app, runs the functional
+# check, and uploads the input and output .docx files as artifacts.
+#
+# It tests the real packaged app (the Nuitka .app), not the source tree. Packaging
+# is where path and bundled-resource bugs live: an earlier macOS build could not
+# find python-docx's bundled templates, silently failed to insert a page number,
+# and still reported success.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Free-text note shown in the run name"
+        required: false
+        default: ""
+
+jobs:
+  mactest:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install nuitka python-docx pillow
+
+      - name: Generate icon.icns
+        run: |
+          python -c "from PIL import Image; Image.open('assets/icon.png').save('assets/icon.icns', format='ICNS', sizes=[(16,16),(32,32),(64,64),(128,128),(256,256),(512,512),(1024,1024)])"
+          ls -la assets/icon.icns
+
+      - name: Build (Nuitka standalone)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python build.py
+          ls -la dist/
+
+      # Selfcheck first: can the bundled app locate python-docx's templates, and can
+      # it actually create a header? If this fails, everything below is wasted time.
+      - name: Selfcheck (bundled runtime inside the .app)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/paperformatpro.app/Contents/MacOS/paperformatpro"
+          if [ ! -f "$BIN" ]; then
+            BIN="$(find "dist/paperformatpro.app/Contents/MacOS" -maxdepth 1 -type f -perm -u+x | head -1)"
+          fi
+          echo "executable = $BIN"
+          file "$BIN"
+          "$BIN" selfcheck --json-out selfcheck.json
+          cat selfcheck.json
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("selfcheck.json", encoding="utf-8"))
+          bad = {k: d.get(k) for k in ("header_create", "engine_import")
+                 if str(d.get(k)) != "ok"}
+          if bad:
+              print("::error::selfcheck failed: %s" % bad)
+              sys.exit(1)
+          print("selfcheck ok: templates found, header creatable, engine importable")
+          PY
+
+      # Customer-path check: check -> fix -> recheck, with structural evidence.
+      - name: Functional check (check / fix / recheck on a real paper)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/paperformatpro.app/Contents/MacOS/paperformatpro"
+          if [ ! -f "$BIN" ]; then
+            BIN="$(find "dist/paperformatpro.app/Contents/MacOS" -maxdepth 1 -type f -perm -u+x | head -1)"
+          fi
+          mkdir -p evidence
+          python tools/crossplat/verify_cli.py --exe "$BIN" --label macOS --workdir evidence
+
+      - name: List evidence
+        if: always()
+        shell: bash
+        run: ls -la evidence/ || true
+
+      - name: Upload evidence (input + output docx)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperformatpro-macos-evidence
+          path: |
+            evidence/
+            selfcheck.json
+          if-no-files-found: warn
+          retention-days: 14
