@@ -36,8 +36,13 @@ on:
         description: "Release 里的 Windows 包文件名（留空 = 按 tag 自动找 *windows*.zip）"
         required: false
         default: ""
-  # 改打包脚本或本文件时自动跑一次，省得每次手点
+  # 改打包脚本或本文件时自动跑一次，省得每次手点。
+  # 🔴 必须限定 branches：不加的话**打 tag 也会触发**，而 tag 推送那一刻
+  #    build.yml 的 Release 还没生成，本工作流「按 tag 取 windows.zip」必然
+  #    404 变红 —— 2026-11-16 发 v2.3.123 时就白红了两条（产物本身没问题）。
   push:
+    branches:
+      - main
     paths:
       - "tools/make_msix.py"
       - "tools/msix/**"
