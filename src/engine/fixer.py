@@ -2631,14 +2631,18 @@ def _apply_tri_state(para, run, attr: str, want) -> bool:
         return False
 
 
-def _format_heading_one(para, f, body_font, body_size):
+def _format_heading_one(para, f, body_font=None, body_size=None):
     """对单个标题段直接套格式（值落在段落 / run 属性，不引用任何样式 id）。
 
     返回是否实际发生了改动（用于幂等计数，避免「每遍都计 5 处改动」的假非零）。
 
     v2.3.65：支持「每级标题自己的」字体 / 字号 / 缩进量（学校模板里普遍是
     「一级黑体三号居中、二级楷体四号左对齐、三级宋体小四首行缩进 0.5 英寸」）。
-    - ``f.font_family`` 优先于正文字体；留空则沿用正文字体（旧行为，不臆造）。
+    - ``f.font_family`` 是**唯一**的字体来源；留空 = 这一级的字体不归工具管，
+      一个字节都不写，交还样式管辖（与国内 Windows 版 ``_set_run_rpr`` 同口径）。
+    - ``body_font`` / ``body_size``：v2.3.123 起**不再参与任何格式写入**，仅为兼容
+      既有调用点保留。历史语义是「本级没规定就用正文字体兜底」，那会把标题刷成
+      规范正文字体、与按 C-4 不改字体的正文混排，已废弃（详见函数体 head_font 注释）。
     - ``f.indent_in`` 给出精确缩进量；只给 ``f.indent=True`` 时仍回退旧的 0.5 英寸。
     - ``f.size_pt`` 在 run 没有显式字号时**也**要设：旧写法要求 run 本来就有字号，
       于是「同字号靠样式继承」的标题永远改不到，客户看到「字号没修」。
@@ -2670,8 +2674,19 @@ def _format_heading_one(para, f, body_font, body_size):
                 changed = True
             except Exception:
                 pass
-    # 本级标题字体：显式给出则覆盖正文字体（很多学校「一级黑体、二级楷体」）
-    head_font = getattr(f, "font_family", None) or body_font
+    # 本级标题字体：**只认本级显式声明**（f.font_family），留空则一个字都不写、
+    # 把字体交还样式管辖。
+    #
+    # 🔴 v2.3.123：这里原来写的是 ``or body_font``，即「本级没规定就用正文字体兜底」。
+    # 与国内 Windows 版（学生版/导师版 ``headings_fix._set_run_rpr``）的口径正相反：
+    # 那边的规矩是「spec 含该字段才写、不含则不写（交还样式管辖）」，模板没给这一级
+    # 字体就绝不替客户编一个。海外版这句兜底造成两个后果：
+    #   ① 题名页/标题被刷成规范正文字体（APA = Times New Roman），而正文按裁定 C-4
+    #      「字体不自动替换」一个字节不动 → 同一份文档两种字体；
+    #   ② 检查器根本不判标题字体（只见 heading format 的「centered/bold/line spacing」），
+    #      于是「检查不报、修正却改」—— 违反单一真相源。
+    # 客户/模板明确给了本级字体时，仍按 f.font_family 写入，这条不变。
+    head_font = getattr(f, "font_family", None)
     for run in para.runs:
         if _is_comment_run(run):
             continue          # 批注标记不是标题正文，跳过（否则第二遍恒显"已改"）
@@ -3018,9 +3033,9 @@ def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | No
     if not fmt_map:
         return info
     deepest = max(fmt_map.keys())
-    page = target.page or {}
-    body_font = page.get("font_family")
-    body_size = page.get("font_size_pt")
+    # v2.3.123：这里原来取 target.page 的正文字体/字号给标题做兜底。现在标题的字体
+    # 只认本级 ``f.font_family``、字号只认本级 ``f.size_pt``（与国内 Windows 版
+    # 「含该字段才写、不含则不写」同口径），故不再取正文字体，两个变量一并删除。
     if level_map is None:
         level_map = _assign_heading_levels(doc, target)
     if any(is_pseudo for (_lvl, is_pseudo) in level_map.values()):
@@ -3061,7 +3076,7 @@ def _apply_heading_format(doc, target: TargetProfile, spec, level_map: dict | No
         if not _in_scope:
             # 该级检查没报问题 → 一字节都不动（不写格式、不改大小写、不加批注）
             continue
-        changed = _format_heading_one(para, f, body_font, body_size)
+        changed = _format_heading_one(para, f)
         # 🔴 v2.3.84 文字锁死（老板清单第 5 条）：TEXT_IS_LOCKED 时不改大写、不插编号。
         # 这两件事都是改字符；要改请把 policy.TEXT_IS_LOCKED 置 False（检查器会同步恢复
         # "待修正"口径，两端不会脱节）。
@@ -3139,9 +3154,18 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
     tp = _detect_title_page(doc)
     if not tp:
         return info
-    page = target.page or {}
-    body_font = page.get("font_family")
-    body_size = page.get("font_size_pt")
+    # 🔴 v2.3.123：题名页字体**只认客户 / 学校模板显式给出的** ``t_font``，
+    # 绝不再拿「规范正文字体」兜底。
+    #
+    # 旧写法是 ``_format_heading_one(p, fmt, body_font, ...)``，而那个原语里
+    # ``head_font = f.font_family or body_font`` —— 规范（APA / IEEE / MLA）只声明
+    # **正文**字体，对题名页字体一个字没提（``TitlePageFormat`` 里压根没有 title_font
+    # 字段），于是 body_font（APA = Times New Roman）就被当成题名页字体真的刷进 run。
+    # 而正文按裁定 C-4「字体不自动替换」一个字节都不动 → 同一份文档里题名页变成
+    # Times New Roman、正文还是客户原来的 Arial。实测（macOS 2.3.122 产物，见
+    # ``tools/crossplat`` 的 APA 样例）：题名页 6 段被刷成 TNR、正文 15 段仍是 Arial。
+    # 客户没要求换字体，工具就不许替他换 —— 与 C-4 同一条原则。
+    # 客户/模板给了 t_font 时，题名页整块（标题 + 作者/单位行）统一成它，这仍然成立。
 
     title_align = "center" if t_center else (None if t_center is None else "left")
     title_bold = t_bold          # 三态：None = 不动加粗
@@ -3162,16 +3186,22 @@ def _apply_title_page_format(doc, target: TargetProfile, spec) -> dict:
             "" if t_font is None else (" %s" % t_font)),
     )
     p = doc.paragraphs[tp["title"]]
-    changed = _format_heading_one(p, title_fmt, body_font, body_size)
+    # 第三、四个实参（body_font / body_size）只作为「本级没规定时的兜底」；
+    # 题名页不许兜底正文字体（见上），故传 t_font / None。
+    changed = _format_heading_one(p, title_fmt, t_font, None)
 
     author_align = "center" if a_center else (None if a_center is None else "left")
     for ai in tp["authors"]:
         pa = doc.paragraphs[ai]
         afmt = HeadingLevelFormat(
             alignment=author_align,
+            # 客户/模板给了题名页字体时，作者/单位行与标题统一成它；没给就都不动。
+            font_family=t_font,
             desc="centered author/affiliation" if a_center else "left-aligned author/affiliation",
         )
-        if _format_heading_one(pa, afmt, body_font, body_size):
+        # 作者/单位行：只按客户显式要求居中/左对齐，字体同样不兜底正文字体；
+        # 若客户给了题名页字体（t_font），整块统一成它。
+        if _format_heading_one(pa, afmt, t_font, None):
             changed = True
 
     if changed:
