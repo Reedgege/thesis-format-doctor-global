@@ -61,11 +61,18 @@ jobs:
           fi
           echo "executable = $BIN"
           file "$BIN"
-          "$BIN" selfcheck --json-out selfcheck.json
+          # 这个 CLI 的 selfcheck 直接把 JSON 打到 stdout（没有 --json-out 开关），
+          # 所以重定向到文件再用。
+          "$BIN" selfcheck > selfcheck.json
           cat selfcheck.json
           python - <<'PY'
           import json, sys
-          d = json.load(open("selfcheck.json", encoding="utf-8"))
+          raw = open("selfcheck.json", encoding="utf-8", errors="replace").read()
+          i, j = raw.find("{"), raw.rfind("}")
+          if i < 0 or j <= i:
+              print("::error::selfcheck produced no JSON:\n%s" % raw[:800])
+              sys.exit(1)
+          d = json.loads(raw[i:j + 1])
           bad = {k: d.get(k) for k in ("header_create", "engine_import")
                  if str(d.get(k)) != "ok"}
           if bad:
