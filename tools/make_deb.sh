@@ -50,7 +50,11 @@ APPID="$(printf '%s' "$BIN_NAME" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]/-/g')"
 DISPLAY_NAME="$(grep -m1 -E '^PRODUCT_NAME[[:space:]]*=' build.py 2>/dev/null \
   | sed -E 's/^[^"]*"([^"]*)".*/\1/' || true)"
 [ -n "$DISPLAY_NAME" ] || DISPLAY_NAME="$BIN_NAME"
-HOMEPAGE="$(grep -m1 -oE 'https?://[a-z0-9.-]+' README.md 2>/dev/null | sed -n '1p' || true)"
+# 🔴 只认自有域名：README 里第一个链接往往是 docs 引用（国内两仓首个 URL 是
+#    https://www.microsoft.com，SmartScreen 说明页），照抓会让 control 的
+#    Homepage 指向微软官网（2026-11-17 在线上 .deb 里实测到）。
+HOMEPAGE="$(grep -m1 -oE 'https?://(www\.)?(reedskill|paperformatpro)\.com' README.md 2>/dev/null \
+  | sed -n '1p' || true)"
 [ -n "$HOMEPAGE" ] || HOMEPAGE="https://reedskill.com"
 
 ICON_SRC="$(find . -maxdepth 3 -name icon.png -not -path './dist/*' -not -path './.git/*' \
