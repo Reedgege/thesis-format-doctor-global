@@ -146,6 +146,50 @@ if [ -n "$ICON_SRC" ]; then
   chmod 644 "$DEB/usr/share/icons/hicolor/256x256/apps/$APPID.png"
 fi
 
+# ---- AppStream 元数据 ----
+# 没有这份文件，GNOME 软件中心只能拿 control 里的包名当标题（显示成小写
+# «paperformatpro»）、拿 control 的简介当正文，页面很潦草。有了它才显示正经
+# 名字、简介与首页。
+# 🔴 组件 id 用反向域名（AppStream 1.0 起要求），文件名必须与 id 一致；
+# 与菜单项的绑定靠 launchable，不靠文件名。
+DEB_APPSTREAM_ID="$(meta appstream_id)"
+if [ -n "$DEB_APPSTREAM_ID" ]; then
+  AS_ID="$DEB_APPSTREAM_ID"
+else
+  # 国内两仓没有 products.json：由首页域名反推 + 包名（去连字符）拼一个合规 id
+  AS_ID="$(printf '%s' "$DEB_HOMEPAGE" | sed -E 's#^https?://##; s#/.*$##; s#^www\.##' \
+    | awk -F. '{for(i=NF;i>0;i--) printf "%s%s", $i, (i>1?".":"")}').$(printf '%s' "$APPID" | tr -d '-' | tr 'A-Z' 'a-z')"
+fi
+mkdir -p "$DEB/usr/share/metainfo"
+cat > "$DEB/usr/share/metainfo/$AS_ID.metainfo.xml" <<METAINFO
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>$AS_ID</id>
+  <name>$DISPLAY_NAME</name>
+  <summary>$DEB_SYNOPSIS</summary>
+  <developer_name>ReedSkill</developer_name>
+  <description>
+    <p>$DEB_EXTENDED</p>
+  </description>
+  <launchable type="desktop-id">$APPID.desktop</launchable>
+  <provides>
+    <binary>$BIN_NAME</binary>
+  </provides>
+  <categories>
+    <category>Office</category>
+    <category>Utility</category>
+  </categories>
+  <url type="homepage">$DEB_HOMEPAGE</url>
+  <url type="contact">mailto:$DEB_SUPPORT</url>
+  <project_license>LicenseRef-proprietary</project_license>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="$VER" date="$(date -u +%Y-%m-%d)"/>
+  </releases>
+</component>
+METAINFO
+chmod 644 "$DEB/usr/share/metainfo/$AS_ID.metainfo.xml"
+
 SIZE_KB="$(du -sk "$DEB" | cut -f1)"
 
 # ---- control ----
@@ -240,6 +284,13 @@ BYTES="$(stat -c %s "$OUT" 2>/dev/null || echo 0)"
 echo "  体积: $BYTES 字节"
 if [ "$BYTES" -lt 5000000 ]; then
   echo "  ❌ deb 小于 5 MB，明显不完整"; fail=1
+fi
+# ⑤ AppStream 元数据必须在（缺了软件中心只显示小写包名，页面潦草）
+ASLINE="$(printf '%s\n' "$CONT" | grep -E "/metainfo/.*\.metainfo\.xml$" || true)"
+if [ -n "$ASLINE" ]; then
+  echo "  ✅ AppStream 元数据已收录: $AS_ID"
+else
+  echo "  ❌ 缺 metainfo，软件中心不会显示正经名字与简介"; fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then

@@ -22,7 +22,8 @@
       "maintainer": "ReedSkill <hi@paperformatpro.com>",
       "homepage": "https://paperformatpro.com",
       "copyright": "Copyright (c) ReedSkill",
-      "support": "hi@paperformatpro.com"
+      "support": "hi@paperformatpro.com",
+      "appstream_id": "com.paperformatpro.PaperFormatPro"
     }
   },
   "mdf-stu": {
