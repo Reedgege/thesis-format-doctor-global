@@ -26,6 +26,7 @@ from tkinter import ttk
 
 from . import icon_loader
 from . import theme
+from .wheel import wheel_pixels
 
 
 # ---------------------------------------------------------------------------
@@ -425,9 +426,12 @@ class ScrollArea(tk.Frame):
         if not self._in_area(e):
             return
         try:
+            px = wheel_pixels(e)
+            if not px:
+                return
             if self._bar_needed:
                 self._reveal_bar()
-            self._cv.yview_scroll(-e.delta, "units")
+            self._cv.yview_scroll(px, "units")
         except Exception:
             pass
 

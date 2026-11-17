@@ -60,6 +60,7 @@ from ..engine.specs import (SPEC_ORDER, spec_display, REFERENCE_STYLE_KEYS,
 from ..license import license as lic
 from .. import versioninfo
 from . import i18n, iconpath, recents, theme
+from .wheel import bind_wheel, wheel_pixels
 from . import dpi as _dpi_mod
 from .fonts import Fonts
 from .modal_shell import ModalShell
@@ -300,13 +301,17 @@ def _scroll_frame(parent, bg: str = PAPER):
         except Exception:
             return
         try:
-            # v2.3.22：按 delta 像素滚动（旧版每格只滚 1px，滚轮极不灵敏）。
-            canvas.yview_scroll(-e.delta, "units")
+            # 🔴 2026-11-17：X11 的 Button-4/5 没有 delta，macOS 的 delta 多为 ±1，
+            # 统一走 wheel_pixels() 归一成一格 120px 的「向下为正」像素数。
+            px = wheel_pixels(e)
+            if px:
+                canvas.yview_scroll(px, "units")
         except Exception:
             pass
 
     try:
-        canvas.winfo_toplevel().bind("<MouseWheel>", _wheel, add="+")
+        # X11 只发 Button-4/5，Windows/macOS 只发 MouseWheel —— 三种都绑才跨平台可用
+        bind_wheel(canvas.winfo_toplevel(), _wheel)
     except Exception:
         pass
     return inner
@@ -596,8 +601,9 @@ class App:
         # 用户看到的是一个卡死的窗口。改成只记日志 —— 重要错误本来就已经走状态行了。
         root.report_callback_exception = self._on_tk_error
         # 滚轮统一挂一次再按指针位置分发（add="+" 是为了跟弹窗自己的滚轮绑定共存）
+        # 🔴 X11（Linux）发 Button-4/5，MouseWheel 只覆盖 Windows/macOS，三种都要绑
         try:
-            root.bind_all("<MouseWheel>", self._on_wheel, add="+")
+            bind_wheel(root, self._on_wheel)
         except Exception:
             pass
 

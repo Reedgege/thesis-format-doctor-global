@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from . import theme, widgets, i18n
+from .wheel import bind_wheel, wheel_pixels
 
 
 class ModalShell(tk.Toplevel):
@@ -83,7 +84,7 @@ class ModalShell(tk.Toplevel):
         # 滚轮挂在顶层窗：子控件（Entry/Button/Label）的 MouseWheel 会冒泡到顶层窗
         # bindtag，折叠区/内容上方滚轮也能滚；return "break" 阻断继续冒泡到 root 的
         # bind_all，避免弹窗打开时主窗口在背后跟着滚。
-        self.bind("<MouseWheel>", self._on_wheel)
+        bind_wheel(self, self._on_wheel)
 
         # 内容容器（嵌入 Canvas，超出可视区时由滚动条接管）
         self._inner = tk.Frame(self._cv, bg=theme.SURFACE)
@@ -246,13 +247,11 @@ class ModalShell(tk.Toplevel):
         触控板的小 delta（±30/±60）逐像素平滑。X11 少数环境只给 ±1（一格），
         归一成一格 120px，免得「滚不动」。
         """
+        # 🔴 2026-11-17：X11 的 Button-4/5 没有 delta，统一由 wheel_pixels 归一
         try:
-            d = int(getattr(event, "delta", 0) or 0)
-            if d == 0:
-                return "break"
-            if abs(d) < 10:                     # X11 的 ±1 一格
-                d *= 120
-            self._cv.yview_scroll(-d, "units")
+            px = wheel_pixels(event)
+            if px:
+                self._cv.yview_scroll(px, "units")
         except Exception:
             pass
         return "break"
