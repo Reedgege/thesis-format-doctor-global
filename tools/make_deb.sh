@@ -56,12 +56,60 @@ HOMEPAGE="$(grep -m1 -oE 'https?://[a-z0-9.-]+' README.md 2>/dev/null | sed -n '
 ICON_SRC="$(find . -maxdepth 3 -name icon.png -not -path './dist/*' -not -path './.git/*' \
   -print 2>/dev/null | sed -n '1p')"
 
+# ---- deb 元数据（逐产品）----
+# 🔴 这份脚本三仓共用同一份，所以维护者邮箱、简介文字、首页域名都不能写死：
+# 海外版必须全英文 + hi@paperformatpro.com，国内版是中文 + hi@reedskill.com。
+# 唯一事实源 = tools/msix/products.json 里该产品的 "deb" 段（与 MSIX 打包同源）。
+# 该文件不存在（国内两仓）→ 退回下面的国内默认文案。
+META="tools/msix/products.json"
+meta() {
+  [ -f "$META" ] || return 0
+  python3 - "$META" "$APPID" "$1" <<'PY' 2>/dev/null || true
+import json, sys
+path, appid, key = sys.argv[1:4]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+val = (data.get(appid) or {}).get("deb", {}).get(key)
+if val:
+    print(val)
+PY
+}
+
+DEB_SYNOPSIS="$(meta synopsis)"
+DEB_EXTENDED="$(meta extended)"
+DEB_MAINTAINER="$(meta maintainer)"
+DEB_HOMEPAGE="$(meta homepage)"
+DEB_COPYRIGHT="$(meta copyright)"
+DEB_SUPPORT="$(meta support)"
+
+if [ -f "$META" ]; then
+  MISSING=""
+  [ -n "$DEB_SYNOPSIS" ]   || MISSING="$MISSING synopsis"
+  [ -n "$DEB_MAINTAINER" ] || MISSING="$MISSING maintainer"
+  [ -n "$DEB_HOMEPAGE" ]   || MISSING="$MISSING homepage"
+  # 有 products.json 却取不到 → 直接红灯。绝不静默退回中文默认值，
+  # 否则英文包里又会冒出中文简介（2026-11-17 客户截图就是这么来的）。
+  [ -z "$MISSING" ] || { echo "::error::$META 中 $APPID 的 deb 段缺字段:$MISSING"; exit 1; }
+fi
+
+[ -n "$DEB_SYNOPSIS" ]   || DEB_SYNOPSIS="$DISPLAY_NAME"
+[ -n "$DEB_EXTENDED" ]   || DEB_EXTENDED="模板驱动的论文格式检查与一键修正工具。全部在本机离线运行，不上传论文内容。"
+[ -n "$DEB_MAINTAINER" ] || DEB_MAINTAINER="ReedSkill <hi@reedskill.com>"
+[ -n "$DEB_HOMEPAGE" ]   || DEB_HOMEPAGE="$HOMEPAGE"
+[ -n "$DEB_COPYRIGHT" ]  || DEB_COPYRIGHT="Copyright (c) ReedSkill · 芦苇不熬夜"
+[ -n "$DEB_SUPPORT" ]    || DEB_SUPPORT="hi@reedskill.com"
+
 echo "==================== 打 .deb ===================="
 echo "  产品显示名 : $DISPLAY_NAME"
 echo "  包名       : $APPID"
 echo "  主程序     : $BIN_NAME"
 echo "  版本       : $VER"
 echo "  图标       : ${ICON_SRC:-（无，用图标名占位）}"
+echo "  维护者     : $DEB_MAINTAINER"
+echo "  首页       : $DEB_HOMEPAGE"
+echo "  简介       : $DEB_SYNOPSIS"
 
 WORK="/tmp/deb-work"
 rm -rf "$WORK"
@@ -111,10 +159,10 @@ Priority: optional
 Architecture: amd64
 Installed-Size: $SIZE_KB
 Depends: libc6 (>= 2.28), libstdc++6, zlib1g
-Maintainer: ReedSkill <hi@reedskill.com>
-Homepage: $HOMEPAGE
-Description: $DISPLAY_NAME
- 模板驱动的论文格式检查与一键修正工具。全部在本机离线运行，不上传论文内容。
+Maintainer: $DEB_MAINTAINER
+Homepage: $DEB_HOMEPAGE
+Description: $DEB_SYNOPSIS
+ $DEB_EXTENDED
 CONTROL
 chmod 644 "$DEB/DEBIAN/control"
 
@@ -139,9 +187,9 @@ POSTRM
 chmod 755 "$DEB/DEBIAN/postinst" "$DEB/DEBIAN/postrm"
 
 cat > "$DEB/usr/share/doc/$APPID/copyright" <<COPYRIGHT
-Copyright (c) ReedSkill · 芦苇不熬夜
-Homepage: $HOMEPAGE
-Support: hi@reedskill.com
+$DEB_COPYRIGHT
+Homepage: $DEB_HOMEPAGE
+Support: $DEB_SUPPORT
 COPYRIGHT
 chmod 644 "$DEB/usr/share/doc/$APPID/copyright"
 

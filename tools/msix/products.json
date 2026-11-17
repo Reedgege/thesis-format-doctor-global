@@ -15,7 +15,15 @@
     "description": "Check and fix thesis formatting against APA, MLA and IEEE styles.",
     "lang": "en-us",
     "executable": "paperformatpro.exe",
-    "pfn": "Reedskill.PaperFormatPro_v279h4yy6sm7g"
+    "pfn": "Reedskill.PaperFormatPro_v279h4yy6sm7g",
+    "deb": {
+      "synopsis": "Check and fix thesis formatting against APA, MLA and IEEE styles",
+      "extended": "Checks your document against APA, MLA or IEEE layout rules, then fixes what it finds. Everything runs on your own computer, and your thesis is never uploaded.",
+      "maintainer": "ReedSkill <hi@paperformatpro.com>",
+      "homepage": "https://paperformatpro.com",
+      "copyright": "Copyright (c) ReedSkill",
+      "support": "hi@paperformatpro.com"
+    }
   },
   "mdf-stu": {
     "label": "学生版 文档格式先生",
