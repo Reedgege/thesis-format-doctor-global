@@ -716,7 +716,7 @@ def test_post_reads_body_of_non_2xx(monkeypatch):
     def fake_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(body))
 
-    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(lic, "_open_url", fake_urlopen)
     monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
     res = lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
     assert res == {"ok": False, "error": "invalid_code"}
@@ -736,7 +736,7 @@ def test_post_reraises_when_error_body_is_not_json(monkeypatch):
         raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {},
                                      io.BytesIO(b"<html>bad gateway</html>"))
 
-    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(lic, "_open_url", fake_urlopen)
     monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
     with pytest.raises(Exception):
         lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
@@ -759,7 +759,7 @@ def test_post_reads_body_of_non_2xx(monkeypatch):
     def fake_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO(body))
 
-    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(lic, "_open_url", fake_urlopen)
     monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
     res = lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
     assert res == {"ok": False, "error": "invalid_code"}
@@ -779,7 +779,68 @@ def test_post_reraises_when_error_body_is_not_json(monkeypatch):
         raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", {},
                                      io.BytesIO(b"<html>bad gateway</html>"))
 
-    monkeypatch.setattr(lic.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(lic, "_open_url", fake_urlopen)
     monkeypatch.setenv("TFD_FORCE_OFFLINE", "0")
     with pytest.raises(Exception):
         lic._post("/api/activate", {"product": "global", "code": "X", "machine_code": "M"})
+
+
+# ---------------------------------------------------------------------------
+# 自带 CA 证书 / SSL 验证（老 Linux 缺 GTS Root R4 导致激活失败）
+# ---------------------------------------------------------------------------
+def test_cacert_bundled_in_assets():
+    cacert = os.path.join(ROOT, 'assets', 'cacert.pem')
+    assert os.path.isfile(cacert), 'assets/cacert.pem 缺失，Linux 激活会退回坏掉的系统 CA 库'
+    with open(cacert, 'rb') as fh:
+        data = fh.read()
+    assert b'BEGIN CERTIFICATE' in data
+    assert b'GTS Root R4' in data, '证书包必须含 GTS Root R4'
+
+
+def test_ssl_context_uses_bundled_cacert(monkeypatch):
+    import ssl as ssl_mod
+    ctx = lic._ssl_context()
+    assert isinstance(ctx, ssl_mod.SSLContext)
+    assert ctx.verify_mode == ssl_mod.CERT_REQUIRED
+
+
+def test_open_url_uses_httpshandler_when_cacert_present(monkeypatch):
+    calls = {'opener': 0, 'ctx': None}
+
+    class _FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{}'
+
+    def fake_build_opener(*handlers):
+        calls['opener'] += 1
+        for h in handlers:
+            if hasattr(h, '_context'):
+                calls['ctx'] = h._context
+        return type('O', (), {'open': lambda self, req, timeout: _FakeResp()})()
+
+    monkeypatch.setattr(lic.urllib.request, 'build_opener', fake_build_opener)
+    monkeypatch.setattr(lic, '_ssl_context', lambda: object())
+    req = lic.urllib.request.Request('https://api.reedskill.com/api/version', method='GET')
+    with lic._open_url(req, 4):
+        pass
+    assert calls['opener'] == 1
+    assert calls['ctx'] is not None
+
+
+def test_open_url_falls_back_to_urlopen_when_no_cacert(monkeypatch):
+    calls = {'urlopen': 0}
+
+    def fake_urlopen(req, timeout):
+        calls['urlopen'] += 1
+        class R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        return R()
+
+    monkeypatch.setattr(lic, '_ssl_context', lambda: None)
+    monkeypatch.setattr(lic.urllib.request, 'urlopen', fake_urlopen)
+    req = lic.urllib.request.Request('https://api.reedskill.com/api/version', method='GET')
+    with lic._open_url(req, 4):
+        pass
+    assert calls['urlopen'] == 1

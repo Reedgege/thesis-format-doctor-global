@@ -384,6 +384,62 @@ def _forced_offline() -> bool:
     return os.environ.get("TFD_FORCE_OFFLINE", "").strip().lower() in ("1", "true", "yes", "y")
 
 
+def _cacert_candidates() -> list:
+    """自带 CA 证书包的候选路径（源码运行 + Nuitka 打包后的几种布局）。
+
+    打包布局与 ``ui/iconpath.py`` 一致：整目录 assets/ 被拷到 exe 同级，
+    所以产物里是 ``<exe 目录>/assets/cacert.pem``；源码运行时是 ``<repo>/assets``。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))       # <repo>/src/license
+    repo = os.path.normpath(os.path.join(here, "..", ".."))
+    cands = [os.path.join(repo, "assets", "cacert.pem")]
+    for raw in (getattr(sys, "argv", None) or [""])[:1] + [getattr(sys, "executable", "")]:
+        try:
+            if raw:
+                base = os.path.dirname(os.path.abspath(raw))
+                cands.append(os.path.join(base, "assets", "cacert.pem"))
+        except Exception:
+            continue
+    cands.append(os.path.join(os.getcwd(), "assets", "cacert.pem"))
+    out = []
+    for c in cands:
+        c = os.path.normpath(c)
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def _ssl_context():
+    """用随程序打包的 CA 证书建 SSL context。
+
+    修复老 Linux 在线激活报 ``SSL: CERTIFICATE_VERIFY_FAILED —
+    unable to get local issuer certificate``：中台 api.reedskill.com 用
+    Google GTS Root R4（2021 新根），老发行版 ca-certificates 不含它；Windows
+    自动更新根库、macOS 11+ 钥匙串已收录，只有 Linux 会中招。自带证书后
+    三平台行为一致。找不到自带证书则回退系统默认，**绝不降低验证强度**
+    （不用 _create_unverified_context）。"""
+    try:
+        import ssl
+        for path in _cacert_candidates():
+            if os.path.isfile(path):
+                return ssl.create_default_context(cafile=path)
+    except Exception:
+        pass
+    return None
+
+
+def _open_url(req, timeout):
+    """统一网络出口：能用自带 CA 就用，否则回退 urlopen 系统默认。
+
+    抽成单一函数，激活 / 心跳 / 版本检查共用同一条证书路径；测试只需
+    monkeypatch 本函数即可离线隔离，不必关心 opener 细节。"""
+    ctx = _ssl_context()
+    if ctx is None:
+        return urllib.request.urlopen(req, timeout=timeout)
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+    return opener.open(req, timeout=timeout)
+
+
 def _post(path: str, payload: dict, timeout: int = 5) -> dict:
     """POST JSON 到中台，**业务错误也当响应体读回来**（非 2xx 不算网络故障）。
 
@@ -407,7 +463,7 @@ def _post(path: str, payload: dict, timeout: int = 5) -> dict:
     prev = socket.getdefaulttimeout()
     socket.setdefaulttimeout(timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open_url(req, timeout) as resp:
             return json.loads(resp.read().decode("utf-8", "ignore"))
     except urllib.error.HTTPError as e:
         # 非 2xx：先按响应体解析（中台的业务错误信封都在这里）；解析不出来才算网络故障。
@@ -603,7 +659,7 @@ def _check_latest_version() -> dict | None:
     prev = socket.getdefaulttimeout()
     socket.setdefaulttimeout(4)
     try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with _open_url(req, 4) as resp:
             return json.loads(resp.read().decode("utf-8", "ignore"))
     except Exception:
         return None
